@@ -19,6 +19,7 @@ type Options struct {
 	GradlePath string
 	LogDir     string
 	Help       bool
+	Version    bool
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -31,6 +32,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	if opts.Help {
 		writeUsage(stdout)
+		return 0
+	}
+
+	if opts.Version {
+		fmt.Fprintf(stdout, "build-brief %s\n", Version)
 		return 0
 	}
 
@@ -113,6 +119,8 @@ func parseArgs(args []string) (Options, []string, error) {
 			return normalized, args[i+1:], err
 		case arg == "--help" || arg == "-h":
 			opts.Help = true
+		case arg == "--version":
+			opts.Version = true
 		case strings.HasPrefix(arg, "--mode="):
 			opts.Mode = strings.TrimPrefix(arg, "--mode=")
 		case arg == "--mode":
@@ -204,6 +212,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --project-dir PATH        Project directory to run in")
 	fmt.Fprintln(w, "  --gradle PATH             Explicit gradle/gradlew path")
 	fmt.Fprintln(w, "  --log-dir PATH            Directory for retained raw logs")
+	fmt.Fprintln(w, "  --version                 Show build-brief version")
 	fmt.Fprintln(w, "  --help, -h                Show this help")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment overrides:")

@@ -16,6 +16,7 @@
 ```bash
 build-brief test
 build-brief --mode json build
+build-brief --version
 build-brief --project-dir /path/to/project test
 build-brief -- --stacktrace test
 ```

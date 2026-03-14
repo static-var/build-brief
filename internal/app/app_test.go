@@ -1,6 +1,11 @@
 package app
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestParseArgsStopsAtGradleArgs(t *testing.T) {
 	opts, gradleArgs, err := parseArgs([]string{"--mode", "json", "test", "--stacktrace"})
@@ -36,5 +41,44 @@ func TestParseArgsRejectsUnknownBuildBriefFlag(t *testing.T) {
 	_, _, err := parseArgs([]string{"--stacktrace", "test"})
 	if err == nil {
 		t.Fatal("expected unknown build-brief flag error")
+	}
+}
+
+func TestParseArgsReadsVersionFlag(t *testing.T) {
+	opts, gradleArgs, err := parseArgs([]string{"--version"})
+	if err != nil {
+		t.Fatalf("parse version flag: %v", err)
+	}
+
+	if !opts.Version {
+		t.Fatal("expected version flag to be set")
+	}
+
+	if len(gradleArgs) != 0 {
+		t.Fatalf("expected no gradle args, got %v", gradleArgs)
+	}
+}
+
+func TestRunPrintsVersion(t *testing.T) {
+	originalVersion := Version
+	Version = "test-version"
+	t.Cleanup(func() {
+		Version = originalVersion
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{"--version"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+
+	if strings.TrimSpace(stdout.String()) != "build-brief test-version" {
+		t.Fatalf("unexpected version output %q", stdout.String())
 	}
 }
