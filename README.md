@@ -47,8 +47,8 @@ On Windows, build `build-brief.exe` and place it in a directory that is already 
 Once the release workflow and tap repo are configured, users on macOS and Linux can install with:
 
 ```bash
-brew tap <owner>/tap
-brew install <owner>/tap/build-brief
+brew tap static-var/tap
+brew install static-var/tap/build-brief
 ```
 
 The release workflow generates `Formula/build-brief.rb` from the exact GitHub release archives, then pushes it to a separate tap repository. The default target is `<repo-owner>/homebrew-tap`, and you can override it with the repository variable `HOMEBREW_TAP_REPOSITORY`.
