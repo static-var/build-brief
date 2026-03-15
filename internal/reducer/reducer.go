@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"build-brief/internal/artifacts"
 	"build-brief/internal/gradle"
 	"build-brief/internal/runner"
 )
@@ -28,30 +29,35 @@ var (
 	maxJUnitReportFiles  = 100
 )
 
+type Artifact = artifacts.Artifact
+
 type Summary struct {
-	SchemaVersion   string   `json:"schema_version"`
-	Tool            string   `json:"tool"`
-	Success         bool     `json:"success"`
-	ExitCode        int      `json:"exit_code"`
-	Duration        string   `json:"duration"`
-	DurationMs      int64    `json:"duration_ms"`
-	ProjectDir      string   `json:"project_dir"`
-	Executable      string   `json:"executable"`
-	Command         []string `json:"command"`
-	CommandLine     string   `json:"command_line"`
-	Source          string   `json:"source"`
-	RawLogPath      string   `json:"raw_log_path"`
-	RawOutputTokens int      `json:"raw_output_tokens"`
-	EmittedTokens   int      `json:"emitted_output_tokens"`
-	SavedTokens     int      `json:"saved_output_tokens"`
-	SavingsPct      float64  `json:"savings_pct"`
-	BuildStatusLine string   `json:"build_status_line"`
-	FailedTasks     []string `json:"failed_tasks"`
-	FailedTests     []string `json:"failed_tests"`
-	WarningCount    int      `json:"warning_count"`
-	Warnings        []string `json:"warnings"`
-	ImportantLines  []string `json:"important_lines"`
-	TotalLines      int      `json:"total_lines"`
+	SchemaVersion             string     `json:"schema_version"`
+	Tool                      string     `json:"tool"`
+	Success                   bool       `json:"success"`
+	ExitCode                  int        `json:"exit_code"`
+	Duration                  string     `json:"duration"`
+	DurationMs                int64      `json:"duration_ms"`
+	ProjectDir                string     `json:"project_dir"`
+	Executable                string     `json:"executable"`
+	Command                   []string   `json:"command"`
+	CommandLine               string     `json:"command_line"`
+	Source                    string     `json:"source"`
+	RawLogPath                string     `json:"raw_log_path"`
+	RawOutputTokens           int        `json:"raw_output_tokens"`
+	EmittedTokens             int        `json:"emitted_output_tokens"`
+	SavedTokens               int        `json:"saved_output_tokens"`
+	SavingsPct                float64    `json:"savings_pct"`
+	BuildStatusLine           string     `json:"build_status_line"`
+	FailedTasks               []string   `json:"failed_tasks"`
+	FailedTests               []string   `json:"failed_tests"`
+	WarningCount              int        `json:"warning_count"`
+	Warnings                  []string   `json:"warnings"`
+	ImportantLines            []string   `json:"important_lines"`
+	Artifacts                 []Artifact `json:"artifacts,omitempty"`
+	GeneratedClassFileCount   int        `json:"generated_class_file_count,omitempty"`
+	GeneratedCodegenFileCount int        `json:"generated_codegen_file_count,omitempty"`
+	TotalLines                int        `json:"total_lines"`
 }
 
 type junitTestSuite struct {
@@ -92,12 +98,15 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		FailedTests:    []string{},
 		Warnings:       []string{},
 		ImportantLines: []string{},
+		Artifacts:      []Artifact{},
 	}
 
 	failedTasks := make(map[string]struct{})
 	failedTests := make(map[string]struct{})
 	warnings := make(map[string]struct{})
 	important := make(map[string]struct{})
+	artifactHints := make([]string, 0)
+	artifactHintSeen := make(map[string]struct{})
 
 	file, err := os.Open(result.RawLogPath)
 	if err != nil {
@@ -149,6 +158,13 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		if isImportantLine(text) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 		}
+		for _, hint := range artifacts.ExtractHints(text) {
+			if _, ok := artifactHintSeen[hint]; ok {
+				continue
+			}
+			artifactHintSeen[hint] = struct{}{}
+			artifactHints = append(artifactHints, hint)
+		}
 
 		if opensContextCapture(text) {
 			captureContextRemaining = contextCaptureLines
@@ -181,8 +197,20 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	}
 
 	enrichWithJUnitFailures(command.ProjectDir, &summary, failedTests, important)
+	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints)
 
 	return summary, nil
+}
+
+func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summary, hints []string) {
+	if !summary.Success || result.StartTime.IsZero() {
+		return
+	}
+
+	found, classCount, codegenCount := artifacts.FindGenerated(projectDir, result.StartTime, result.ArtifactSnapshot, hints)
+	summary.Artifacts = found
+	summary.GeneratedClassFileCount = classCount
+	summary.GeneratedCodegenFileCount = codegenCount
 }
 
 func enrichWithJUnitFailures(projectDir string, summary *Summary, failedTests, important map[string]struct{}) {
@@ -231,7 +259,7 @@ func findJUnitReportFiles(projectDir string) []string {
 			return nil
 		}
 		if entry.IsDir() {
-			if shouldSkipJUnitWalkDir(path, entry) {
+			if artifacts.ShouldSkipDir(entry) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -387,16 +415,6 @@ func shouldEnrichWithJUnit(summary *Summary) bool {
 	}
 
 	return false
-}
-
-func shouldSkipJUnitWalkDir(path string, entry fs.DirEntry) bool {
-	name := entry.Name()
-	switch name {
-	case ".git", ".gradle", ".idea", ".vscode", "node_modules":
-		return true
-	default:
-		return false
-	}
 }
 
 func isJUnitReportPath(path, fileName string) bool {

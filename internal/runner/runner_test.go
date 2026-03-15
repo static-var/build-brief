@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"build-brief/internal/artifacts"
 	"build-brief/internal/gradle"
 )
 
@@ -68,6 +69,12 @@ func TestRunPreservesExitCodeAndWritesLog(t *testing.T) {
 	if result.ExitCode != 7 {
 		t.Fatalf("expected exit code 7, got %d", result.ExitCode)
 	}
+	if result.StartTime.IsZero() {
+		t.Fatal("expected start time to be recorded")
+	}
+	if !result.ArtifactSnapshot.Captured {
+		t.Fatal("expected artifact snapshot to be captured")
+	}
 
 	content, err := os.ReadFile(result.RawLogPath)
 	if err != nil {
@@ -111,6 +118,9 @@ func TestRunWithOptionsReportsProgress(t *testing.T) {
 	if len(events) == 0 {
 		t.Fatal("expected at least one progress event")
 	}
+	if result.StartTime.IsZero() {
+		t.Fatal("expected start time to be recorded")
+	}
 	if events[0].RawLogPath != result.RawLogPath {
 		t.Fatalf("expected progress raw log path %q, got %q", result.RawLogPath, events[0].RawLogPath)
 	}
@@ -133,6 +143,41 @@ func TestRunHandlesVeryLongLines(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
+	}
+}
+
+func TestRunCapturesArtifactSnapshotBeforeExecution(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "noop-gradle.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"done\"\n")
+
+	artifactPath := filepath.Join(projectDir, "app", "build", "libs", "existing.jar")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("jar"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	result, err := Run(context.Background(), gradle.Command{
+		Executable: scriptPath,
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}, logDir)
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+
+	wantPath := "app/build/libs/existing.jar"
+	if !result.ArtifactSnapshot.Captured {
+		t.Fatal("expected artifact snapshot to be captured")
+	}
+	if _, ok := result.ArtifactSnapshot.ArtifactEntries[wantPath]; !ok {
+		t.Fatalf("expected snapshot to contain %q, got %+v", wantPath, result.ArtifactSnapshot.ArtifactEntries)
+	}
+	if got := result.ArtifactSnapshot.ArtifactEntries[wantPath]; got == (artifacts.SnapshotEntry{}) {
+		t.Fatalf("expected non-zero snapshot entry for %q", wantPath)
 	}
 }
 

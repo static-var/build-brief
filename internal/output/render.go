@@ -28,6 +28,33 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if len(summary.Artifacts) > 0 {
+		if _, err := fmt.Fprintln(bw, "Artifacts:"); err != nil {
+			return err
+		}
+		for _, artifact := range summary.Artifacts {
+			if _, err := fmt.Fprintf(bw, "  - %s: %s (%s)\n", artifact.Kind, artifact.Path, formatArtifactSize(artifact.SizeBytes)); err != nil {
+				return err
+			}
+		}
+	}
+
+	if summary.GeneratedClassFileCount > 0 || summary.GeneratedCodegenFileCount > 0 {
+		if _, err := fmt.Fprintln(bw, "Compilation outputs omitted:"); err != nil {
+			return err
+		}
+		if summary.GeneratedClassFileCount > 0 {
+			if _, err := fmt.Fprintf(bw, "  - %s .class %s generated.\n", formatCount(summary.GeneratedClassFileCount), pluralize(summary.GeneratedClassFileCount, "file", "files")); err != nil {
+				return err
+			}
+		}
+		if summary.GeneratedCodegenFileCount > 0 {
+			if _, err := fmt.Fprintf(bw, "  - %s generated source/codegen %s updated.\n", formatCount(summary.GeneratedCodegenFileCount), pluralize(summary.GeneratedCodegenFileCount, "file", "files")); err != nil {
+				return err
+			}
+		}
+	}
+
 	if summary.Success {
 		return bw.Flush()
 	}
@@ -109,4 +136,33 @@ func filteredImportantLines(summary reducer.Summary, statusLine string) []string
 		filtered = append(filtered, line)
 	}
 	return filtered
+}
+
+func formatArtifactSize(sizeBytes int64) string {
+	const unit = 1024
+	if sizeBytes < unit {
+		return fmt.Sprintf("%d B", sizeBytes)
+	}
+
+	divisor := int64(unit)
+	suffix := "KB"
+	for _, next := range []string{"MB", "GB", "TB"} {
+		if sizeBytes < divisor*unit {
+			break
+		}
+		divisor *= unit
+		suffix = next
+	}
+	return fmt.Sprintf("%.1f %s", float64(sizeBytes)/float64(divisor), suffix)
+}
+
+func formatCount(count int) string {
+	return fmt.Sprintf("%d", count)
+}
+
+func pluralize(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }

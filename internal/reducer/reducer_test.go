@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"build-brief/internal/artifacts"
 	"build-brief/internal/gradle"
 	"build-brief/internal/runner"
 )
@@ -96,6 +97,9 @@ func TestReduceSuccessSummary(t *testing.T) {
 	}
 	if summary.FailedTasks == nil || summary.FailedTests == nil || summary.Warnings == nil || summary.ImportantLines == nil {
 		t.Fatal("expected summary slices to be initialized")
+	}
+	if summary.Artifacts == nil {
+		t.Fatal("expected artifacts slice to be initialized")
 	}
 }
 
@@ -394,6 +398,112 @@ func TestReduceCapturesJavaSymbolErrorFromConsole(t *testing.T) {
 	}
 }
 
+func TestReduceFindsGeneratedArtifactsAndOmittedCompilationOutputs(t *testing.T) {
+	projectDir := t.TempDir()
+	staleArtifact := filepath.Join(projectDir, "legacy", "build", "libs", "legacy.jar")
+	writeGeneratedFile(t, staleArtifact, "stale")
+	snapshot := artifacts.Capture(projectDir)
+	startTime := time.Now()
+
+	writeGeneratedFile(t, filepath.Join(projectDir, "androidApp", "build", "outputs", "apk", "debug", "androidApp-debug.apk"), "apk")
+	writeGeneratedFile(t, filepath.Join(projectDir, "shared", "build", "outputs", "aar", "shared-release.aar"), "aar")
+	writeGeneratedFile(t, filepath.Join(projectDir, "server", "build", "libs", "server.jar"), "jar")
+	writeGeneratedFile(t, filepath.Join(projectDir, "cli", "build", "distributions", "cli.zip"), "zip")
+	writeGeneratedFile(t, filepath.Join(projectDir, "core", "build", "classes", "kotlin", "main", "Example.class"), "class")
+	writeGeneratedFile(t, filepath.Join(projectDir, "core", "build", "generated", "ksp", "main", "kotlin", "Generated.kt"), "generated")
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         5 * time.Second,
+		StartTime:        startTime,
+		ArtifactSnapshot: snapshot,
+		RawLogPath:       writeTestLog(t, []string{"BUILD SUCCESSFUL in 5s"}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce success with artifacts: %v", err)
+	}
+
+	if !containsArtifact(summary.Artifacts, "APK", "androidApp/build/outputs/apk/debug/androidApp-debug.apk") {
+		t.Fatalf("expected apk artifact in summary: %+v", summary.Artifacts)
+	}
+	if !containsArtifact(summary.Artifacts, "AAR", "shared/build/outputs/aar/shared-release.aar") {
+		t.Fatalf("expected aar artifact in summary: %+v", summary.Artifacts)
+	}
+	if !containsArtifact(summary.Artifacts, "JAR", "server/build/libs/server.jar") {
+		t.Fatalf("expected jar artifact in summary: %+v", summary.Artifacts)
+	}
+	if !containsArtifact(summary.Artifacts, "ZIP", "cli/build/distributions/cli.zip") {
+		t.Fatalf("expected zip artifact in summary: %+v", summary.Artifacts)
+	}
+	if containsArtifact(summary.Artifacts, "JAR", "legacy/build/libs/legacy.jar") {
+		t.Fatalf("did not expect stale artifact in summary: %+v", summary.Artifacts)
+	}
+	if summary.GeneratedClassFileCount != 1 {
+		t.Fatalf("expected 1 generated class file, got %d", summary.GeneratedClassFileCount)
+	}
+	if summary.GeneratedCodegenFileCount != 1 {
+		t.Fatalf("expected 1 generated codegen file, got %d", summary.GeneratedCodegenFileCount)
+	}
+}
+
+func TestReduceFindsKMPArtifactsAndVerifiedLogHints(t *testing.T) {
+	projectDir := t.TempDir()
+	snapshot := artifacts.Capture(projectDir)
+	startTime := time.Now()
+
+	writeGeneratedFile(t, filepath.Join(projectDir, "shared", "build", "bin", "iosSimulatorArm64", "releaseFramework", "Shared.framework", "Shared"), "framework-binary")
+	writeGeneratedFile(t, filepath.Join(projectDir, "shared", "build", "XCFrameworks", "release", "Shared.xcframework", "ios-arm64", "Shared.framework", "Shared"), "xcframework-binary")
+	writeGeneratedFile(t, filepath.Join(projectDir, "shared", "build", "bin", "linuxX64", "releaseExecutable", "app.kexe"), "kexe")
+	writeGeneratedFile(t, filepath.Join(projectDir, "shared", "build", "bin", "iosArm64", "releaseLibrary", "shared.klib"), "klib")
+	customFramework := filepath.Join(projectDir, "custom-output", "Fancy.xcframework", "ios-arm64", "Fancy.framework", "Fancy")
+	writeGeneratedFile(t, customFramework, "custom-xcframework")
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         7 * time.Second,
+		StartTime:        startTime,
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"Shared framework generated successfully at " + filepath.Join(projectDir, "custom-output", "Fancy.xcframework"),
+			"BUILD SUCCESSFUL in 7s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce kmp artifacts: %v", err)
+	}
+
+	for _, expected := range []struct {
+		kind string
+		path string
+	}{
+		{kind: "FRAMEWORK", path: "shared/build/bin/iosSimulatorArm64/releaseFramework/Shared.framework"},
+		{kind: "XCFRAMEWORK", path: "shared/build/XCFrameworks/release/Shared.xcframework"},
+		{kind: "KEXE", path: "shared/build/bin/linuxX64/releaseExecutable/app.kexe"},
+		{kind: "KLIB", path: "shared/build/bin/iosArm64/releaseLibrary/shared.klib"},
+		{kind: "XCFRAMEWORK", path: "custom-output/Fancy.xcframework"},
+	} {
+		if !containsArtifact(summary.Artifacts, expected.kind, expected.path) {
+			t.Fatalf("expected %s artifact %q in %+v", expected.kind, expected.path, summary.Artifacts)
+		}
+	}
+}
+
 func writeTestLog(t *testing.T, lines []string) string {
 	t.Helper()
 
@@ -404,4 +514,24 @@ func writeTestLog(t *testing.T, lines []string) string {
 	}
 
 	return path
+}
+
+func writeGeneratedFile(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir generated file dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write generated file: %v", err)
+	}
+}
+
+func containsArtifact(artifacts []Artifact, kind, path string) bool {
+	for _, artifact := range artifacts {
+		if artifact.Kind == kind && artifact.Path == path {
+			return true
+		}
+	}
+	return false
 }

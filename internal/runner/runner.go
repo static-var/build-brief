@@ -14,13 +14,16 @@ import (
 	"sync"
 	"time"
 
+	"build-brief/internal/artifacts"
 	"build-brief/internal/gradle"
 )
 
 type Result struct {
-	ExitCode   int           `json:"exit_code"`
-	Duration   time.Duration `json:"duration"`
-	RawLogPath string        `json:"raw_log_path"`
+	ExitCode         int                `json:"exit_code"`
+	Duration         time.Duration      `json:"duration"`
+	StartTime        time.Time          `json:"start_time"`
+	RawLogPath       string             `json:"raw_log_path"`
+	ArtifactSnapshot artifacts.Snapshot `json:"-"`
 }
 
 type ProgressEvent struct {
@@ -38,13 +41,17 @@ func Run(ctx context.Context, command gradle.Command, logDir string) (Result, er
 }
 
 func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, opts Options) (Result, error) {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	rawLogPath, rawLogFile, err := newRawLogFile(logDir, command.ProjectDir)
 	if err != nil {
 		return Result{}, fmt.Errorf("create raw log file: %w", err)
 	}
 	defer rawLogFile.Close()
+	artifactSnapshot := artifacts.Capture(command.ProjectDir)
 
-	cmd := exec.CommandContext(ctx, command.Executable, command.Args...)
+	cmd := exec.CommandContext(runCtx, command.Executable, command.Args...)
 	cmd.Dir = command.ProjectDir
 	configureCommand(cmd)
 	cmd.WaitDelay = 5 * time.Second
@@ -69,7 +76,7 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
-		return Result{RawLogPath: rawLogPath}, fmt.Errorf("start gradle command: %w", err)
+		return Result{RawLogPath: rawLogPath, ArtifactSnapshot: artifactSnapshot}, fmt.Errorf("start gradle command: %w", err)
 	}
 
 	doneCh := make(chan struct{})
@@ -89,15 +96,22 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		close(scanErrCh)
 	}()
 
+	var writeErr error
 	for line := range linesCh {
+		if writeErr != nil {
+			continue
+		}
 		if _, err := fmt.Fprintln(rawLogFile, line); err != nil {
-			return Result{RawLogPath: rawLogPath}, fmt.Errorf("write raw log: %w", err)
+			writeErr = fmt.Errorf("write raw log: %w", err)
+			cancel()
 		}
 	}
 
+	var streamErr error
 	for scanErr := range scanErrCh {
-		if scanErr != nil {
-			return Result{RawLogPath: rawLogPath}, fmt.Errorf("scan command output: %w", scanErr)
+		if scanErr != nil && streamErr == nil {
+			streamErr = fmt.Errorf("scan command output: %w", scanErr)
+			cancel()
 		}
 	}
 
@@ -105,22 +119,30 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	duration := time.Since(startedAt)
 	exitCode := exitCodeFromWait(waitErr, cmd)
 
+	result := Result{
+		ExitCode:         exitCode,
+		Duration:         duration,
+		StartTime:        startedAt,
+		RawLogPath:       rawLogPath,
+		ArtifactSnapshot: artifactSnapshot,
+	}
+
+	if writeErr != nil {
+		return result, writeErr
+	}
+
+	if streamErr != nil {
+		return result, streamErr
+	}
+
 	if waitErr != nil {
 		var exitErr *exec.ExitError
 		if !os.IsTimeout(waitErr) && !errors.As(waitErr, &exitErr) {
-			return Result{
-				ExitCode:   exitCode,
-				Duration:   duration,
-				RawLogPath: rawLogPath,
-			}, fmt.Errorf("wait for gradle command: %w", waitErr)
+			return result, fmt.Errorf("wait for gradle command: %w", waitErr)
 		}
 	}
 
-	return Result{
-		ExitCode:   exitCode,
-		Duration:   duration,
-		RawLogPath: rawLogPath,
-	}, nil
+	return result, nil
 }
 
 func startProgressReporter(rawLogPath string, startedAt time.Time, opts Options, done <-chan struct{}) {
