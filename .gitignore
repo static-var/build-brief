@@ -4,6 +4,7 @@
 dist/
 .tmp/
 *.log
+!internal/reducer/testdata/*.log
 smoke/out/
 smoke/projects/*/build/
 smoke/projects/*/.build-brief-logs/

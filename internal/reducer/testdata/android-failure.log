@@ -1,0 +1,7 @@
+> Task :app:compileDebugKotlin
+> Task :app:testDebugUnitTest FAILED
+MainViewModelTest > loadsData FAILED
+warning: [deprecation] oldApi() in Legacy has been deprecated
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+Execution failed for task ':app:testDebugUnitTest'.
+BUILD FAILED in 40s

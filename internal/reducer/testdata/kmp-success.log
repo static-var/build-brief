@@ -1,0 +1,4 @@
+> Task :shared:compileKotlinIosSimulatorArm64
+> Task :shared:compileKotlinJvm
+> Task :shared:allTests
+BUILD SUCCESSFUL in 18s

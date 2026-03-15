@@ -1,0 +1,5 @@
+> Task :server:compileKotlin
+> Task :server:test FAILED
+ApplicationTest > healthCheck FAILED
+Execution failed for task ':server:test'.
+BUILD FAILED in 6s
