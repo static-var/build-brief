@@ -32,9 +32,7 @@ type Options struct {
 }
 
 var (
-	rtkInstalled     = install.RTKInstalled
-	rtkInstallNotice = install.RTKInstallNotice
-	currentDir       = os.Getwd
+	currentDir = os.Getwd
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -536,7 +534,6 @@ func runLocalInstall(stdout, stderr io.Writer, force bool) int {
 	}
 
 	fmt.Fprintf(stdout, "Installed build-brief instructions into %s\n", target)
-	maybePrintRTKInstallNotice(stdout)
 	return 0
 }
 
@@ -573,21 +570,7 @@ func runGlobalInstall(stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(installed) == 0 && len(failures) > 0 {
 		return 1
 	}
-
-	if len(installed) > 0 {
-		maybePrintRTKInstallNotice(stdout)
-	}
-
 	return 0
-}
-
-func maybePrintRTKInstallNotice(stdout io.Writer) {
-	if !rtkInstalled() {
-		return
-	}
-
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, rtkInstallNotice())
 }
 
 func runRewrite(args []string, stdout, stderr io.Writer) int {

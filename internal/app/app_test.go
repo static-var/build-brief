@@ -232,16 +232,10 @@ func TestParseGainsArgsReset(t *testing.T) {
 }
 
 func TestRunInstallsLocalAgentsFile(t *testing.T) {
-	originalRTKInstalled := rtkInstalled
-	originalRTKInstallNotice := rtkInstallNotice
 	originalCurrentDir := currentDir
-	rtkInstalled = func() bool { return false }
-	rtkInstallNotice = func() string { return "unused" }
 	tempDir := t.TempDir()
 	currentDir = func() (string, error) { return tempDir, nil }
 	t.Cleanup(func() {
-		rtkInstalled = originalRTKInstalled
-		rtkInstallNotice = originalRTKInstallNotice
 		currentDir = originalCurrentDir
 	})
 
@@ -264,33 +258,6 @@ func TestRunInstallsLocalAgentsFile(t *testing.T) {
 
 	if strings.Contains(stdout.String(), "RTK detected on this machine") {
 		t.Fatalf("expected no RTK notice when RTK is not detected, got %q", stdout.String())
-	}
-}
-
-func TestRunLocalInstallPrintsRTKNoticeWhenDetected(t *testing.T) {
-	originalRTKInstalled := rtkInstalled
-	originalRTKInstallNotice := rtkInstallNotice
-	originalCurrentDir := currentDir
-	rtkInstalled = func() bool { return true }
-	rtkInstallNotice = func() string { return "RTK note for tests" }
-	tempDir := t.TempDir()
-	currentDir = func() (string, error) { return tempDir, nil }
-	t.Cleanup(func() {
-		rtkInstalled = originalRTKInstalled
-		rtkInstallNotice = originalRTKInstallNotice
-		currentDir = originalCurrentDir
-	})
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	exitCode := Run(context.Background(), []string{"--install-force"}, strings.NewReader(""), &stdout, &stderr)
-	if exitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
-	}
-
-	if !strings.Contains(stdout.String(), "RTK note for tests") {
-		t.Fatalf("expected RTK install notice in stdout, got %q", stdout.String())
 	}
 }
 

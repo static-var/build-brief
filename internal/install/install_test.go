@@ -10,6 +10,12 @@ import (
 )
 
 func TestInstallLocalRequiresExistingAgentsUnlessForced(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
 	dir := t.TempDir()
 
 	_, err := InstallLocal(dir, false)
@@ -39,10 +45,10 @@ func TestInstallLocalRequiresExistingAgentsUnlessForced(t *testing.T) {
 func TestUpsertInstructionBlockIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "AGENTS.md")
 
-	if err := upsertInstructionBlock(path, localInstructions(), true); err != nil {
+	if err := upsertInstructionBlock(path, localInstructions(false), true); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
-	if err := upsertInstructionBlock(path, localInstructions(), true); err != nil {
+	if err := upsertInstructionBlock(path, localInstructions(false), true); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
 
@@ -58,6 +64,12 @@ func TestUpsertInstructionBlockIsIdempotent(t *testing.T) {
 }
 
 func TestInstallGlobalDoesNotCreateMissingFiles(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
 	target := filepath.Join(t.TempDir(), "copilot-instructions.md")
 
 	installed, failures := InstallGlobal([]DetectedTool{
@@ -84,6 +96,12 @@ func TestInstallGlobalDoesNotCreateMissingFiles(t *testing.T) {
 }
 
 func TestInstallGlobalCreatesOpenCodePluginWithoutAgentsFile(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
 	dir := t.TempDir()
 	target := filepath.Join(dir, "opencode", "AGENTS.md")
 
@@ -121,6 +139,12 @@ func TestInstallGlobalCreatesOpenCodePluginWithoutAgentsFile(t *testing.T) {
 }
 
 func TestInstallGlobalUpdatesExistingFiles(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
 	dir := t.TempDir()
 	target := filepath.Join(dir, "copilot-instructions.md")
 
@@ -160,6 +184,12 @@ func TestInstallGlobalUpdatesExistingFiles(t *testing.T) {
 }
 
 func TestInstallGlobalUpdatesOpenCodeAgentsAndPlugin(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
 	dir := t.TempDir()
 	target := filepath.Join(dir, "opencode", "AGENTS.md")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -223,15 +253,28 @@ func TestRTKInstalled(t *testing.T) {
 	}
 }
 
-func TestRTKInstallNotice(t *testing.T) {
-	notice := RTKInstallNotice()
+func TestLocalInstructionsAddRTKGuidanceWhenDetected(t *testing.T) {
+	text := localInstructions(true)
 	for _, expected := range []string{
-		"RTK detected on this machine.",
-		"Prefer build-brief over RTK, raw gradle, and ./gradlew for Gradle commands.",
-		"Let raw gradle/./gradlew commands be rewritten by build-brief hooks or plugins",
+		"RTK is installed on this machine.",
+		"Prefer `build-brief` directly for Gradle commands",
+		"rather than sending Gradle through RTK first",
 	} {
-		if !strings.Contains(notice, expected) {
-			t.Fatalf("expected RTK install notice to contain %q, got %q", expected, notice)
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected local instructions to contain %q, got %q", expected, text)
+		}
+	}
+}
+
+func TestGlobalInstructionsAddRTKGuidanceWhenDetected(t *testing.T) {
+	text := globalInstructions(Tool{Name: "GitHub Copilot CLI"}, true)
+	for _, expected := range []string{
+		"RTK is installed on this machine.",
+		"Prefer `build-brief` directly for Gradle commands",
+		"instead of sending Gradle through RTK first",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected global instructions to contain %q, got %q", expected, text)
 		}
 	}
 }

@@ -90,7 +90,7 @@ func InstallLocal(currentDir string, force bool) (string, error) {
 		return "", fmt.Errorf("%w in %s", errMissingAgents, currentDir)
 	}
 
-	return target, upsertInstructionBlock(target, localInstructions(), force)
+	return target, upsertInstructionBlock(target, localInstructions(RTKInstalled()), force)
 }
 
 func InstallGlobal(selected []DetectedTool) ([]string, []error) {
@@ -127,7 +127,7 @@ func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 			continue
 		}
 
-		if err := upsertInstructionBlock(target, globalInstructions(tool.Tool), false); err != nil {
+		if err := upsertInstructionBlock(target, globalInstructions(tool.Tool, RTKInstalled()), false); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", tool.Tool.Name, err))
 			continue
 		}
@@ -198,18 +198,6 @@ func MissingAgentsError(err error) bool {
 
 func RTKInstalled() bool {
 	return runRTKHelp() == nil
-}
-
-func RTKInstallNotice() string {
-	return strings.TrimSpace(`
-RTK detected on this machine.
-
-RTK can intercept Gradle commands before build-brief gets a chance to rewrite or wrap them.
-
-If you want build-brief to keep priority for Gradle work, consider adding guidance like:
-- Prefer build-brief over RTK, raw gradle, and ./gradlew for Gradle commands.
-- Let raw gradle/./gradlew commands be rewritten by build-brief hooks or plugins instead of wrapping Gradle in RTK first.
-`)
 }
 
 func knownTools() ([]Tool, error) {
@@ -295,22 +283,31 @@ func toolModeLabel(tool Tool) string {
 	return strings.Join(parts, " + ")
 }
 
-func localInstructions() string {
-	return strings.TrimSpace(fmt.Sprintf(`
-%s
-## build-brief
+func localInstructions(rtkInstalled bool) string {
+	lines := []string{
+		blockStart,
+		"## build-brief",
+		"",
+		"- Prefer `build-brief gradle ...` for PATH Gradle and `build-brief ./gradlew ...` for the project wrapper.",
+		"- Use default `build-brief` output for routine Gradle work; it stays intentionally short on clean success cases.",
+		"- Use `build-brief gradle --stacktrace ...` or `build-brief ./gradlew --stacktrace ...` when you need Gradle stack traces.",
+		"- `build-brief` normalizes output-shaping flags like `--quiet`, `--warn`, `--warning-mode ...`, and `--console ...` so its reducer keeps working reliably.",
+		"- Let Gradle daemon reuse happen by default; `build-brief` strips explicit `--daemon` and `--no-daemon` overrides rather than forcing daemon-off behavior.",
+		"- Preserve the raw log path from `build-brief` output when handing build failures to another tool or agent.",
+	}
 
-- Prefer `+"`build-brief gradle ...`"+` for PATH Gradle and `+"`build-brief ./gradlew ...`"+` for the project wrapper.
-- Use default `+"`build-brief`"+` output for routine Gradle work; it stays intentionally short on clean success cases.
-- Use `+"`build-brief gradle --stacktrace ...`"+` or `+"`build-brief ./gradlew --stacktrace ...`"+` when you need Gradle stack traces.
-- `+"`build-brief`"+` normalizes output-shaping flags like `+"`--quiet`"+`, `+"`--warn`"+`, `+"`--warning-mode ...`"+`, and `+"`--console ...`"+` so its reducer keeps working reliably.
-- Let Gradle daemon reuse happen by default; `+"`build-brief`"+` strips explicit `+"`--daemon`"+` and `+"`--no-daemon`"+` overrides rather than forcing daemon-off behavior.
-- Preserve the raw log path from `+"`build-brief`"+` output when handing build failures to another tool or agent.
-%s
-`, blockStart, blockEnd))
+	if rtkInstalled {
+		lines = append(lines,
+			"- RTK is installed on this machine. Prefer `build-brief` directly for Gradle commands instead of wrapping Gradle work in RTK first.",
+			"- If hooks or plugins rewrite raw `gradle` / `./gradlew` commands for you, let them route those commands to `build-brief` rather than sending Gradle through RTK first.",
+		)
+	}
+
+	lines = append(lines, blockEnd)
+	return strings.Join(lines, "\n")
 }
 
-func globalInstructions(tool Tool) string {
+func globalInstructions(tool Tool, rtkInstalled bool) string {
 	lines := []string{
 		blockStart,
 		"## build-brief",
@@ -321,6 +318,13 @@ func globalInstructions(tool Tool) string {
 		"- `build-brief` normalizes output-shaping flags like `--quiet`, `--warn`, `--warning-mode ...`, and `--console ...` so its reducer keeps working reliably.",
 		"- Let Gradle daemon reuse happen by default; `build-brief` strips explicit `--daemon` and `--no-daemon` overrides instead of forcing daemon-off behavior.",
 		"- Keep the raw log path in your response when build diagnostics may need deeper inspection.",
+	}
+
+	if rtkInstalled {
+		lines = append(lines,
+			"- RTK is installed on this machine. Prefer `build-brief` directly for Gradle commands instead of wrapping Gradle work in RTK first.",
+			"- If this tool rewrites or intercepts raw Gradle commands, let that path route to `build-brief` instead of sending Gradle through RTK first.",
+		)
 	}
 
 	if tool.SupportsHookGuides {
