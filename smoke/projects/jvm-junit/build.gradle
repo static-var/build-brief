@@ -1,0 +1,46 @@
+plugins {
+    id 'java'
+}
+
+if (project.findProperty('smokeConfigFail') == 'true') {
+    throw new GradleException('Intentional configuration failure from build-brief-smoke during script evaluation')
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.junit.jupiter:junit-jupiter-params'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+tasks.register('smokeSyntaxCompile', JavaCompile) {
+    group = 'verification'
+    description = 'Intentional Java syntax failure for build-brief smoke testing'
+    source = fileTree('src/smokeSyntax/java')
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('classes/smokeSyntax')
+}
+
+tasks.register('smokeSymbolCompile', JavaCompile) {
+    group = 'verification'
+    description = 'Intentional Java symbol-resolution failure for build-brief smoke testing'
+    source = fileTree('src/smokeSymbol/java')
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('classes/smokeSymbol')
+}
+
+tasks.register('smokeFail') {
+    group = 'verification'
+    description = 'Intentional failure task for build-brief smoke testing'
+    doLast {
+        throw new GradleException('Intentional smoke failure from build-brief-smoke')
+    }
+}

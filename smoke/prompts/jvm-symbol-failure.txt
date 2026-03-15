@@ -1,0 +1,1 @@
+Without editing files, first run the project's `clean` task, then run the `smokeSymbolCompile` task, and briefly summarize why it failed. Include the exact command or commands you used.

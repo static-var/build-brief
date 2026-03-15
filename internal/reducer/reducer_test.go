@@ -147,6 +147,228 @@ func TestReduceCapturesContextAndStripsANSI(t *testing.T) {
 	}
 }
 
+func TestReduceContextCaptureIgnoresBlankLines(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"",
+			"Execution failed for task ':app:test'.",
+			"",
+			"> The failing test report is available at: build/reports/tests/test/index.html",
+			"BUILD FAILED in 2s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce blank-line context log: %v", err)
+	}
+
+	if !contains(summary.ImportantLines, "Execution failed for task ':app:test'.") {
+		t.Fatalf("expected first context line in important lines: %v", summary.ImportantLines)
+	}
+	if !contains(summary.ImportantLines, "> The failing test report is available at: build/reports/tests/test/index.html") {
+		t.Fatalf("expected second context line in important lines: %v", summary.ImportantLines)
+	}
+}
+
+func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "app", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+
+	report := `<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="example.FailingTest" tests="1" skipped="0" failures="1" errors="0">
+  <testcase name="intentionalFailure()" classname="example.FailingTest">
+    <failure message="org.opentest4j.AssertionFailedError: expected: &lt;expected&gt; but was: &lt;hello, build-brief&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;expected&gt; but was: &lt;hello, build-brief&gt;
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1145)
+	at example.FailingTest.intentionalFailure(FailingTest.java:10)
+</failure>
+  </testcase>
+</testsuite>`
+	if err := os.WriteFile(filepath.Join(reportDir, "TEST-example.FailingTest.xml"), []byte(report), 0o644); err != nil {
+		t.Fatalf("write junit report: %v", err)
+	}
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "test", "--tests", "example.FailingTest"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :test FAILED",
+			"FailingTest > intentionalFailure() FAILED",
+			"org.opentest4j.AssertionFailedError at FailingTest.java:10",
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"Execution failed for task ':test'.",
+			"> There were failing tests. See the report at: file:///tmp/project/build/reports/tests/test/index.html",
+			"BUILD FAILED in 500ms",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce junit-enriched failure log: %v", err)
+	}
+
+	if !contains(summary.FailedTests, "FailingTest > intentionalFailure()") {
+		t.Fatalf("expected failed test to be present: %v", summary.FailedTests)
+	}
+	if !contains(summary.ImportantLines, "FailingTest > intentionalFailure(): org.opentest4j.AssertionFailedError: expected: <expected> but was: <hello, build-brief>") {
+		t.Fatalf("expected assertion detail in important lines: %v", summary.ImportantLines)
+	}
+	if !contains(summary.ImportantLines, "at example.FailingTest.intentionalFailure(FailingTest.java:10)") {
+		t.Fatalf("expected user stack frame in important lines: %v", summary.ImportantLines)
+	}
+}
+
+func TestReduceIgnoresMalformedJUnitXml(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir malformed report dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "TEST-bad.xml"), []byte("<testsuite><broken>"), 0o644); err != nil {
+		t.Fatalf("write malformed junit report: %v", err)
+	}
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "test"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :test FAILED",
+			"ExampleTest > works FAILED",
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"Execution failed for task ':test'.",
+			"BUILD FAILED in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce with malformed junit xml: %v", err)
+	}
+
+	if !contains(summary.FailedTests, "ExampleTest > works") {
+		t.Fatalf("expected console-derived failed test to remain: %v", summary.FailedTests)
+	}
+}
+
+func TestReduceCapturesJavaSyntaxErrorFromConsole(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "compileJava"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :compileJava FAILED",
+			"/tmp/project/src/main/java/example/App.java:5: error: ';' expected",
+			"        System.out.println(greeting(\"build-brief\"))",
+			"                                                   ^",
+			"1 error",
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"Execution failed for task ':compileJava'.",
+			"> Compilation failed; see the compiler output below.",
+			"  /tmp/project/src/main/java/example/App.java:5: error: ';' expected",
+			"      System.out.println(greeting(\"build-brief\"))",
+			"                                                 ^",
+			"  1 error",
+			"BUILD FAILED in 300ms",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce compile syntax error log: %v", err)
+	}
+
+	if !contains(summary.FailedTasks, ":compileJava") {
+		t.Fatalf("expected failed compile task: %v", summary.FailedTasks)
+	}
+	if !contains(summary.ImportantLines, "/tmp/project/src/main/java/example/App.java:5: error: ';' expected") {
+		t.Fatalf("expected syntax error line in important lines: %v", summary.ImportantLines)
+	}
+	if !contains(summary.ImportantLines, "^") {
+		t.Fatalf("expected caret line in important lines: %v", summary.ImportantLines)
+	}
+}
+
+func TestReduceCapturesJavaSymbolErrorFromConsole(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "compileJava"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :compileJava FAILED",
+			"/tmp/project/src/main/java/example/App.java:9: error: cannot find symbol",
+			"        return missingSymbol(name);",
+			"               ^",
+			"  symbol:   method missingSymbol(String)",
+			"  location: class App",
+			"1 error",
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"Execution failed for task ':compileJava'.",
+			"> Compilation failed; see the compiler output below.",
+			"  /tmp/project/src/main/java/example/App.java:9: error: cannot find symbol",
+			"      return missingSymbol(name);",
+			"             ^",
+			"    symbol:   method missingSymbol(String)",
+			"    location: class App",
+			"  1 error",
+			"BUILD FAILED in 300ms",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce compile symbol error log: %v", err)
+	}
+
+	if !contains(summary.ImportantLines, "/tmp/project/src/main/java/example/App.java:9: error: cannot find symbol") {
+		t.Fatalf("expected symbol error line in important lines: %v", summary.ImportantLines)
+	}
+	if !contains(summary.ImportantLines, "symbol:   method missingSymbol(String)") {
+		t.Fatalf("expected symbol detail in important lines: %v", summary.ImportantLines)
+	}
+	if !contains(summary.ImportantLines, "location: class App") {
+		t.Fatalf("expected location detail in important lines: %v", summary.ImportantLines)
+	}
+}
+
 func writeTestLog(t *testing.T, lines []string) string {
 	t.Helper()
 

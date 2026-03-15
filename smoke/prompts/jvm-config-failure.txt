@@ -1,0 +1,1 @@
+Without editing files, first run the project's `clean` task, then trigger the configuration failure in this project by using the existing property-based mechanism with the `help` task. Briefly summarize what failed and include the exact command or commands you used.

@@ -2,30 +2,18 @@ package output
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"build-brief/internal/reducer"
 )
 
 func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	bw := bufio.NewWriter(w)
-	defer bw.Flush()
-
-	statusLabel := "SUCCESS"
-	if !summary.Success {
-		statusLabel = "FAILED"
-	}
-
-	if _, err := fmt.Fprintf(bw, "%s in %s (exit %d)\n", statusLabel, summary.Duration, summary.ExitCode); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(bw, "Command: %s\n", summary.CommandLine); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(bw, "Resolver: %s\n", summary.Source); err != nil {
+	statusLine := renderStatusLine(summary)
+	if _, err := fmt.Fprintln(bw, statusLine); err != nil {
 		return err
 	}
 
@@ -38,6 +26,14 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 				return err
 			}
 		}
+	}
+
+	if summary.Success {
+		return bw.Flush()
+	}
+
+	if _, err := fmt.Fprintf(bw, "Command: %s\n", summary.CommandLine); err != nil {
+		return err
 	}
 
 	if len(summary.FailedTasks) > 0 {
@@ -62,11 +58,11 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
-	if len(summary.ImportantLines) > 0 {
+	if importantLines := filteredImportantLines(summary, statusLine); len(importantLines) > 0 {
 		if _, err := fmt.Fprintln(bw, "Highlights:"); err != nil {
 			return err
 		}
-		for _, line := range summary.ImportantLines {
+		for _, line := range importantLines {
 			if _, err := fmt.Fprintf(bw, "  - %s\n", line); err != nil {
 				return err
 			}
@@ -77,13 +73,7 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		return err
 	}
 
-	return nil
-}
-
-func RenderJSON(w io.Writer, summary reducer.Summary) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(summary)
+	return bw.Flush()
 }
 
 func RenderRaw(w io.Writer, rawLogPath string) error {
@@ -95,4 +85,28 @@ func RenderRaw(w io.Writer, rawLogPath string) error {
 
 	_, err = io.Copy(w, file)
 	return err
+}
+
+func renderStatusLine(summary reducer.Summary) string {
+	statusLine := strings.TrimSpace(summary.BuildStatusLine)
+	if statusLine != "" {
+		return statusLine
+	}
+
+	if summary.Success {
+		return "BUILD SUCCESSFUL"
+	}
+	return "BUILD FAILED"
+}
+
+func filteredImportantLines(summary reducer.Summary, statusLine string) []string {
+	filtered := make([]string, 0, len(summary.ImportantLines))
+	for _, line := range summary.ImportantLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed == statusLine {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return filtered
 }

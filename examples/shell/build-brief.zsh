@@ -2,11 +2,11 @@ bb() {
   build-brief "$@"
 }
 
-bbj() {
-  build-brief --mode json "$@"
+bbg() {
+  build-brief -- "$@"
 }
 
 # Examples:
 #   bb test
-#   bb -- --stacktrace test
-#   bbj build
+#   bb build
+#   bbg --stacktrace test

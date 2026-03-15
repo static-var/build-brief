@@ -1,0 +1,7 @@
+case_id	project_rel	prompt_file	expect_snippet	skip_when
+jvm-symbol-failure	projects/jvm-junit	prompts/jvm-symbol-failure.txt	cannot find symbol	
+jvm-config-failure	projects/jvm-junit	prompts/jvm-config-failure.txt	Intentional configuration failure	
+springboot-tests	projects/springboot-junit	prompts/springboot-tests.txt	BUILD SUCCESSFUL	
+ktor-tests	projects/ktor-kotlin-test	prompts/ktor-tests.txt	BUILD SUCCESSFUL	
+kmp-tests	projects/kmp-library	prompts/kmp-tests.txt	BUILD SUCCESSFUL	
+android-unit-tests	projects/android-app	prompts/android-unit-tests.txt	BUILD SUCCESSFUL	missing-android-sdk

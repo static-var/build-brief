@@ -1,0 +1,1 @@
+Without editing files, first run the project's `clean` task, then run the JVM-side test task for this Kotlin Multiplatform project and briefly summarize whether the shared greeting test passed. Include the exact command or commands you used.

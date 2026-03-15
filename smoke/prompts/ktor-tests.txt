@@ -1,0 +1,1 @@
+Without editing files, first run the project's `clean` task, then run the tests in this Ktor project and briefly summarize whether the health endpoint behavior passed. Include the exact command or commands you used.

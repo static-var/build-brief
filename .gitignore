@@ -1,3 +1,7 @@
 /build-brief
 .tmp/
 *.log
+smoke/out/
+smoke/projects/*/build/
+smoke/projects/*/.build-brief-logs/
+smoke/projects/*/.gradle/

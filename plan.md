@@ -178,7 +178,6 @@ Prioritize these entry points:
 - Offer modes such as:
   - `human`
   - `agent`
-  - `json`
   - `raw`
 
 ## Reduction Pipeline
@@ -295,17 +294,50 @@ Completed so far:
 - standalone Go CLI scaffold with `cmd/build-brief` and internal packages for app, gradle resolution, runner, reducer, and output rendering
 - wrapper resolution for explicit path, local `gradlew` / `gradlew.bat`, and system `gradle`
 - default `--console=plain` injection unless a console flag is already supplied
-- raw log retention plus `human`, `json`, and `raw` output modes
+- raw log retention plus concise default output and `raw` replay mode
 - schema-versioned JSON output (`v1`)
 - file-first log handling with a reusable per-project `latest` log file instead of retaining the full Gradle output in memory
 - JSON collection fields now emit stable empty arrays instead of `null`
 - initial graceful interrupt handling using process-aware cancellation plus a wait window before forced termination
 - ANSI stripping, multi-line failure-context capture, and improved highlight prioritization in the reducer
 - strict wrapper-flag parsing that requires `--` for pass-through Gradle flags
+- installer flows for `--install`, `--install-force`, and interactive `--global` agent detection/selection, with global installs limited to existing instruction files
+- a tool registry for Copilot CLI, Claude Code, Codex CLI, OpenCode, and Gemini CLI with known global instruction-file targets
+- real-agent smoke testing against OpenCode and Codex using a local Gradle sample project
+- console-first hybrid failure enrichment with fail-open JUnit parsing and explicit compiler/syntax error capture from Gradle output
 - README plus example instruction, shell, and hook guidance files
 - unit tests for argument parsing, resolver behavior, reducer behavior, and representative fixture logs for Android, Ktor, Spring Boot, and KMP-style output
 - runner tests covering reusable log paths, exit-code-preserving log capture, and cancellation behavior
 - build/test/smoke-test verification using the local Go toolchain and fake Gradle executables
+- end-to-end validation with `/Users/staticvar/Projects/build-brief-smoke`, including successful and failing Gradle tasks routed through `build-brief`
+- main-source error validation in `/Users/staticvar/Projects/build-brief-smoke`, including Java syntax and symbol-resolution compile failures
+
+## Real Agent Validation
+
+The installer and instruction flow have now been validated against real local agent CLIs, not just unit tests.
+
+- **OpenCode**
+  - Installed the managed `build-brief` block into `~/.config/opencode/AGENTS.md`
+  - Verified `opencode run` used `build-brief compileJava`
+  - Verified `opencode run` used `build-brief smokeFail`
+  - Confirmed raw-log reuse and surfaced failure details from the `build-brief` output
+
+- **Codex CLI**
+  - Installed the managed `build-brief` block into `~/.codex/AGENTS.md`
+  - Verified `codex exec` used `build-brief compileJava`
+  - Verified `codex exec` used `build-brief` successfully for smoke failure validation
+  - Confirmed Codex extracted the intentional failure reason from the structured `build-brief` output
+
+- **Important finding from real-world validation**
+  - OpenCode on this macOS machine used `~/.config/opencode/AGENTS.md`, not only `os.UserConfigDir()/opencode/AGENTS.md`
+  - The tool registry was updated to target the OpenCode roots the CLI actually loads here: `~/.config/opencode/...` and `~/.opencode/...`
+  - Global instructions alone were not reliable enough for OpenCode in later smoke validation
+  - A managed OpenCode plugin plus a reusable `build-brief rewrite` command became the stronger integration path
+  - The smoke harness was also hardened:
+    - it still runs one prompt per case, but now supports `--case` for direct single-case runs
+    - per-case timeouts prevent one stalled agent startup from blocking the full matrix
+    - each harness invocation writes to its own output directory instead of sharing one mutable `out/latest` directory
+    - transcript counting now correctly handles ANSI-prefixed OpenCode logs and Codex shell-exec log lines
 
 ## Post-Implementation Review Findings
 
@@ -348,8 +380,9 @@ Second end-to-end review summary:
    - finalize command surface, output modes, and support matrix
    - keep the JSON schema contract stable for machine consumers
 2. **Core wrapper**
-   - command resolution, execution, exit-code preservation, raw log capture
-   - keep the file-first log pipeline and graceful cancellation behavior robust
+    - command resolution, execution, exit-code preservation, raw log capture
+    - keep the file-first log pipeline and graceful cancellation behavior robust
+    - maintain installer and agent-detection behavior as tool ecosystems evolve
 3. **Reducer engine**
    - normalization, classification, aggregation, summarization
    - continue expanding heuristics using larger real-world Gradle logs
@@ -366,8 +399,8 @@ Second end-to-end review summary:
 
 1. Validate the current behavior against larger real-world Gradle logs and projects
 2. Expand fixtures for download noise, stack traces, and multi-project output
-3. Add direct tests for the `output` package and consider a `--version` flag
-4. Decide whether installable shell integrations should move from examples into first-class packaging
+3. Add direct tests for the `output` package
+4. Decide whether installable shell integrations and tool-specific hook configs should move from guidance into first-class automation
 
 ## Initial Recommendation Summary
 

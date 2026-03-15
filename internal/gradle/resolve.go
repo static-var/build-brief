@@ -24,6 +24,19 @@ type Command struct {
 	Source     Source   `json:"source"`
 }
 
+type DaemonMode string
+
+const (
+	DaemonModeAuto DaemonMode = "auto"
+	DaemonModeOn   DaemonMode = "on"
+	DaemonModeOff  DaemonMode = "off"
+)
+
+type StableArgsOptions struct {
+	DaemonMode     DaemonMode
+	GradleUserHome string
+}
+
 func Resolve(projectDir, explicitPath string) (Command, error) {
 	absProjectDir, err := filepath.Abs(projectDir)
 	if err != nil {
@@ -72,17 +85,58 @@ func Resolve(projectDir, explicitPath string) (Command, error) {
 	}, nil
 }
 
-func ApplyStableArgs(args []string) []string {
-	if hasConsoleFlag(args) {
-		return append([]string{}, args...)
+func ApplyStableArgs(args []string, opts StableArgsOptions) []string {
+	stable := make([]string, 0, 4+len(args))
+
+	if !hasConsoleFlag(args) {
+		stable = append(stable, "--console=plain")
 	}
 
-	withConsole := []string{"--console=plain"}
-	return append(withConsole, args...)
+	if opts.GradleUserHome != "" && !hasGradleUserHomeFlag(args) {
+		stable = append(stable, "--gradle-user-home", opts.GradleUserHome)
+	}
+
+	if !hasDaemonFlag(args) {
+		switch normalizeDaemonMode(opts.DaemonMode) {
+		case DaemonModeOn:
+			stable = append(stable, "--daemon")
+		case DaemonModeOff:
+			stable = append(stable, "--no-daemon")
+		}
+	}
+
+	return append(stable, args...)
 }
 
 func (c Command) DisplayLine() string {
 	return strings.Join(append([]string{filepath.Base(c.Executable)}, c.Args...), " ")
+}
+
+func (c Command) TrackingLine() string {
+	filtered := make([]string, 0, len(c.Args))
+	skipNext := false
+	for _, arg := range c.Args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+
+		switch {
+		case arg == "--console" || strings.HasPrefix(arg, "--console="):
+			continue
+		case arg == "--daemon" || arg == "--no-daemon":
+			continue
+		case arg == "--gradle-user-home":
+			skipNext = true
+			continue
+		case strings.HasPrefix(arg, "--gradle-user-home="):
+			continue
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+
+	return strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " ")
 }
 
 func wrapperCandidates(projectDir string) []string {
@@ -106,4 +160,35 @@ func hasConsoleFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+func hasDaemonFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--daemon" || arg == "--no-daemon" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGradleUserHomeFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--gradle-user-home" || strings.HasPrefix(arg, "--gradle-user-home=") {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeDaemonMode(mode DaemonMode) DaemonMode {
+	switch strings.ToLower(strings.TrimSpace(string(mode))) {
+	case "", string(DaemonModeAuto):
+		return DaemonModeAuto
+	case string(DaemonModeOn):
+		return DaemonModeOn
+	case string(DaemonModeOff):
+		return DaemonModeOff
+	default:
+		return DaemonModeAuto
+	}
 }

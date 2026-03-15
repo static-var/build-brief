@@ -2,6 +2,8 @@ package reducer
 
 import (
 	"bufio"
+	"encoding/xml"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,10 +18,13 @@ var (
 	taskFailurePattern   = regexp.MustCompile(`^> Task (.+) FAILED$`)
 	taskExecutionPattern = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
 	testFailurePattern   = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
+	javacErrorPattern    = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	maxWarnings          = 8
 	maxImportantLines    = 12
 	contextCaptureLines  = 2
+	compilerCaptureLines = 3
+	maxJUnitReportFiles  = 100
 )
 
 type Summary struct {
@@ -35,6 +40,10 @@ type Summary struct {
 	CommandLine     string   `json:"command_line"`
 	Source          string   `json:"source"`
 	RawLogPath      string   `json:"raw_log_path"`
+	RawOutputTokens int      `json:"raw_output_tokens"`
+	EmittedTokens   int      `json:"emitted_output_tokens"`
+	SavedTokens     int      `json:"saved_output_tokens"`
+	SavingsPct      float64  `json:"savings_pct"`
 	BuildStatusLine string   `json:"build_status_line"`
 	FailedTasks     []string `json:"failed_tasks"`
 	FailedTests     []string `json:"failed_tests"`
@@ -42,6 +51,23 @@ type Summary struct {
 	Warnings        []string `json:"warnings"`
 	ImportantLines  []string `json:"important_lines"`
 	TotalLines      int      `json:"total_lines"`
+}
+
+type junitTestSuite struct {
+	TestCases []junitTestCase `xml:"testcase"`
+}
+
+type junitTestCase struct {
+	Name      string        `xml:"name,attr"`
+	ClassName string        `xml:"classname,attr"`
+	Failure   *junitFailure `xml:"failure"`
+	Error     *junitFailure `xml:"error"`
+}
+
+type junitFailure struct {
+	Message string `xml:"message,attr"`
+	Type    string `xml:"type,attr"`
+	Body    string `xml:",chardata"`
 }
 
 func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
@@ -81,6 +107,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	captureContextRemaining := 0
+	captureCompilerRemaining := 0
 	for scanner.Scan() {
 		summary.TotalLines++
 		text := normalizeLine(scanner.Text())
@@ -113,13 +140,18 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 		}
 
-		if captureContextRemaining > 0 && shouldCaptureContextLine(text) {
+		if opensContextCapture(text) {
+			captureContextRemaining = contextCaptureLines
+		} else if captureContextRemaining > 0 && shouldCaptureContextLine(text) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 			captureContextRemaining--
 		}
 
-		if opensContextCapture(text) {
-			captureContextRemaining = contextCaptureLines
+		if opensCompilerContext(text) {
+			captureCompilerRemaining = compilerCaptureLines
+		} else if captureCompilerRemaining > 0 && shouldCaptureCompilerContextLine(text) {
+			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+			captureCompilerRemaining--
 		}
 	}
 
@@ -139,7 +171,72 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		return Summary{}, err
 	}
 
+	enrichWithJUnitFailures(command.ProjectDir, &summary, failedTests, important)
+
 	return summary, nil
+}
+
+func enrichWithJUnitFailures(projectDir string, summary *Summary, failedTests, important map[string]struct{}) {
+	if !shouldEnrichWithJUnit(summary) {
+		return
+	}
+
+	reportFiles := findJUnitReportFiles(projectDir)
+	for _, path := range reportFiles {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var suite junitTestSuite
+		if err := xml.Unmarshal(content, &suite); err != nil {
+			continue
+		}
+
+		for _, testCase := range suite.TestCases {
+			failure := testCase.Failure
+			if failure == nil {
+				failure = testCase.Error
+			}
+			if failure == nil {
+				continue
+			}
+
+			failedTestName := formatJUnitFailedTest(testCase.ClassName, testCase.Name)
+			addUnique(&summary.FailedTests, failedTests, failedTestName, 0)
+
+			detail := buildJUnitFailureDetail(failedTestName, failure)
+			addUnique(&summary.ImportantLines, important, detail, maxImportantLines)
+
+			if location := extractRelevantStackFrame(failure.Body); location != "" {
+				addUnique(&summary.ImportantLines, important, location, maxImportantLines)
+			}
+		}
+	}
+}
+
+func findJUnitReportFiles(projectDir string) []string {
+	reportFiles := make([]string, 0)
+	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if shouldSkipJUnitWalkDir(path, entry) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(reportFiles) >= maxJUnitReportFiles {
+			return fs.SkipAll
+		}
+		if isJUnitReportPath(path, entry.Name()) {
+			reportFiles = append(reportFiles, path)
+		}
+		return nil
+	})
+
+	return reportFiles
 }
 
 func addUnique(items *[]string, seen map[string]struct{}, value string, limit int) {
@@ -192,6 +289,8 @@ func isImportantLine(text string) bool {
 		return true
 	case testFailurePattern.MatchString(text):
 		return true
+	case opensCompilerContext(text):
+		return true
 	default:
 		return false
 	}
@@ -203,11 +302,141 @@ func opensContextCapture(text string) bool {
 		strings.HasPrefix(text, "* Exception is:")
 }
 
+func opensCompilerContext(text string) bool {
+	switch {
+	case javacErrorPattern.MatchString(text):
+		return true
+	case strings.HasPrefix(text, "e: ") && (strings.Contains(text, ".kt:") || strings.Contains(text, ".kts:")):
+		return true
+	default:
+		return false
+	}
+}
+
+func formatJUnitFailedTest(className, testName string) string {
+	shortName := className
+	if lastDot := strings.LastIndex(shortName, "."); lastDot >= 0 {
+		shortName = shortName[lastDot+1:]
+	}
+	if shortName == "" {
+		shortName = className
+	}
+	if shortName == "" {
+		return testName
+	}
+	return shortName + " > " + testName
+}
+
+func buildJUnitFailureDetail(failedTestName string, failure *junitFailure) string {
+	message := strings.TrimSpace(failure.Message)
+	if message == "" {
+		message = firstNonEmptyLine(failure.Body)
+	}
+	if message == "" {
+		message = strings.TrimSpace(failure.Type)
+	}
+	if message == "" {
+		return failedTestName
+	}
+	return failedTestName + ": " + message
+}
+
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func extractRelevantStackFrame(stack string) string {
+	for _, line := range strings.Split(stack, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "at ") {
+			continue
+		}
+		if strings.Contains(line, "org.junit.") || strings.Contains(line, "org.gradle.") || strings.Contains(line, "java.base/") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+func shouldEnrichWithJUnit(summary *Summary) bool {
+	if len(summary.FailedTests) > 0 {
+		return true
+	}
+
+	for _, task := range summary.FailedTasks {
+		lower := strings.ToLower(task)
+		if strings.Contains(lower, "test") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func shouldSkipJUnitWalkDir(path string, entry fs.DirEntry) bool {
+	name := entry.Name()
+	switch name {
+	case ".git", ".gradle", ".idea", ".vscode", "node_modules":
+		return true
+	default:
+		return false
+	}
+}
+
+func isJUnitReportPath(path, fileName string) bool {
+	if !strings.HasPrefix(fileName, "TEST-") || !strings.HasSuffix(fileName, ".xml") {
+		return false
+	}
+
+	path = filepath.ToSlash(path)
+	return strings.Contains(path, "/build/test-results/")
+}
+
 func shouldCaptureContextLine(text string) bool {
 	if text == "" || isWarningLine(text) {
 		return false
 	}
 	return !opensContextCapture(text)
+}
+
+func shouldCaptureCompilerContextLine(text string) bool {
+	if text == "" {
+		return false
+	}
+
+	switch {
+	case strings.HasPrefix(text, "^"):
+		return true
+	case strings.HasPrefix(text, "symbol:"):
+		return true
+	case strings.HasPrefix(text, "location:"):
+		return true
+	case strings.HasPrefix(text, "required:"):
+		return true
+	case strings.HasPrefix(text, "found:"):
+		return true
+	case strings.HasPrefix(text, "reason:"):
+		return true
+	case strings.HasPrefix(text, "where:"):
+		return true
+	case strings.HasPrefix(text, "note:"):
+		return true
+	case strings.HasPrefix(text, "type mismatch:"):
+		return true
+	case strings.HasPrefix(text, "unresolved reference:"):
+		return true
+	case strings.HasPrefix(text, "none of the following functions can be called"):
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeLine(text string) string {
