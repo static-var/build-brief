@@ -3,6 +3,7 @@ package reducer
 import (
 	"bufio"
 	"encoding/xml"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -104,14 +105,23 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	reader := bufio.NewReaderSize(file, 64*1024)
 	captureContextRemaining := 0
 	captureCompilerRemaining := 0
-	for scanner.Scan() {
+	for {
+		rawLine, err := reader.ReadString('\n')
+		if len(rawLine) == 0 && err != nil {
+			if err == io.EOF {
+				break
+			}
+			return Summary{}, err
+		}
 		summary.TotalLines++
-		text := normalizeLine(scanner.Text())
+		text := normalizeLine(strings.TrimRight(rawLine, "\r\n"))
 		if text == "" {
+			if err == io.EOF {
+				break
+			}
 			continue
 		}
 
@@ -153,6 +163,9 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 			captureCompilerRemaining--
 		}
+		if err == io.EOF {
+			break
+		}
 	}
 
 	if summary.BuildStatusLine == "" {
@@ -165,10 +178,6 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 
 	if len(summary.ImportantLines) == 0 {
 		summary.ImportantLines = append(summary.ImportantLines, summary.BuildStatusLine)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return Summary{}, err
 	}
 
 	enrichWithJUnitFailures(command.ProjectDir, &summary, failedTests, important)

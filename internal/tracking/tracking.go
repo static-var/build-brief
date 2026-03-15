@@ -8,14 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
 const (
-	retentionDays = 90
-	recentLimit   = 15
+	retentionDays    = 90
+	recentLimit      = 15
+	lockTimeout      = 5 * time.Second
+	lockPollInterval = 25 * time.Millisecond
+	staleLockAge     = 30 * time.Second
 )
 
 type Record struct {
@@ -59,6 +63,11 @@ type Report struct {
 	Recent       []Record `json:"recent,omitempty"`
 }
 
+type lockMetadata struct {
+	PID       int
+	CreatedAt time.Time
+}
+
 func EstimateTokens(text string) int {
 	charCount := utf8.RuneCountInString(text)
 	if charCount == 0 {
@@ -67,12 +76,35 @@ func EstimateTokens(text string) int {
 	return (charCount + 3) / 4
 }
 
+func EstimateReaderTokens(r io.Reader) (int, error) {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	runeCount := 0
+	for {
+		_, _, err := reader.ReadRune()
+		if err == nil {
+			runeCount++
+			continue
+		}
+		if err == io.EOF {
+			break
+		}
+		return 0, err
+	}
+
+	if runeCount == 0 {
+		return 0, nil
+	}
+	return (runeCount + 3) / 4, nil
+}
+
 func EstimateFileTokens(path string) (int, error) {
-	content, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
-	return EstimateTokens(string(content)), nil
+	defer file.Close()
+
+	return EstimateReaderTokens(file)
 }
 
 func SavedTokens(rawTokens, emittedTokens int) int {
@@ -92,21 +124,23 @@ func RecordRun(record Record) error {
 		return err
 	}
 
-	records, err := loadRecords(path)
-	if err != nil {
-		return err
-	}
-
-	cutoff := time.Now().AddDate(0, 0, -retentionDays)
-	filtered := make([]Record, 0, len(records)+1)
-	for _, existing := range records {
-		if existing.Timestamp.After(cutoff) {
-			filtered = append(filtered, existing)
+	return withTrackingLock(path, func() error {
+		records, err := loadRecords(path)
+		if err != nil {
+			return err
 		}
-	}
 
-	filtered = append(filtered, record)
-	return writeRecords(path, filtered)
+		cutoff := time.Now().AddDate(0, 0, -retentionDays)
+		filtered := make([]Record, 0, len(records)+1)
+		for _, existing := range records {
+			if existing.Timestamp.After(cutoff) {
+				filtered = append(filtered, existing)
+			}
+		}
+
+		filtered = append(filtered, record)
+		return writeRecords(path, filtered)
+	})
 }
 
 func LoadReport(projectPath string, history bool) (Report, error) {
@@ -151,10 +185,12 @@ func Reset() error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return withTrackingLock(path, func() error {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 }
 
 func RenderText(w io.Writer, report Report, history bool) error {
@@ -372,6 +408,105 @@ func loadRecords(path string) ([]Record, error) {
 	return records, scanner.Err()
 }
 
+func withTrackingLock(path string, fn func() error) error {
+	lockPath := path + ".lock"
+	lockFile, err := acquireLockFile(lockPath, lockTimeout)
+	if err != nil {
+		return err
+	}
+	defer releaseLockFile(lockPath, lockFile)
+
+	return fn()
+}
+
+func acquireLockFile(lockPath string, timeout time.Duration) (*os.File, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(file, "pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
+			return file, nil
+		}
+		if !os.IsExist(err) {
+			return nil, err
+		}
+		if shouldBreakStaleLock(lockPath) {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("tracking file is locked: %s", lockPath)
+		}
+		time.Sleep(lockPollInterval)
+	}
+}
+
+func shouldBreakStaleLock(lockPath string) bool {
+	metadata, err := readLockMetadata(lockPath)
+	if err != nil {
+		return fileOlderThan(lockPath, staleLockAge)
+	}
+
+	if !metadata.CreatedAt.IsZero() && time.Since(metadata.CreatedAt) >= staleLockAge {
+		return true
+	}
+
+	if metadata.PID > 0 && !processExists(metadata.PID) {
+		return true
+	}
+
+	return false
+}
+
+func readLockMetadata(lockPath string) (lockMetadata, error) {
+	content, err := os.ReadFile(lockPath)
+	if err != nil {
+		return lockMetadata{}, err
+	}
+
+	var metadata lockMetadata
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "pid":
+			pid, err := strconv.Atoi(value)
+			if err != nil {
+				return lockMetadata{}, err
+			}
+			metadata.PID = pid
+		case "created_at":
+			createdAt, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return lockMetadata{}, err
+			}
+			metadata.CreatedAt = createdAt
+		}
+	}
+	return metadata, nil
+}
+
+func fileOlderThan(path string, age time.Duration) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) >= age
+}
+
+func releaseLockFile(lockPath string, file *os.File) {
+	if file != nil {
+		_ = file.Close()
+	}
+	_ = os.Remove(lockPath)
+}
+
 func writeRecords(path string, records []Record) error {
 	tmpPath := path + ".tmp"
 	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -387,6 +522,10 @@ func writeRecords(path string, records []Record) error {
 		}
 	}
 
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
 	if err := file.Close(); err != nil {
 		return err
 	}

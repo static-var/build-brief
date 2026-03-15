@@ -181,6 +181,31 @@ func TestReduceContextCaptureIgnoresBlankLines(t *testing.T) {
 	}
 }
 
+func TestReduceHandlesVeryLongLines(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			strings.Repeat("x", 1_500_000),
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce long-line log: %v", err)
+	}
+	if summary.BuildStatusLine != "BUILD SUCCESSFUL in 1s" {
+		t.Fatalf("unexpected build status line: %q", summary.BuildStatusLine)
+	}
+}
+
 func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
 	projectDir := t.TempDir()
 	reportDir := filepath.Join(projectDir, "app", "build", "test-results", "test")

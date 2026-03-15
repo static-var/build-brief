@@ -37,14 +37,7 @@ func TestResolveFallsBackToSystemGradle(t *testing.T) {
 		t.Fatalf("write fake gradle: %v", err)
 	}
 
-	originalPath := os.Getenv("PATH")
-	t.Cleanup(func() {
-		_ = os.Setenv("PATH", originalPath)
-	})
-
-	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath); err != nil {
-		t.Fatalf("set PATH: %v", err)
-	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	command, err := Resolve(projectDir, "")
 	if err != nil {
