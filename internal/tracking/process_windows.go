@@ -2,6 +2,20 @@
 
 package tracking
 
+import "syscall"
+
+const processQueryLimitedInformation = 0x1000
+
 func processExists(pid int) bool {
-	return pid > 0
+	if pid <= 0 {
+		return false
+	}
+
+	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer syscall.CloseHandle(handle)
+
+	return true
 }

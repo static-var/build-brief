@@ -2,6 +2,7 @@ package tracking
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -188,15 +189,12 @@ func TestRenderTextIncludesRecentHistory(t *testing.T) {
 			TotalEmitted:   250,
 			TotalSaved:     750,
 			AvgSavingsPct:  75,
-			TotalTimeMs:    4000,
-			AvgTimeMs:      2000,
 			ByCommand: []CommandAggregate{
 				{
 					Command:       "gradlew test",
 					Count:         2,
 					SavedTokens:   750,
 					AvgSavingsPct: 75,
-					AvgTimeMs:     2000,
 				},
 			},
 		},
@@ -225,6 +223,66 @@ func TestRenderTextIncludesRecentHistory(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("expected rendered report to contain %q, got %q", expected, text)
 		}
+	}
+	for _, unexpected := range []string{
+		"Total exec time",
+		"Time",
+	} {
+		if strings.Contains(text, unexpected) {
+			t.Fatalf("expected rendered report not to contain %q, got %q", unexpected, text)
+		}
+	}
+}
+
+func TestRenderJSONOmitsTimeFields(t *testing.T) {
+	report := Report{
+		Summary: Summary{
+			TotalCommands:  1,
+			TotalRawTokens: 400,
+			TotalEmitted:   100,
+			TotalSaved:     300,
+			AvgSavingsPct:  75,
+			ByCommand: []CommandAggregate{
+				{
+					Command:       "gradlew test",
+					Count:         1,
+					SavedTokens:   300,
+					AvgSavingsPct: 75,
+				},
+			},
+		},
+		Recent: []Record{
+			{
+				Timestamp:     time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC),
+				Command:       "gradlew test",
+				SavedTokens:   300,
+				SavingsPct:    75,
+				ExecTimeMs:    1234,
+				RawTokens:     400,
+				EmittedTokens: 100,
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderJSON(&out, report); err != nil {
+		t.Fatalf("render json: %v", err)
+	}
+
+	text := out.String()
+	for _, unexpected := range []string{
+		"exec_time_ms",
+		"total_time_ms",
+		"avg_time_ms",
+	} {
+		if strings.Contains(text, unexpected) {
+			t.Fatalf("expected rendered json not to contain %q, got %q", unexpected, text)
+		}
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode json: %v", err)
 	}
 }
 

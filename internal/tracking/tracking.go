@@ -32,7 +32,7 @@ type Record struct {
 	EmittedTokens int       `json:"emitted_tokens"`
 	SavedTokens   int       `json:"saved_tokens"`
 	SavingsPct    float64   `json:"savings_pct"`
-	ExecTimeMs    int64     `json:"exec_time_ms"`
+	ExecTimeMs    int64     `json:"-"`
 	RawLogPath    string    `json:"raw_log_path,omitempty"`
 	FailedTasks   int       `json:"failed_tasks,omitempty"`
 	FailedTests   int       `json:"failed_tests,omitempty"`
@@ -44,8 +44,6 @@ type Summary struct {
 	TotalEmitted   int                `json:"total_emitted_tokens"`
 	TotalSaved     int                `json:"total_saved_tokens"`
 	AvgSavingsPct  float64            `json:"avg_savings_pct"`
-	TotalTimeMs    int64              `json:"total_time_ms"`
-	AvgTimeMs      int64              `json:"avg_time_ms"`
 	ByCommand      []CommandAggregate `json:"by_command"`
 }
 
@@ -54,7 +52,6 @@ type CommandAggregate struct {
 	Count         int     `json:"count"`
 	SavedTokens   int     `json:"saved_tokens"`
 	AvgSavingsPct float64 `json:"avg_savings_pct"`
-	AvgTimeMs     int64   `json:"avg_time_ms"`
 }
 
 type Report struct {
@@ -230,9 +227,6 @@ func RenderText(w io.Writer, report Report, history bool) error {
 	if _, err := fmt.Fprintf(w, "Tokens saved:    %s (%.1f%%)\n", FormatTokens(report.Summary.TotalSaved), report.Summary.AvgSavingsPct); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "Total exec time: %s (avg %s)\n", formatDuration(report.Summary.TotalTimeMs), formatDuration(report.Summary.AvgTimeMs)); err != nil {
-		return err
-	}
 	if _, err := fmt.Fprintf(w, "Efficiency:      %s %.1f%%\n", efficiencyMeter(report.Summary.AvgSavingsPct), report.Summary.AvgSavingsPct); err != nil {
 		return err
 	}
@@ -244,7 +238,7 @@ func RenderText(w io.Writer, report Report, history bool) error {
 		if _, err := fmt.Fprintln(w, strings.Repeat("-", 78)); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "%3s  %-28s  %5s  %8s  %6s  %8s\n", "#", "Command", "Count", "Saved", "Avg%", "Time"); err != nil {
+		if _, err := fmt.Fprintf(w, "%3s  %-28s  %5s  %8s  %6s\n", "#", "Command", "Count", "Saved", "Avg%"); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintln(w, strings.Repeat("-", 78)); err != nil {
@@ -253,13 +247,12 @@ func RenderText(w io.Writer, report Report, history bool) error {
 		for idx, aggregate := range report.Summary.ByCommand {
 			if _, err := fmt.Fprintf(
 				w,
-				"%3d  %-28s  %5d  %8s  %5.1f%%  %8s\n",
+				"%3d  %-28s  %5d  %8s  %5.1f%%\n",
 				idx+1,
 				truncate(aggregate.Command, 28),
 				aggregate.Count,
 				FormatTokens(aggregate.SavedTokens),
 				aggregate.AvgSavingsPct,
-				formatDuration(aggregate.AvgTimeMs),
 			); err != nil {
 				return err
 			}
@@ -323,14 +316,12 @@ func FormatTokens(tokens int) string {
 func summarize(records []Record) Summary {
 	summary := Summary{}
 	commandStats := map[string]*CommandAggregate{}
-	commandTime := map[string]int64{}
 
 	for _, record := range records {
 		summary.TotalCommands++
 		summary.TotalRawTokens += record.RawTokens
 		summary.TotalEmitted += record.EmittedTokens
 		summary.TotalSaved += record.SavedTokens
-		summary.TotalTimeMs += record.ExecTimeMs
 
 		aggregate := commandStats[record.Command]
 		if aggregate == nil {
@@ -340,18 +331,15 @@ func summarize(records []Record) Summary {
 		aggregate.Count++
 		aggregate.SavedTokens += record.SavedTokens
 		aggregate.AvgSavingsPct += record.SavingsPct
-		commandTime[record.Command] += record.ExecTimeMs
 	}
 
 	if summary.TotalCommands > 0 {
-		summary.AvgTimeMs = summary.TotalTimeMs / int64(summary.TotalCommands)
 		summary.AvgSavingsPct = SavingsPct(summary.TotalRawTokens, summary.TotalEmitted)
 	}
 
 	summary.ByCommand = make([]CommandAggregate, 0, len(commandStats))
 	for _, aggregate := range commandStats {
 		aggregate.AvgSavingsPct = aggregate.AvgSavingsPct / float64(aggregate.Count)
-		aggregate.AvgTimeMs = commandTime[aggregate.Command] / int64(aggregate.Count)
 		summary.ByCommand = append(summary.ByCommand, *aggregate)
 	}
 
@@ -545,17 +533,6 @@ func truncate(value string, limit int) string {
 
 func formatCount(count int) string {
 	return fmt.Sprintf("%d", count)
-}
-
-func formatDuration(milliseconds int64) string {
-	switch {
-	case milliseconds >= 60_000:
-		return fmt.Sprintf("%.1fm", float64(milliseconds)/60_000)
-	case milliseconds >= 1_000:
-		return fmt.Sprintf("%.1fs", float64(milliseconds)/1_000)
-	default:
-		return fmt.Sprintf("%dms", milliseconds)
-	}
 }
 
 func efficiencyMeter(pct float64) string {
