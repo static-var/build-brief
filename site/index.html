@@ -1,295 +1,504 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>build-brief | Gradle output, compressed</title>
-    <meta
-      name="description"
-      content="build-brief turns noisy Gradle output into short, useful summaries for humans, scripts, and coding agents without hiding the raw log."
-    />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;500;600&family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Instrument+Sans:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <div class="page-noise"></div>
-    <header class="topbar">
-      <a class="brand" href="#top">
-        <span class="brand-mark">bb</span>
-        <span class="brand-text">build-brief</span>
-      </a>
-      <nav class="topnav">
-        <a href="#why">why</a>
-        <a href="#install">install</a>
-        <a href="#faq">faq</a>
-        <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer">github</a>
-      </nav>
-    </header>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>build-brief &mdash; Gradle output, distilled</title>
+  <meta name="description" content="A small Go CLI that sits in front of Gradle. Keeps the full raw log on disk, returns failures, warnings, test results, and build status.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="dot-grid" aria-hidden="true"></div>
+  <div class="glow glow-1" aria-hidden="true"></div>
+  <div class="glow glow-2" aria-hidden="true"></div>
 
-    <main id="top">
-      <section class="hero shell">
-        <div class="hero-copy">
-          <p class="eyebrow">gradle build brief / bb.staticvar.dev</p>
-          <h1>Keep the log. Lose the wall of text.</h1>
-          <p class="lede">
-            <code>build-brief</code> sits in front of Gradle, keeps the full raw log on disk,
-            and returns the parts people and coding agents actually need: failures, warnings,
-            test summaries, and final status.
+  <header class="site-nav">
+    <div class="container nav-inner">
+      <a class="logo" href="#top">
+        <span class="logo-mark">bb</span>
+        <span class="logo-text">build-brief</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#how">how</a>
+        <a href="#install">install</a>
+        <a href="#agents">agents</a>
+        <a href="#faq">faq</a>
+        <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer">github&thinsp;&#8599;</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- ── Hero ──────────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-content" data-animate>
+          <span class="pill">Go CLI &middot; wraps Gradle &middot; MIT license</span>
+          <h1>Gradle output, distilled.</h1>
+          <p class="hero-desc">
+            <code>build-brief</code> sits in front of Gradle, keeps the full raw log on
+            disk, and cuts terminal output down to the parts that actually matter &mdash;
+            failed tasks, test names, warnings, and build status.
           </p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#install">Install it</a>
-            <a
-              class="button button-secondary"
-              href="https://github.com/static-var/build-brief/releases/tag/v0.0.1"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Latest release
-            </a>
+            <a href="#install" class="btn btn-accent">Install</a>
+            <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer" class="btn btn-outline">View on GitHub</a>
           </div>
-          <ul class="hero-points">
+          <ul class="hero-facts">
             <li>Made for humans, scripts, and agent loops.</li>
             <li>Works with Spring Boot, Ktor, Android, KMP, and plain JVM builds.</li>
-            <li>Available with Homebrew on macOS and Linuxbrew on Linux.</li>
+            <li>Available via Homebrew on macOS and Linux.</li>
           </ul>
         </div>
 
-        <aside class="terminal-card" aria-label="Example terminal output">
-          <div class="terminal-head">
-            <span></span><span></span><span></span>
-            <p>summary mode</p>
+        <div class="hero-terminal" data-animate>
+          <div class="term">
+            <div class="term-chrome">
+              <span class="dot dot-1"></span><span class="dot dot-2"></span><span class="dot dot-3"></span>
+              <span class="term-title">summary mode</span>
+            </div>
+            <div class="term-body">
+              <p><span class="t-prompt">$</span> build-brief test</p>
+              <p>&nbsp;</p>
+              <p><span class="t-key">failed tasks</span> <strong>:app:test</strong></p>
+              <p><span class="t-key">failed tests</span> <strong>2</strong></p>
+              <p class="t-indent">- ExampleServiceTest &gt; returns 500 on timeout</p>
+              <p class="t-indent">- CacheLayerTest &gt; evicts stale entry</p>
+              <p><span class="t-key">warnings</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong>6</strong></p>
+              <p><span class="t-key">status</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong class="t-err">FAILED</strong></p>
+              <p>&nbsp;</p>
+              <p class="t-dim">raw log: /tmp/build-brief/myproject.latest.log</p>
+            </div>
           </div>
-          <div class="terminal-body">
-            <p><span class="prompt">$</span> build-brief test</p>
-            <p class="muted">build-brief: still running after 30s (raw log retained)</p>
-            <p><span class="label">failed tasks</span> <strong>:app:test</strong></p>
-            <p><span class="label">failed tests</span> <strong>2</strong></p>
-            <p class="indent">- ExampleServiceTest > returns 500 on timeout</p>
-            <p class="indent">- CacheLayerTest > evicts stale entry</p>
-            <p><span class="label">warnings</span> <strong>6</strong></p>
-            <p><span class="label">status</span> <strong class="danger">FAILED</strong></p>
-            <p class="muted">raw log: /tmp/build-brief/build-brief-a13f.latest.log</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Fact strip ────────────────────────────────────────── -->
+    <div class="strip" data-animate>
+      <div class="container strip-grid">
+        <div class="strip-item">
+          <span class="strip-val">Go</span>
+          <span class="strip-lbl">Pure stdlib, no deps</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-val">6</span>
+          <span class="strip-lbl">Platform binaries</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-val">brew</span>
+          <span class="strip-lbl">macOS + Linux</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-val">5</span>
+          <span class="strip-lbl">AI tool targets</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── How it works ──────────────────────────────────────── -->
+    <section id="how" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">How it works</span>
+          <h2>Three steps. Nothing hidden.</h2>
+        </div>
+        <div class="steps" data-stagger>
+          <article class="step-card">
+            <span class="step-num">01</span>
+            <h3>Wraps Gradle</h3>
+            <p>
+              Prefers <code>./gradlew</code> when present, falls back to system
+              <code>gradle</code>. Injects <code>--console=plain</code> unless you already
+              set a console mode. Preserves the Gradle exit code.
+            </p>
+          </article>
+          <article class="step-card">
+            <span class="step-num">02</span>
+            <h3>Logs everything to disk</h3>
+            <p>
+              Streams the full raw output to a reusable per-project log file. Nothing is
+              thrown away. Memory use stays steady regardless of output size.
+            </p>
+          </article>
+          <article class="step-card">
+            <span class="step-num">03</span>
+            <h3>Returns the signal</h3>
+            <p>
+              Default output shows failed tasks, failed test names, warnings, and build
+              status. Clean successes are especially short. Full log path is always printed.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Before / After ────────────────────────────────────── -->
+    <section id="compare" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">Before &amp; after</span>
+          <h2>Same build. Less to read.</h2>
+        </div>
+        <div class="comparison" data-animate>
+          <div class="term term-before">
+            <div class="term-chrome">
+              <span class="dot dot-1"></span><span class="dot dot-2"></span><span class="dot dot-3"></span>
+              <span class="term-title">raw gradle output</span>
+            </div>
+            <div class="term-body term-body-fade">
+              <p class="t-dim">&gt; Configure project :app</p>
+              <p>&gt; Task :app:compileKotlin</p>
+              <p class="t-warn">w: Service.kt:14:9 Parameter 'ttl' is never used</p>
+              <p class="t-warn">w: Cache.kt:28:5 Variable 'result' is never used</p>
+              <p>&gt; Task :app:processResources UP-TO-DATE</p>
+              <p>&gt; Task :app:classes</p>
+              <p>&gt; Task :app:compileTestKotlin</p>
+              <p>&gt; Task :app:processTestResources NO-SOURCE</p>
+              <p>&gt; Task :app:testClasses</p>
+              <p>&gt; Task :app:test</p>
+              <p>&nbsp;</p>
+              <p>ExampleServiceTest &gt; returns 200 on valid input <span class="t-ok">PASSED</span></p>
+              <p>ExampleServiceTest &gt; returns 500 on timeout <span class="t-err">FAILED</span></p>
+              <p class="t-dim t-indent">java.lang.AssertionError: expected 500 but was 503</p>
+              <p class="t-dim t-indent">&nbsp;&nbsp;&nbsp;&nbsp;at ExampleServiceTest.kt:42</p>
+              <p>&nbsp;</p>
+              <p>CacheLayerTest &gt; caches valid response <span class="t-ok">PASSED</span></p>
+              <p>CacheLayerTest &gt; evicts stale entry <span class="t-err">FAILED</span></p>
+              <p class="t-dim t-indent">java.lang.AssertionError: expected null</p>
+              <p class="t-dim t-indent">&nbsp;&nbsp;&nbsp;&nbsp;at CacheLayerTest.kt:67</p>
+              <p>&nbsp;</p>
+              <p>4 tests completed, 2 failed</p>
+              <p>&nbsp;</p>
+              <p>&gt; Task :app:test <span class="t-err">FAILED</span></p>
+              <p>&nbsp;</p>
+              <p class="t-err">FAILURE: Build failed with an exception.</p>
+              <p>&nbsp;</p>
+              <p class="t-dim">BUILD FAILED in 34s</p>
+              <p class="t-dim">7 actionable tasks: 5 executed, 2 up-to-date</p>
+            </div>
           </div>
-        </aside>
-      </section>
 
-      <section class="signal-strip">
-        <div>
-          <span class="signal-value">brew</span>
-          <span class="signal-label">macOS + Linux install</span>
+          <div class="term term-after">
+            <div class="term-chrome">
+              <span class="dot dot-1"></span><span class="dot dot-2"></span><span class="dot dot-3"></span>
+              <span class="term-title">build-brief</span>
+            </div>
+            <div class="term-body">
+              <p><span class="t-prompt">$</span> build-brief test</p>
+              <p>&nbsp;</p>
+              <p><span class="t-key">failed tasks</span> <strong>:app:test</strong></p>
+              <p><span class="t-key">failed tests</span> <strong>2</strong></p>
+              <p class="t-indent">- ExampleServiceTest &gt; returns 500 on timeout</p>
+              <p class="t-indent">- CacheLayerTest &gt; evicts stale entry</p>
+              <p><span class="t-key">warnings</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong>2</strong></p>
+              <p><span class="t-key">status</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong class="t-err">FAILED</strong></p>
+              <p>&nbsp;</p>
+              <p class="t-dim">raw log: /tmp/build-brief/myproject.latest.log</p>
+            </div>
+          </div>
         </div>
-        <div>
-          <span class="signal-value">v0.0.1</span>
-          <span class="signal-label">live release</span>
-        </div>
-        <div>
-          <span class="signal-value">raw logs</span>
-          <span class="signal-label">always retained</span>
-        </div>
-        <div>
-          <span class="signal-value">agents</span>
-          <span class="signal-label">less context pollution</span>
-        </div>
-      </section>
+      </div>
+    </section>
 
-      <section id="why" class="section">
-        <div class="section-heading">
-          <p class="eyebrow">why teams use it</p>
-          <h2>Gradle output is fine until it becomes everyone’s problem.</h2>
-          <p>
-            It’s not just a readability thing. Long Gradle output slows down debugging,
-            buries the actual failure, and burns tokens when coding agents keep re-running
-            builds in a loop.
-          </p>
+    <!-- ── Why it helps ──────────────────────────────────────── -->
+    <section id="why" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">Why it helps</span>
+          <h2>Less noise. Same information.</h2>
         </div>
-
-        <div class="feature-grid">
+        <div class="features" data-stagger>
           <article class="feature-card">
             <h3>Readable by default</h3>
             <p>
-              Successful runs stay short. Failing runs surface the failed tasks, test names,
-              warnings, and the final result without making you scroll through pages of noise.
+              Successful builds stay short. Failing builds surface the failed tasks, test
+              names, and warnings without making you scroll through pages of task output
+              and daemon noise.
             </p>
           </article>
           <article class="feature-card">
-            <h3>Agent-friendly on purpose</h3>
+            <h3>Built for agent loops</h3>
             <p>
-              The tool is built for coding loops. That means less junk in terminal transcripts
-              and less wasted context when agents keep hitting Gradle commands.
+              When coding agents run Gradle repeatedly, they dump all output into their
+              context window. build-brief reduces that to a concise summary while
+              preserving signal.
             </p>
           </article>
           <article class="feature-card">
-            <h3>Raw logs stay available</h3>
+            <h3>Raw log always available</h3>
             <p>
-              Nothing important is thrown away. `build-brief` streams the full log to disk and
-              points you to it whenever the short summary is not enough.
+              The full log is streamed to disk and the path is printed after every run.
+              When the summary is not enough, the complete output is right there.
             </p>
           </article>
           <article class="feature-card">
-            <h3>Works across Gradle stacks</h3>
+            <h3>Gradle-stack agnostic</h3>
             <p>
-              Spring Boot, Ktor, Android, Kotlin Multiplatform, plain JVM, and multi-module
-              projects all work because the tool wraps the Gradle process itself.
+              Operates at the Gradle process level. Designed for Spring Boot, Ktor,
+              Android, Kotlin Multiplatform, plain JVM, and multi-project builds.
             </p>
           </article>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section class="section callout-grid">
-        <article class="callout">
-          <p class="eyebrow">especially useful when</p>
-          <h3>You are running build loops all day</h3>
-          <p>
-            If you bounce between `test`, `build`, `assemble`, and failing retries, the gain is
-            immediate. Less scroll. Faster failure recognition. Cleaner terminal history.
-          </p>
-        </article>
-        <article class="callout callout-accent">
-          <p class="eyebrow">especially useful when</p>
-          <h3>You are using AI tools against a Gradle repo</h3>
-          <p>
-            Coding agents do not need every task line and daemon blip. They need signal.
-            `build-brief` was built to preserve that signal while keeping the raw log one step away.
-          </p>
-        </article>
-      </section>
-
-      <section id="install" class="section install-shell">
-        <div class="section-heading">
-          <p class="eyebrow">install</p>
-          <h2>Use brew on macOS or Linux, or grab a release binary directly.</h2>
+    <!-- ── Install ───────────────────────────────────────────── -->
+    <section id="install" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">Install</span>
+          <h2>Homebrew, binary, or source.</h2>
         </div>
-
-        <div class="install-tabs" role="tablist" aria-label="Install methods">
-          <button class="install-tab is-active" data-tab="brew" role="tab" aria-selected="true">brew</button>
-          <button class="install-tab" data-tab="binary" role="tab" aria-selected="false">binary</button>
-          <button class="install-tab" data-tab="source" role="tab" aria-selected="false">source</button>
-        </div>
-
-        <div class="install-panels">
-          <article class="install-panel is-active" data-panel="brew">
-            <div class="code-block">
-              <button class="copy-button" data-copy="brew tap static-var/tap&#10;brew install static-var/tap/build-brief">copy</button>
-              <pre><code>brew tap static-var/tap
+        <div data-animate>
+          <div class="tab-bar" role="tablist" aria-label="Install methods">
+            <button class="tab is-active" data-tab="brew" role="tab" aria-selected="true">brew</button>
+            <button class="tab" data-tab="binary" role="tab" aria-selected="false">binary</button>
+            <button class="tab" data-tab="source" role="tab" aria-selected="false">source</button>
+          </div>
+          <div class="tab-panels">
+            <div class="tab-panel is-active" data-panel="brew">
+              <div class="code-block">
+                <button class="copy-btn" data-copy="brew tap static-var/tap&#10;brew install static-var/tap/build-brief">copy</button>
+                <pre><code>brew tap static-var/tap
 brew install static-var/tap/build-brief</code></pre>
+              </div>
+              <p class="install-note">Works with Homebrew on macOS and Linuxbrew on Linux.</p>
             </div>
-            <p class="install-note">
-              This formula works with Homebrew on macOS and Linuxbrew on Linux.
-            </p>
-          </article>
+            <div class="tab-panel" data-panel="binary">
+              <div class="code-block">
+                <button class="copy-btn" data-copy="https://github.com/static-var/build-brief/releases/latest">copy link</button>
+                <pre><code>Download the latest release archive for your platform:
 
-          <article class="install-panel" data-panel="binary">
-            <div class="code-block">
-              <button class="copy-button" data-copy="open https://github.com/static-var/build-brief/releases/tag/v0.0.1">copy link</button>
-              <pre><code>Download the archive that matches your machine:
+https://github.com/static-var/build-brief/releases/latest
 
-- build-brief_0.0.1_darwin_arm64.tar.gz
-- build-brief_0.0.1_darwin_amd64.tar.gz
-- build-brief_0.0.1_linux_arm64.tar.gz
-- build-brief_0.0.1_linux_amd64.tar.gz
-- build-brief_0.0.1_windows_arm64.zip
-- build-brief_0.0.1_windows_amd64.zip</code></pre>
+Archives follow this naming pattern:
+
+  build-brief_&lt;version&gt;_darwin_arm64.tar.gz
+  build-brief_&lt;version&gt;_darwin_amd64.tar.gz
+  build-brief_&lt;version&gt;_linux_arm64.tar.gz
+  build-brief_&lt;version&gt;_linux_amd64.tar.gz
+  build-brief_&lt;version&gt;_windows_arm64.zip
+  build-brief_&lt;version&gt;_windows_amd64.zip</code></pre>
+              </div>
             </div>
-          </article>
-
-          <article class="install-panel" data-panel="source">
-            <div class="code-block">
-              <button class="copy-button" data-copy="git clone https://github.com/static-var/build-brief.git&#10;cd build-brief&#10;go build -o build-brief ./cmd/build-brief">copy</button>
-              <pre><code>git clone https://github.com/static-var/build-brief.git
+            <div class="tab-panel" data-panel="source">
+              <div class="code-block">
+                <button class="copy-btn" data-copy="git clone https://github.com/static-var/build-brief.git&#10;cd build-brief&#10;go build -o build-brief ./cmd/build-brief">copy</button>
+                <pre><code>git clone https://github.com/static-var/build-brief.git
 cd build-brief
 go build -o build-brief ./cmd/build-brief</code></pre>
+              </div>
+              <p class="install-note">Then move the binary onto your PATH.</p>
             </div>
-          </article>
+          </div>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section class="section">
-        <div class="section-heading">
-          <p class="eyebrow">quick start</p>
-          <h2>A few commands you’ll actually use.</h2>
+    <!-- ── Quick start ───────────────────────────────────────── -->
+    <section id="usage" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">Quick start</span>
+          <h2>Commands you will actually use.</h2>
         </div>
-
-        <div class="command-grid">
-          <article class="command-card">
-            <p class="command-title">Run tests</p>
+        <div class="cmd-grid" data-stagger>
+          <div class="cmd-card">
+            <span class="cmd-label">Run tests</span>
             <pre><code>build-brief test</code></pre>
-          </article>
-          <article class="command-card">
-            <p class="command-title">Run a build</p>
+          </div>
+          <div class="cmd-card">
+            <span class="cmd-label">Run a build</span>
             <pre><code>build-brief build</code></pre>
-          </article>
-          <article class="command-card">
-            <p class="command-title">Keep daemon reuse steady</p>
-            <pre><code>build-brief --daemon-mode on --gradle-user-home /tmp/build-brief-gradle-home test</code></pre>
-          </article>
-          <article class="command-card">
-            <p class="command-title">Inspect savings</p>
+          </div>
+          <div class="cmd-card">
+            <span class="cmd-label">Pin daemon reuse</span>
+            <pre><code>build-brief --daemon-mode on \
+  --gradle-user-home /tmp/bb-gradle test</code></pre>
+          </div>
+          <div class="cmd-card">
+            <span class="cmd-label">Pass flags to Gradle</span>
+            <pre><code>build-brief -- --stacktrace test</code></pre>
+          </div>
+          <div class="cmd-card">
+            <span class="cmd-label">Check token savings</span>
             <pre><code>build-brief gains --history</code></pre>
-          </article>
+          </div>
+          <div class="cmd-card">
+            <span class="cmd-label">Full help</span>
+            <pre><code>build-brief --help</code></pre>
+          </div>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section id="faq" class="section faq-section">
-        <div class="section-heading">
-          <p class="eyebrow">faq</p>
-          <h2>The usual questions.</h2>
+    <!-- ── Agent integration ─────────────────────────────────── -->
+    <section id="agents" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">Agent integration</span>
+          <h2>Teach your tools to use it.</h2>
+          <p>
+            build-brief can install instructions into AI coding tools so they route
+            Gradle commands through it. Agents that follow these instructions will use
+            build-brief instead of calling Gradle directly.
+          </p>
         </div>
+        <div class="agent-modes" data-stagger>
+          <div class="agent-mode-card">
+            <h3>Local install</h3>
+            <p>Updates <code>AGENTS.md</code> in the current project.</p>
+            <pre><code>build-brief --install
+build-brief --install-force</code></pre>
+            <p class="install-note"><code>--install-force</code> creates the file if it does not exist.</p>
+          </div>
+          <div class="agent-mode-card">
+            <h3>Global install</h3>
+            <p>Detects which AI tools you have installed and updates their global instruction files. Interactive &mdash; you choose which tools to update.</p>
+            <pre><code>build-brief --global</code></pre>
+          </div>
+        </div>
+        <div class="tools-list" data-stagger>
+          <div class="tool-row">
+            <span class="tool-name">GitHub Copilot CLI</span>
+            <code class="tool-path">~/.copilot/copilot-instructions.md</code>
+          </div>
+          <div class="tool-row">
+            <span class="tool-name">Claude Code</span>
+            <code class="tool-path">~/.claude/CLAUDE.md</code>
+          </div>
+          <div class="tool-row">
+            <span class="tool-name">Codex CLI</span>
+            <code class="tool-path">~/.codex/AGENTS.md</code>
+          </div>
+          <div class="tool-row">
+            <span class="tool-name">OpenCode</span>
+            <code class="tool-path">config + managed plugin</code>
+          </div>
+          <div class="tool-row">
+            <span class="tool-name">Gemini CLI</span>
+            <code class="tool-path">~/.gemini/GEMINI.md</code>
+          </div>
+        </div>
+      </div>
+    </section>
 
-        <div class="faq-list">
+    <!-- ── Scope + Gains ─────────────────────────────────────── -->
+    <section id="scope" class="section">
+      <div class="container">
+        <div class="scope-split">
+          <div data-animate>
+            <span class="label-tag">Scope</span>
+            <h2>What it covers.</h2>
+            <p>build-brief works at the Gradle process and log level. It is not tied to any particular plugin stack or framework.</p>
+            <div class="scope-tags">
+              <span class="scope-tag">Spring Boot</span>
+              <span class="scope-tag">Ktor</span>
+              <span class="scope-tag">Android</span>
+              <span class="scope-tag">Kotlin Multiplatform</span>
+              <span class="scope-tag">Plain JVM</span>
+              <span class="scope-tag">Multi-project builds</span>
+            </div>
+          </div>
+          <div class="gains-box" data-animate>
+            <span class="label-tag">Token tracking</span>
+            <h3>Operational feedback</h3>
+            <p>
+              <code>build-brief gains</code> reports rough token savings using a
+              chars-divided-by-4 estimate. Useful when agents hit noisy builds
+              repeatedly. Not billing-grade.
+            </p>
+            <pre><code>build-brief gains --history
+build-brief gains --format json
+build-brief gains --reset</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── FAQ ───────────────────────────────────────────────── -->
+    <section id="faq" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">FAQ</span>
+          <h2>Common questions.</h2>
+        </div>
+        <div class="faq-list" data-stagger>
           <details open>
             <summary>Does it replace Gradle?</summary>
             <p>
-              No. It wraps Gradle, keeps the exit code, and preserves the raw output. The goal is
-              a better default terminal view, not a new build system.
+              No. It wraps Gradle, preserves the exit code, and keeps the raw output. The
+              goal is a better default terminal view, not a new build system.
             </p>
           </details>
           <details>
-            <summary>Does it hide stack traces or real failures?</summary>
+            <summary>Does it hide stack traces or failures?</summary>
             <p>
-              No. Failures stay visible. If the short summary is not enough, the raw log path is
-              already there so you can inspect the full output.
+              No. Failures stay visible in the summary. If the short output is not enough,
+              the raw log path is printed so you can inspect the full output.
             </p>
           </details>
           <details>
             <summary>Is this only for one type of Gradle project?</summary>
             <p>
-              No. It works at the Gradle process and log level, so it is designed for Spring Boot,
-              Ktor, Android, KMP, plain JVM projects, and multi-project builds.
+              No. It works at the Gradle process level, so it handles Spring Boot, Ktor,
+              Android, KMP, plain JVM, and multi-project builds.
             </p>
           </details>
           <details>
             <summary>Why use this with coding agents?</summary>
             <p>
-              Because agents tend to re-run noisy commands over and over. Short summaries make it
-              easier for them and for you to spot what changed without flooding the transcript.
+              Agents tend to re-run noisy commands in a loop. Shorter summaries make it
+              easier for them (and for you) to spot what changed without flooding the
+              context window.
             </p>
           </details>
           <details>
-            <summary>Which domain should we use?</summary>
+            <summary>How accurate is the token tracking?</summary>
             <p>
-              I’d use <strong>bb.staticvar.dev</strong>. It is shorter, easier to say out loud,
-              and still maps cleanly to “build brief.” If you prefer the more explicit version,
-              `gbb.staticvar.dev` is still easy to support later.
+              Approximate. It uses a chars-divided-by-4 estimate and is meant as
+              operational feedback, not precise accounting. Some commands save more than
+              others.
+            </p>
+          </details>
+          <details>
+            <summary>How does daemon reuse work?</summary>
+            <p>
+              build-brief does not implement its own daemon. It leans on Gradle's normal
+              daemon behavior. Use <code>--daemon-mode on</code> and a shared
+              <code>--gradle-user-home</code> for more reliable reuse across repeated runs.
+            </p>
+          </details>
+          <details>
+            <summary>How do updates work?</summary>
+            <p>
+              If you installed with Homebrew, run <code>brew upgrade build-brief</code>.
+              Otherwise, grab the newest build from the
+              <a href="https://github.com/static-var/build-brief/releases/latest">latest release</a>.
             </p>
           </details>
         </div>
-      </section>
-    </main>
-
-    <footer class="footer">
-      <p>build-brief by static-var</p>
-      <div>
-        <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer">GitHub</a>
-        <a href="https://github.com/static-var/build-brief/releases/tag/v0.0.1" target="_blank" rel="noreferrer">Release</a>
-        <a href="https://github.com/static-var/homebrew-tap" target="_blank" rel="noreferrer">Tap</a>
       </div>
-    </footer>
+    </section>
 
-    <script src="./site.js"></script>
-  </body>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <p>build-brief by <a href="https://github.com/static-var" target="_blank" rel="noreferrer">static-var</a> &middot; MIT license</p>
+      <div class="footer-links">
+        <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/static-var/build-brief/releases/latest" target="_blank" rel="noreferrer">Releases</a>
+        <a href="https://github.com/static-var/homebrew-tap" target="_blank" rel="noreferrer">Homebrew tap</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./site.js"></script>
+</body>
 </html>

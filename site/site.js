@@ -1,36 +1,50 @@
-const tabs = document.querySelectorAll(".install-tab");
-const panels = document.querySelectorAll(".install-panel");
+// Scroll-triggered animations
+const observer = new IntersectionObserver(
+  (entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add("in-view");
+      }
+    });
+  },
+  { threshold: 0.08, rootMargin: "0px 0px -40px 0px" }
+);
+
+document
+  .querySelectorAll("[data-animate], [data-stagger]")
+  .forEach((el) => observer.observe(el));
+
+// Install tabs
+const tabs = document.querySelectorAll(".tab");
+const panels = document.querySelectorAll(".tab-panel");
 
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => {
     const target = tab.dataset.tab;
-
-    tabs.forEach((item) => {
-      const active = item === tab;
-      item.classList.toggle("is-active", active);
-      item.setAttribute("aria-selected", active ? "true" : "false");
+    tabs.forEach((t) => {
+      const active = t === tab;
+      t.classList.toggle("is-active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
     });
-
-    panels.forEach((panel) => {
-      panel.classList.toggle("is-active", panel.dataset.panel === target);
+    panels.forEach((p) => {
+      p.classList.toggle("is-active", p.dataset.panel === target);
     });
   });
 });
 
-document.querySelectorAll(".copy-button").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const text = button.dataset.copy;
-    const original = button.textContent;
-
+// Copy buttons
+document.querySelectorAll(".copy-btn").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const text = btn.dataset.copy;
+    const original = btn.textContent;
     try {
       await navigator.clipboard.writeText(text);
-      button.textContent = "copied";
+      btn.textContent = "copied";
     } catch {
-      button.textContent = "copy failed";
+      btn.textContent = "failed";
     }
-
-    window.setTimeout(() => {
-      button.textContent = original;
+    setTimeout(() => {
+      btn.textContent = original;
     }, 1400);
   });
 });
