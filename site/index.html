@@ -41,8 +41,8 @@
           <h1>Gradle output, distilled.</h1>
           <p class="hero-desc">
             <code>build-brief</code> sits in front of Gradle, keeps the full raw log on
-            disk, and cuts terminal output down to the parts that actually matter &mdash;
-            failed tasks, test names, warnings, generated artifacts, and build status.
+            disk, and returns the signal that usually matters: failures, warnings,
+            generated artifacts, and final build status.
           </p>
           <p class="install-note">
             Inspired by <a href="https://github.com/rtk-ai/rtk" target="_blank" rel="noreferrer">rtk</a>, but built separately because RTK is not compatible enough with Gradle workflows to reuse directly.
@@ -65,16 +65,11 @@
               <span class="term-title">summary mode</span>
             </div>
             <div class="term-body">
-              <p><span class="t-prompt">$</span> build-brief test</p>
+              <p><span class="t-prompt">$</span> build-brief ./gradlew :androidApp:assembleDebug</p>
               <p>&nbsp;</p>
-              <p><span class="t-key">failed tasks</span> <strong>:app:test</strong></p>
-              <p><span class="t-key">failed tests</span> <strong>2</strong></p>
-              <p class="t-indent">- ExampleServiceTest &gt; returns 500 on timeout</p>
-              <p class="t-indent">- CacheLayerTest &gt; evicts stale entry</p>
-              <p><span class="t-key">warnings</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong>6</strong></p>
-              <p><span class="t-key">status</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong class="t-err">FAILED</strong></p>
-              <p>&nbsp;</p>
-              <p class="t-dim">raw log: /tmp/build-brief/myproject.latest.log</p>
+              <p><strong>BUILD SUCCESSFUL in 3s</strong></p>
+              <p>Artifacts:</p>
+              <p class="t-indent">- APK: androidApp/build/outputs/apk/debug/androidApp-debug.apk (24.5 MB)</p>
             </div>
           </div>
         </div>
@@ -113,15 +108,14 @@
         <div class="steps" data-stagger>
           <article class="step-card">
             <span class="step-num">01</span>
-            <h3>Wraps Gradle</h3>
-            <p>
-              Resolves an explicit <code>--gradle</code> path, an explicit
-              <code>build-brief gradle ...</code> or <code>build-brief ./gradlew ...</code>
-              invocation, then falls back to <code>./gradlew</code> and finally system
-              <code>gradle</code>. Injects <code>--console=plain</code> and blocks
-              flags that would suppress useful signal.
-            </p>
-          </article>
+              <h3>Wraps Gradle</h3>
+              <p>
+                Resolves an explicit <code>--gradle</code> path, an explicit
+                <code>build-brief gradle ...</code> or <code>build-brief ./gradlew ...</code>
+                invocation, then falls back to <code>./gradlew</code> and finally system
+                <code>gradle</code>. It normalizes output-shaping flags to keep parsing stable.
+              </p>
+            </article>
           <article class="step-card">
             <span class="step-num">02</span>
             <h3>Logs everything to disk</h3>
@@ -132,14 +126,13 @@
           </article>
           <article class="step-card">
             <span class="step-num">03</span>
-            <h3>Returns the signal</h3>
-            <p>
-              Default output shows failed tasks, failed test names, warnings, generated
-              artifacts, and build status. Clean successes are especially short. Failures
-              include the raw log path directly.
-            </p>
-          </article>
-        </div>
+              <h3>Returns the signal</h3>
+              <p>
+                Default output shows failed tasks, failed test names, warnings, generated
+                artifacts, assertion details, and build status.
+              </p>
+            </article>
+          </div>
       </div>
     </section>
 
@@ -157,35 +150,19 @@
               <span class="term-title">raw gradle output</span>
             </div>
             <div class="term-body term-body-fade">
-              <p class="t-dim">&gt; Configure project :app</p>
-              <p>&gt; Task :app:compileKotlin</p>
-              <p class="t-warn">w: Service.kt:14:9 Parameter 'ttl' is never used</p>
-              <p class="t-warn">w: Cache.kt:28:5 Variable 'result' is never used</p>
-              <p>&gt; Task :app:processResources UP-TO-DATE</p>
-              <p>&gt; Task :app:classes</p>
-              <p>&gt; Task :app:compileTestKotlin</p>
-              <p>&gt; Task :app:processTestResources NO-SOURCE</p>
-              <p>&gt; Task :app:testClasses</p>
-              <p>&gt; Task :app:test</p>
+              <p><span class="t-prompt">$</span> gradle test --tests example.FailingTest</p>
               <p>&nbsp;</p>
-              <p>ExampleServiceTest &gt; returns 200 on valid input <span class="t-ok">PASSED</span></p>
-              <p>ExampleServiceTest &gt; returns 500 on timeout <span class="t-err">FAILED</span></p>
-              <p class="t-dim t-indent">java.lang.AssertionError: expected 500 but was 503</p>
-              <p class="t-dim t-indent">&nbsp;&nbsp;&nbsp;&nbsp;at ExampleServiceTest.kt:42</p>
+              <p>Starting a Gradle Daemon (subsequent builds will be faster)</p>
+              <p>&gt; Task :test <span class="t-err">FAILED</span></p>
               <p>&nbsp;</p>
-              <p>CacheLayerTest &gt; caches valid response <span class="t-ok">PASSED</span></p>
-              <p>CacheLayerTest &gt; evicts stale entry <span class="t-err">FAILED</span></p>
-              <p class="t-dim t-indent">java.lang.AssertionError: expected null</p>
-              <p class="t-dim t-indent">&nbsp;&nbsp;&nbsp;&nbsp;at CacheLayerTest.kt:67</p>
+              <p>FailingTest &gt; intentionalFailure() <span class="t-err">FAILED</span></p>
+              <p class="t-dim t-indent">org.opentest4j.AssertionFailedError at FailingTest.java:10</p>
               <p>&nbsp;</p>
-              <p>4 tests completed, 2 failed</p>
-              <p>&nbsp;</p>
-              <p>&gt; Task :app:test <span class="t-err">FAILED</span></p>
-              <p>&nbsp;</p>
+              <p>1 test completed, 1 failed</p>
               <p class="t-err">FAILURE: Build failed with an exception.</p>
-              <p>&nbsp;</p>
-              <p class="t-dim">BUILD FAILED in 34s</p>
-              <p class="t-dim">7 actionable tasks: 5 executed, 2 up-to-date</p>
+              <p class="t-dim">Execution failed for task ':test'.</p>
+              <p class="t-dim">BUILD FAILED in 3s</p>
+              <p class="t-dim">3 actionable tasks: 1 executed, 2 up-to-date</p>
             </div>
           </div>
 
@@ -195,60 +172,17 @@
               <span class="term-title">build-brief</span>
             </div>
             <div class="term-body">
-              <p><span class="t-prompt">$</span> build-brief test</p>
+              <p><span class="t-prompt">$</span> build-brief gradle test --tests example.FailingTest</p>
               <p>&nbsp;</p>
-              <p><span class="t-key">failed tasks</span> <strong>:app:test</strong></p>
-              <p><span class="t-key">failed tests</span> <strong>2</strong></p>
-              <p class="t-indent">- ExampleServiceTest &gt; returns 500 on timeout</p>
-              <p class="t-indent">- CacheLayerTest &gt; evicts stale entry</p>
-              <p><span class="t-key">warnings</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong>2</strong></p>
-              <p><span class="t-key">status</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<strong class="t-err">FAILED</strong></p>
+              <p><strong class="t-err">BUILD FAILED in 564ms</strong></p>
+              <p>Failed tasks: <strong>:test</strong></p>
+              <p>Failed tests: <strong>FailingTest &gt; intentionalFailure()</strong></p>
+              <p class="t-indent">- expected: &lt;expected&gt; but was: &lt;hello, build-brief&gt;</p>
+              <p class="t-indent">- at example.FailingTest.intentionalFailure(FailingTest.java:10)</p>
               <p>&nbsp;</p>
-              <p class="t-dim">raw log: /tmp/build-brief/myproject.latest.log</p>
+              <p class="t-dim">raw log: /tmp/build-brief/...latest.log</p>
             </div>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Why it helps ──────────────────────────────────────── -->
-    <section id="why" class="section">
-      <div class="container">
-        <div class="section-head" data-animate>
-          <span class="label-tag">Why it helps</span>
-          <h2>Less noise. Same information.</h2>
-        </div>
-        <div class="features" data-stagger>
-          <article class="feature-card">
-            <h3>Readable by default</h3>
-            <p>
-              Successful builds stay short. Failing builds surface the failed tasks, test
-              names, and warnings without making you scroll through pages of task output
-              and daemon noise.
-            </p>
-          </article>
-          <article class="feature-card">
-            <h3>Built for agent loops</h3>
-            <p>
-              When coding agents run Gradle repeatedly, they dump all output into their
-              context window. build-brief reduces that to a concise summary while
-              preserving signal.
-            </p>
-          </article>
-          <article class="feature-card">
-            <h3>Raw log retained on disk</h3>
-            <p>
-              The full log is streamed to disk for every run. Failures and long-running
-              progress updates surface the path directly, and raw mode can replay the full log.
-            </p>
-          </article>
-          <article class="feature-card">
-            <h3>Gradle-stack agnostic</h3>
-            <p>
-              Operates at the Gradle process level. Designed for Spring Boot, Ktor,
-              Android, Kotlin Multiplatform, plain JVM, and multi-project builds.
-            </p>
-          </article>
         </div>
       </div>
     </section>
@@ -365,11 +299,7 @@ go build -o build-brief ./cmd/build-brief</code></pre>
         <div class="section-head" data-animate>
           <span class="label-tag">Agent integration</span>
           <h2>Teach your tools to use it.</h2>
-          <p>
-            build-brief can install instructions into AI coding tools so they route
-            Gradle commands through it. Agents that follow these instructions will use
-            build-brief instead of calling Gradle directly.
-          </p>
+          <p>Install instructions so supported tools route routine Gradle work through <code>build-brief</code>.</p>
         </div>
         <div class="agent-modes" data-stagger>
           <div class="agent-mode-card">
@@ -419,7 +349,7 @@ build-brief --install-force</code></pre>
             <h2>What it covers.</h2>
             <p>build-brief works at the Gradle process and log level. It is not tied to any particular plugin stack or framework.</p>
             <p class="install-note">
-              Coverage is broad, but still early. Standard Gradle layouts work best today; unusual plugins, custom output directories, or unsupported tool integrations may still have rough edges.
+              Coverage is broad, but still early. Standard Gradle layouts work best today.
             </p>
             <div class="scope-tags">
               <span class="scope-tag">Spring Boot</span>
@@ -435,8 +365,7 @@ build-brief --install-force</code></pre>
             <h3>Operational feedback</h3>
             <p>
               <code>build-brief gains</code> reports rough token savings using a
-              chars-divided-by-4 estimate. Useful when agents hit noisy builds
-              repeatedly. Not billing-grade, and intentionally focused on tokens rather than timing stats.
+              chars-divided-by-4 estimate. Useful for noisy repeated builds. Not billing-grade.
             </p>
             <pre><code>build-brief gains --history
 build-brief gains --format json
@@ -457,67 +386,40 @@ build-brief gains --reset</code></pre>
           <details open>
             <summary>Does it replace Gradle?</summary>
             <p>
-              No. It wraps Gradle, preserves the exit code, and keeps the raw output. The
-              goal is a better default terminal view, not a new build system.
+              No. It wraps Gradle, preserves the exit code, and keeps the raw output.
             </p>
           </details>
           <details>
             <summary>Does it hide stack traces or failures?</summary>
             <p>
-              No. Failures stay visible in the summary. If the short output is not enough,
-              the raw log path is printed so you can inspect the full output.
-            </p>
-          </details>
-          <details>
-            <summary>Is this only for one type of Gradle project?</summary>
-            <p>
-              No. It works at the Gradle process level, so it handles Spring Boot, Ktor,
-              Android, KMP, plain JVM, and multi-project builds.
-            </p>
-          </details>
-          <details>
-            <summary>Why use this with coding agents?</summary>
-            <p>
-              Agents tend to re-run noisy commands in a loop. Shorter summaries make it
-              easier for them (and for you) to spot what changed without flooding the
-              context window.
+              No. Failures stay visible, and the raw log path is printed when you need the full output.
             </p>
           </details>
           <details>
             <summary>How accurate is the token tracking?</summary>
             <p>
-              Approximate. It uses a chars-divided-by-4 estimate and is meant as
-              operational feedback, not precise accounting. Some commands save more than
-              others.
+              Approximate. It uses a chars-divided-by-4 estimate and is meant as operational feedback.
             </p>
           </details>
           <details>
             <summary>How does daemon reuse work?</summary>
             <p>
-              build-brief always runs Gradle with <code>--no-daemon</code>, so it does not
-              leave a live daemon behind after the command finishes. If you want repeated
-              runs to share caches, point them at the same
-              <code>--gradle-user-home</code>. Trying to force <code>--daemon</code> is rejected.
+              build-brief now lets Gradle reuse an existing daemon or start one when needed.
+              It strips explicit <code>--daemon</code> and <code>--no-daemon</code> overrides so
+              reducer behavior stays consistent.
             </p>
           </details>
           <details>
             <summary>Why not just use RTK?</summary>
             <p>
-              build-brief is inspired by RTK, but RTK is not compatible enough with Gradle
-              workflows for this use case. build-brief keeps the same goal &mdash; reducing
-              noisy tool output for humans and agents &mdash; while handling Gradle-specific
-              command resolution, flag rules, failure summaries, and artifact reporting.
+              build-brief is inspired by RTK, but RTK is not compatible enough with Gradle workflows for this use case.
             </p>
           </details>
           <details>
             <summary>Where might it not work as expected yet?</summary>
             <p>
-              The happy path is strongest for standard Gradle command shapes and standard
-              output locations. Custom artifact directories, unusual plugins, unsupported
-              agent integrations, or odd shell wrappers may still need the retained raw log
-              as the fallback source of truth. Warm successful artifact tasks now try to
-              show already-available artifacts from the targeted module, but unusual layouts
-              can still miss that path.
+              The happy path is strongest for standard Gradle command shapes and output locations.
+              Unusual plugins, custom artifact directories, or odd wrappers may still need the raw log as fallback.
             </p>
           </details>
           <details>
