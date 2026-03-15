@@ -303,8 +303,8 @@ func localInstructions() string {
 - Prefer `+"`build-brief gradle ...`"+` for PATH Gradle and `+"`build-brief ./gradlew ...`"+` for the project wrapper.
 - Use default `+"`build-brief`"+` output for routine Gradle work; it stays intentionally short on clean success cases.
 - Use `+"`build-brief gradle --stacktrace ...`"+` or `+"`build-brief ./gradlew --stacktrace ...`"+` when you need Gradle stack traces.
-- Do not add Gradle log-silencing flags like `+"`--quiet`"+`, `+"`--warn`"+`, or `+"`--warning-mode none`"+`; `+"`build-brief`"+` already reduces output and needs the normal signal.
-- `+"`build-brief`"+` always runs Gradle with `+"`--no-daemon`"+`; do not add `+"`--daemon`"+`.
+- `+"`build-brief`"+` normalizes output-shaping flags like `+"`--quiet`"+`, `+"`--warn`"+`, `+"`--warning-mode ...`"+`, and `+"`--console ...`"+` so its reducer keeps working reliably.
+- Let Gradle daemon reuse happen by default; `+"`build-brief`"+` strips explicit `+"`--daemon`"+` and `+"`--no-daemon`"+` overrides rather than forcing daemon-off behavior.
 - Preserve the raw log path from `+"`build-brief`"+` output when handing build failures to another tool or agent.
 %s
 `, blockStart, blockEnd))
@@ -318,8 +318,8 @@ func globalInstructions(tool Tool) string {
 		"- Prefer `build-brief gradle ...` for PATH Gradle and `build-brief ./gradlew ...` for the project wrapper.",
 		"- Use the default `build-brief` output for routine Gradle work; clean success cases stay intentionally short.",
 		"- Use `build-brief gradle --stacktrace ...` or `build-brief ./gradlew --stacktrace ...` when you need Gradle stack traces.",
-		"- Do not add Gradle log-silencing flags like `--quiet`, `--warn`, or `--warning-mode none`; `build-brief` already reduces output and needs the normal signal.",
-		"- `build-brief` always runs Gradle with `--no-daemon`; do not add `--daemon`.",
+		"- `build-brief` normalizes output-shaping flags like `--quiet`, `--warn`, `--warning-mode ...`, and `--console ...` so its reducer keeps working reliably.",
+		"- Let Gradle daemon reuse happen by default; `build-brief` strips explicit `--daemon` and `--no-daemon` overrides instead of forcing daemon-off behavior.",
 		"- Keep the raw log path in your response when build diagnostics may need deeper inspection.",
 	}
 

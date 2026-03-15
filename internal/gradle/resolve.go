@@ -68,21 +68,16 @@ func Resolve(projectDir, explicitPath, invocation string) (Command, error) {
 }
 
 func ApplyStableArgs(args []string, opts StableArgsOptions) []string {
-	stable := make([]string, 0, 4+len(args))
+	stable := make([]string, 0, 3+len(args))
+	sanitized := sanitizeGradleArgs(args)
 
-	if !hasConsoleFlag(args) {
-		stable = append(stable, "--console=plain")
-	}
+	stable = append(stable, "--console=plain")
 
-	if opts.GradleUserHome != "" && !hasGradleUserHomeFlag(args) {
+	if opts.GradleUserHome != "" && !hasGradleUserHomeFlag(sanitized) {
 		stable = append(stable, "--gradle-user-home", opts.GradleUserHome)
 	}
 
-	if !hasDaemonFlag(args) {
-		stable = append(stable, "--no-daemon")
-	}
-
-	return append(stable, args...)
+	return append(stable, sanitized...)
 }
 
 func SplitInvocation(args []string) (string, []string) {
@@ -101,38 +96,25 @@ func ValidateArgs(args []string) error {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--daemon":
-			return fmt.Errorf("Gradle flag %q is not allowed; build-brief always runs Gradle with --no-daemon", arg)
-		case arg == "--quiet" || arg == "-q" || arg == "--warn" || arg == "-w" || arg == "--silent" || arg == "--silence" || arg == "--slience":
-			return fmt.Errorf("Gradle flag %q is not allowed; build-brief already reduces noisy output and needs the normal Gradle signal", arg)
 		case arg == "--console":
 			if i+1 >= len(args) {
 				return fmt.Errorf("missing value for Gradle flag %s", arg)
 			}
 			i++
-			value := strings.TrimSpace(args[i])
-			if !strings.EqualFold(value, "plain") {
-				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief always uses --console=plain", arg, value)
-			}
 		case strings.HasPrefix(arg, "--console="):
-			value := strings.TrimSpace(strings.TrimPrefix(arg, "--console="))
-			if !strings.EqualFold(value, "plain") {
-				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief always uses --console=plain", "--console", value)
-			}
+			continue
 		case arg == "--warning-mode":
 			if i+1 >= len(args) {
 				return fmt.Errorf("missing value for Gradle flag %s", arg)
 			}
 			i++
-			value := strings.TrimSpace(args[i])
-			if strings.EqualFold(value, "none") {
-				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief keeps warnings visible in its summary", arg, value)
-			}
 		case strings.HasPrefix(arg, "--warning-mode="):
-			value := strings.TrimSpace(strings.TrimPrefix(arg, "--warning-mode="))
-			if strings.EqualFold(value, "none") {
-				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief keeps warnings visible in its summary", "--warning-mode", value)
+			continue
+		case arg == "--gradle-user-home":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for Gradle flag %s", arg)
 			}
+			i++
 		}
 	}
 
@@ -265,24 +247,6 @@ func looksLikeGradleInvocation(arg string) bool {
 	}
 }
 
-func hasConsoleFlag(args []string) bool {
-	for _, arg := range args {
-		if arg == "--console" || strings.HasPrefix(arg, "--console=") {
-			return true
-		}
-	}
-	return false
-}
-
-func hasDaemonFlag(args []string) bool {
-	for _, arg := range args {
-		if arg == "--daemon" || arg == "--no-daemon" {
-			return true
-		}
-	}
-	return false
-}
-
 func hasGradleUserHomeFlag(args []string) bool {
 	for _, arg := range args {
 		if arg == "--gradle-user-home" || strings.HasPrefix(arg, "--gradle-user-home=") {
@@ -290,6 +254,41 @@ func hasGradleUserHomeFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+func sanitizeGradleArgs(args []string) []string {
+	sanitized := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--console":
+			i++
+			continue
+		case strings.HasPrefix(arg, "--console="):
+			continue
+		case arg == "--warning-mode":
+			i++
+			continue
+		case strings.HasPrefix(arg, "--warning-mode="):
+			continue
+		case arg == "--daemon" || arg == "--no-daemon":
+			continue
+		case isOutputShapingFlag(arg):
+			continue
+		default:
+			sanitized = append(sanitized, arg)
+		}
+	}
+	return sanitized
+}
+
+func isOutputShapingFlag(arg string) bool {
+	switch arg {
+	case "--quiet", "-q", "--warn", "-w", "--silent", "--silence", "--slience", "--plain-text", "--plain":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveInvocation(projectDir, invocation string) (Command, error) {

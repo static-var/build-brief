@@ -61,42 +61,25 @@ func TestApplyStableArgsAddsPlainConsole(t *testing.T) {
 	}
 }
 
-func TestApplyStableArgsRespectsExistingPlainConsoleFlag(t *testing.T) {
+func TestApplyStableArgsNormalizesExistingConsoleFlag(t *testing.T) {
 	args := ApplyStableArgs([]string{"--console=plain", "test"}, StableArgsOptions{})
 	foundConsole := 0
-	foundNoDaemon := 0
 	for _, arg := range args {
 		if arg == "--console=plain" {
 			foundConsole++
 		}
-		if arg == "--no-daemon" {
-			foundNoDaemon++
-		}
 	}
-	if foundConsole != 1 || foundNoDaemon != 1 {
-		t.Fatalf("expected existing plain console flag and injected --no-daemon, got %v", args)
+	if foundConsole != 1 {
+		t.Fatalf("expected a single plain console flag, got %v", args)
 	}
 }
 
-func TestApplyStableArgsAddsNoDaemonFlag(t *testing.T) {
-	args := ApplyStableArgs([]string{"test"}, StableArgsOptions{})
-
-	if len(args) < 2 || args[1] != "--no-daemon" {
-		t.Fatalf("expected --no-daemon to be injected after console flag, got %v", args)
-	}
-}
-
-func TestApplyStableArgsRespectsExistingNoDaemonFlag(t *testing.T) {
-	args := ApplyStableArgs([]string{"--no-daemon", "test"}, StableArgsOptions{})
-
-	found := 0
+func TestApplyStableArgsStripsDaemonFlags(t *testing.T) {
+	args := ApplyStableArgs([]string{"--daemon", "--no-daemon", "test"}, StableArgsOptions{})
 	for _, arg := range args {
-		if arg == "--no-daemon" {
-			found++
+		if arg == "--daemon" || arg == "--no-daemon" {
+			t.Fatalf("expected daemon flags to be stripped, got %v", args)
 		}
-	}
-	if found != 1 {
-		t.Fatalf("expected a single --no-daemon flag, got %v", args)
 	}
 }
 
@@ -128,7 +111,6 @@ func TestTrackingLineRedactsSecretFlags(t *testing.T) {
 		Args: []string{
 			"--console=plain",
 			"--gradle-user-home", "/tmp/gradle-home",
-			"--no-daemon",
 			"test",
 			"--stacktrace",
 			"--tests", "com.example.SecretTest",
@@ -196,35 +178,46 @@ func TestSplitInvocationLeavesTaskOnlyArgsAlone(t *testing.T) {
 }
 
 func TestValidateArgsRejectsQuietFlag(t *testing.T) {
-	err := ValidateArgs([]string{"--quiet", "test"})
-	if err == nil {
-		t.Fatal("expected quiet flag to be rejected")
+	if err := ValidateArgs([]string{"--quiet", "test"}); err != nil {
+		t.Fatalf("expected quiet flag to be accepted and sanitized later, got %v", err)
 	}
 }
 
-func TestValidateArgsRejectsConsoleOverride(t *testing.T) {
-	err := ValidateArgs([]string{"--console=rich", "test"})
-	if err == nil {
-		t.Fatal("expected console override to be rejected")
-	}
-	if !strings.Contains(err.Error(), `value "rich"`) {
-		t.Fatalf("expected rejected console value in error, got %v", err)
+func TestValidateArgsAllowsConsoleOverrideForSanitization(t *testing.T) {
+	if err := ValidateArgs([]string{"--console=rich", "test"}); err != nil {
+		t.Fatalf("expected console override to be sanitized later, got %v", err)
 	}
 }
 
-func TestValidateArgsRejectsWarningModeNone(t *testing.T) {
-	err := ValidateArgs([]string{"--warning-mode=none", "test"})
-	if err == nil {
-		t.Fatal("expected warning-mode none to be rejected")
-	}
-	if !strings.Contains(err.Error(), `value "none"`) {
-		t.Fatalf("expected rejected warning-mode value in error, got %v", err)
+func TestValidateArgsAllowsWarningModeForSanitization(t *testing.T) {
+	if err := ValidateArgs([]string{"--warning-mode=none", "test"}); err != nil {
+		t.Fatalf("expected warning-mode to be sanitized later, got %v", err)
 	}
 }
 
 func TestValidateArgsAllowsPlainConsole(t *testing.T) {
 	if err := ValidateArgs([]string{"--console=plain", "test"}); err != nil {
 		t.Fatalf("expected plain console to be allowed, got %v", err)
+	}
+}
+
+func TestValidateArgsRejectsMissingConsoleValue(t *testing.T) {
+	err := ValidateArgs([]string{"--console"})
+	if err == nil || !strings.Contains(err.Error(), "missing value") {
+		t.Fatalf("expected missing console value error, got %v", err)
+	}
+}
+
+func TestApplyStableArgsSanitizesOutputFlags(t *testing.T) {
+	args := ApplyStableArgs([]string{"--quiet", "--warn", "--warning-mode=all", "--console=rich", "--plain-text", "test"}, StableArgsOptions{})
+	got := strings.Join(args, " ")
+	for _, unexpected := range []string{"--quiet", "--warn", "--warning-mode=all", "--console=rich", "--plain-text"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("expected %q to be stripped from %v", unexpected, args)
+		}
+	}
+	if !strings.Contains(got, "--console=plain") || !strings.Contains(got, "test") {
+		t.Fatalf("expected sanitized args to keep plain console and task, got %v", args)
 	}
 }
 
