@@ -19,6 +19,13 @@ const (
 
 var errMissingAgents = errors.New("AGENTS.md not found")
 
+var runRTKHelp = func() error {
+	cmd := exec.Command("rtk", "--help")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run()
+}
+
 type Tool struct {
 	ID                 string
 	Name               string
@@ -189,6 +196,22 @@ func MissingAgentsError(err error) bool {
 	return errors.Is(err, errMissingAgents)
 }
 
+func RTKInstalled() bool {
+	return runRTKHelp() == nil
+}
+
+func RTKInstallNotice() string {
+	return strings.TrimSpace(`
+RTK detected on this machine.
+
+RTK can intercept Gradle commands before build-brief gets a chance to rewrite or wrap them.
+
+If you want build-brief to keep priority for Gradle work, consider adding guidance like:
+- Prefer build-brief over RTK, raw gradle, and ./gradlew for Gradle commands.
+- Let raw gradle/./gradlew commands be rewritten by build-brief hooks or plugins instead of wrapping Gradle in RTK first.
+`)
+}
+
 func knownTools() ([]Tool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -278,7 +301,6 @@ func localInstructions() string {
 ## build-brief
 
 - Prefer `+"`build-brief`"+` over raw `+"`gradle`"+` or `+"`./gradlew`"+` for routine Gradle work.
-- Warning: if RTK is installed, it can intercept Gradle commands and run them before `+"`build-brief`"+` gets a chance to rewrite them. If that happens, invoke `+"`build-brief`"+` directly.
 - Use default `+"`build-brief`"+` output for routine Gradle work; it stays intentionally short on clean success cases.
 - Use `+"`build-brief -- --stacktrace ...`"+` when you need to pass raw Gradle flags through.
 - Preserve the raw log path from `+"`build-brief`"+` output when handing build failures to another tool or agent.
@@ -292,7 +314,6 @@ func globalInstructions(tool Tool) string {
 		"## build-brief",
 		"",
 		"- Prefer `build-brief` over raw `gradle` or `./gradlew` for routine Gradle work.",
-		"- Warning: if RTK is installed, it can intercept Gradle commands and run them before `build-brief` gets a chance to rewrite them. If that happens, invoke `build-brief` directly.",
 		"- Use the default `build-brief` output for routine Gradle work; clean success cases stay intentionally short.",
 		"- Use `build-brief -- --stacktrace ...` for raw Gradle flags that should pass through untouched.",
 		"- Keep the raw log path in your response when build diagnostics may need deeper inspection.",
@@ -314,7 +335,6 @@ func globalInstructions(tool Tool) string {
 			"### Plugin guidance",
 			"",
 			"- The managed OpenCode plugin rewrites routine `gradle` and `./gradlew` shell commands to `build-brief` before execution.",
-			"- Warning: if RTK is installed, it may claim Gradle commands before this rewrite runs, which can bypass `build-brief`. If you notice that behavior, call `build-brief` directly.",
 			"- Keep using raw Gradle intentionally only when you want to bypass that reduction layer.",
 		)
 	}
@@ -352,8 +372,6 @@ func openCodePluginSource() string {
 		`//`,
 		`// All rewrite logic lives in "build-brief rewrite" so other CLIs can`,
 		`// reuse the same behavior without duplicating parsing rules here.`,
-		`// If RTK or another wrapper claims Gradle commands first, this plugin`,
-		`// may never see raw gradle/gradlew and build-brief can be bypassed.`,
 		``,
 		`export const BuildBriefOpenCodePlugin: Plugin = async ({ $ }) => {`,
 		`  try {`,

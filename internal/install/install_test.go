@@ -2,6 +2,7 @@ package install
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,8 +31,8 @@ func TestInstallLocalRequiresExistingAgentsUnlessForced(t *testing.T) {
 	if !strings.Contains(text, "Prefer `build-brief` over raw `gradle`") {
 		t.Fatalf("unexpected local instructions: %q", text)
 	}
-	if !strings.Contains(text, "if RTK is installed, it can intercept Gradle commands") {
-		t.Fatalf("expected RTK Gradle guidance in local instructions: %q", text)
+	if strings.Contains(text, "RTK") {
+		t.Fatalf("expected local instructions to stay RTK-free, got %q", text)
 	}
 }
 
@@ -114,8 +115,8 @@ func TestInstallGlobalCreatesOpenCodePluginWithoutAgentsFile(t *testing.T) {
 	if !strings.Contains(string(content), "build-brief rewrite") {
 		t.Fatalf("expected rewrite delegation in plugin, got %q", string(content))
 	}
-	if !strings.Contains(string(content), "If RTK or another wrapper claims Gradle commands first") {
-		t.Fatalf("expected RTK warning comment in plugin, got %q", string(content))
+	if strings.Contains(string(content), "RTK") {
+		t.Fatalf("expected plugin source to stay RTK-free, got %q", string(content))
 	}
 }
 
@@ -195,13 +196,43 @@ func TestInstallGlobalUpdatesOpenCodeAgentsAndPlugin(t *testing.T) {
 	if !strings.Contains(string(agentsContent), "Plugin guidance") {
 		t.Fatalf("expected plugin guidance in AGENTS.md, got %q", string(agentsContent))
 	}
-	if !strings.Contains(string(agentsContent), "if RTK is installed, it can intercept Gradle commands") {
-		t.Fatalf("expected RTK Gradle guidance in AGENTS.md, got %q", string(agentsContent))
+	if strings.Contains(string(agentsContent), "RTK") {
+		t.Fatalf("expected managed AGENTS.md block to stay RTK-free, got %q", string(agentsContent))
 	}
 
 	pluginTarget := filepath.Join(dir, "opencode", "plugins", "build-brief.ts")
 	if _, err := os.Stat(pluginTarget); err != nil {
 		t.Fatalf("expected plugin to exist, stat err=%v", err)
+	}
+}
+
+func TestRTKInstalled(t *testing.T) {
+	original := runRTKHelp
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
+	runRTKHelp = func() error { return nil }
+	if !RTKInstalled() {
+		t.Fatal("expected RTKInstalled to report true when rtk --help succeeds")
+	}
+
+	runRTKHelp = func() error { return errors.New("missing") }
+	if RTKInstalled() {
+		t.Fatal("expected RTKInstalled to report false when rtk --help fails")
+	}
+}
+
+func TestRTKInstallNotice(t *testing.T) {
+	notice := RTKInstallNotice()
+	for _, expected := range []string{
+		"RTK detected on this machine.",
+		"Prefer build-brief over RTK, raw gradle, and ./gradlew for Gradle commands.",
+		"Let raw gradle/./gradlew commands be rewritten by build-brief hooks or plugins",
+	} {
+		if !strings.Contains(notice, expected) {
+			t.Fatalf("expected RTK install notice to contain %q, got %q", expected, notice)
+		}
 	}
 }
 
