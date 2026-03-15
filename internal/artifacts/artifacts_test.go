@@ -74,6 +74,21 @@ func TestFindGeneratedWithSnapshotDiffExcludesArtifactThatMtimeFallbackWouldIncl
 	}
 }
 
+func TestFindAvailableIncludesExistingArtifactsWithoutSnapshotDiff(t *testing.T) {
+	projectDir := t.TempDir()
+	writeFile(t, filepath.Join(projectDir, "androidApp", "build", "outputs", "apk", "debug", "androidApp-debug.apk"), "apk")
+	writeFile(t, filepath.Join(projectDir, "server", "build", "libs", "server.jar"), "jar")
+
+	found := FindAvailable(projectDir, nil)
+
+	if !containsArtifact(found, "APK", "androidApp/build/outputs/apk/debug/androidApp-debug.apk") {
+		t.Fatalf("expected available apk artifact in %+v", found)
+	}
+	if !containsArtifact(found, "JAR", "server/build/libs/server.jar") {
+		t.Fatalf("expected available jar artifact in %+v", found)
+	}
+}
+
 func TestExtractHintsSupportsPathsWithSpaces(t *testing.T) {
 	line := `Built artifact at "/Users/dev/My Projects/demo/custom output/Fancy.xcframework" and ./relative path/app-debug.apk`
 	hints := ExtractHints(line)

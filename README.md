@@ -134,12 +134,14 @@ build-brief --help
 
 ## output modes
 
-- default: concise Gradle summary, with especially short output on clean success cases and standard packaged outputs like APK/AAB/AAR/JAR/WAR/ZIP plus KMP artifacts such as frameworks, XCFrameworks, KLIBs, and KEXEs when they were generated
+- default: concise Gradle summary, with especially short output on clean success cases and standard packaged outputs like APK/AAB/AAR/JAR/WAR/ZIP plus KMP artifacts such as frameworks, XCFrameworks, KLIBs, and KEXEs when they were generated or are still available for the targeted artifact-producing task
 - `raw`: replay the captured Gradle log without reduction
 
-For standard Gradle output locations, `build-brief` now uses a hybrid detector: it snapshots known artifact roots before the build, scans them again afterward, and reports only new or changed outputs.
+For standard Gradle output locations, `build-brief` now uses a hybrid detector: it snapshots known artifact roots before the build, scans them again afterward, and reports new or changed outputs first.
 
-If Gradle or a plugin prints an explicit artifact path in the log, `build-brief` can also use that as a verified hint, but it still checks that the file or bundle really exists and was updated during the current run before showing it.
+If that scan finds nothing for a successful artifact-producing task such as `assemble` or `bundle`, `build-brief` can fall back to already-available artifacts under the targeted Gradle project path so warm successful runs can still show the expected APK or bundle path instead of returning an empty success line.
+
+If Gradle or a plugin prints an explicit artifact path in the log, `build-brief` can also use that as a verified hint, but it still checks that the file or bundle really exists before showing it.
 
 Successful artifact reporting is only shown for successful runs today. Failed builds still focus on failures, tests, warnings, highlights, and the raw log path.
 

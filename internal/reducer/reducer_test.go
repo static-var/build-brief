@@ -103,6 +103,74 @@ func TestReduceSuccessSummary(t *testing.T) {
 	}
 }
 
+func TestReduceFallsBackToAvailableArtifactsForWarmAssemble(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGeneratedFile(t, filepath.Join(projectDir, "androidApp", "build", "outputs", "apk", "debug", "androidApp-debug.apk"), "apk")
+	writeGeneratedFile(t, filepath.Join(projectDir, "benchmark", "build", "outputs", "apk", "debug", "benchmark-debug.apk"), "apk")
+	snapshot := artifacts.Capture(projectDir)
+
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", ":androidApp:assembleDebug"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         3 * time.Second,
+		StartTime:        time.Now(),
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :androidApp:assembleDebug UP-TO-DATE",
+			"BUILD SUCCESSFUL in 3s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce warm assemble log: %v", err)
+	}
+
+	if !containsArtifact(summary.Artifacts, "APK", "androidApp/build/outputs/apk/debug/androidApp-debug.apk") {
+		t.Fatalf("expected warm assemble to surface existing apk, got %+v", summary.Artifacts)
+	}
+	if containsArtifact(summary.Artifacts, "APK", "benchmark/build/outputs/apk/debug/benchmark-debug.apk") {
+		t.Fatalf("did not expect warm assemble fallback to include unrelated module artifact, got %+v", summary.Artifacts)
+	}
+}
+
+func TestReduceDoesNotFallbackToAvailableArtifactsForNonArtifactTasks(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGeneratedFile(t, filepath.Join(projectDir, "androidApp", "build", "outputs", "apk", "debug", "androidApp-debug.apk"), "apk")
+	snapshot := artifacts.Capture(projectDir)
+
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "test"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         2 * time.Second,
+		StartTime:        time.Now(),
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :test UP-TO-DATE",
+			"BUILD SUCCESSFUL in 2s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce warm test log: %v", err)
+	}
+
+	if len(summary.Artifacts) != 0 {
+		t.Fatalf("expected non-artifact task to avoid stale artifact fallback, got %+v", summary.Artifacts)
+	}
+}
+
 func TestReduceCapturesContextAndStripsANSI(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradle",

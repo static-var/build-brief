@@ -515,7 +515,9 @@ build-brief gains --reset</code></pre>
               The happy path is strongest for standard Gradle command shapes and standard
               output locations. Custom artifact directories, unusual plugins, unsupported
               agent integrations, or odd shell wrappers may still need the retained raw log
-              as the fallback source of truth.
+              as the fallback source of truth. Warm successful artifact tasks now try to
+              show already-available artifacts from the targeted module, but unusual layouts
+              can still miss that path.
             </p>
           </details>
           <details>

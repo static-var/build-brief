@@ -208,9 +208,91 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 	}
 
 	found, classCount, codegenCount := artifacts.FindGenerated(projectDir, result.StartTime, result.ArtifactSnapshot, hints)
+	if len(found) == 0 && shouldReportAvailableArtifacts(summary.Command) {
+		found = filterAvailableArtifacts(artifacts.FindAvailable(projectDir, hints), summary.Command)
+	}
 	summary.Artifacts = found
 	summary.GeneratedClassFileCount = classCount
 	summary.GeneratedCodegenFileCount = codegenCount
+}
+
+func shouldReportAvailableArtifacts(command []string) bool {
+	for _, arg := range command {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		taskName := strings.ToLower(arg)
+		if index := strings.LastIndex(taskName, ":"); index >= 0 {
+			taskName = taskName[index+1:]
+		}
+		switch {
+		case strings.HasPrefix(taskName, "assemble"),
+			strings.HasPrefix(taskName, "bundle"),
+			strings.HasPrefix(taskName, "publish"),
+			strings.HasPrefix(taskName, "archive"),
+			strings.HasPrefix(taskName, "package"),
+			strings.HasPrefix(taskName, "bootjar"),
+			strings.HasPrefix(taskName, "shadowjar"),
+			strings.HasPrefix(taskName, "distzip"),
+			strings.HasPrefix(taskName, "disttar"),
+			strings.HasPrefix(taskName, "installdist"),
+			strings.Contains(taskName, "xcframework"),
+			strings.Contains(taskName, "framework"),
+			strings.Contains(taskName, "klib"),
+			strings.Contains(taskName, "kexe"):
+			return true
+		case taskName == "jar", taskName == "war", taskName == "ear":
+			return true
+		}
+	}
+	return false
+}
+
+func filterAvailableArtifacts(found []Artifact, command []string) []Artifact {
+	projectPrefixes := commandProjectPrefixes(command)
+	if len(projectPrefixes) == 0 {
+		return found
+	}
+
+	filtered := make([]Artifact, 0, len(found))
+	for _, artifact := range found {
+		for _, prefix := range projectPrefixes {
+			if artifact.Path == prefix || strings.HasPrefix(artifact.Path, prefix+"/") {
+				filtered = append(filtered, artifact)
+				break
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		return found
+	}
+	return filtered
+}
+
+func commandProjectPrefixes(command []string) []string {
+	seen := make(map[string]struct{})
+	prefixes := make([]string, 0)
+	for _, arg := range command {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		lastColon := strings.LastIndex(arg, ":")
+		if lastColon <= 0 {
+			continue
+		}
+		projectPath := strings.TrimPrefix(arg[:lastColon], ":")
+		projectPath = strings.TrimSpace(projectPath)
+		if projectPath == "" {
+			continue
+		}
+		projectPath = strings.ReplaceAll(projectPath, ":", "/")
+		if _, ok := seen[projectPath]; ok {
+			continue
+		}
+		seen[projectPath] = struct{}{}
+		prefixes = append(prefixes, projectPath)
+	}
+	return prefixes
 }
 
 func enrichWithJUnitFailures(projectDir string, summary *Summary, failedTests, important map[string]struct{}) {
