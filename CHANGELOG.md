@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.2 - 2026-03-15
+
+- feat: publish hosted installer entrypoint (f49d07b)
+- docs: align README and site with current behavior (16421e4)
+- chore: harden release automation (5cea2ce)
+- refactor: keep gains focused on token savings (b690e36)
+- feat: report generated gradle artifacts (4c79d3a)
+- feat: simplify gradle invocation handling (ea8b4bc)
+- Redesign landing page (0de32fb)
+- Enable Pages bootstrap in workflow (d0681d6)
+- Add build-brief landing page (f5b9f1f)
+- Update README Homebrew install commands (0e719ca)
+
 ## v0.0.1 - 2026-03-15
 
 - Track reducer fixture logs (161db30)
