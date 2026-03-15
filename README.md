@@ -50,7 +50,7 @@ On Windows, build `build-brief.exe` and place it in a directory that is already 
 
 ### install with a shell script
 
-For macOS and Linux, there is also a pipe-to-bash installer that downloads the latest matching release archive, verifies its checksum, and installs `build-brief` into a writable bin directory.
+For macOS and Linux, there is also a pipe-to-bash installer that resolves the exact matching asset from GitHub release metadata, verifies its checksum, and installs `build-brief` into a writable bin directory.
 
 ```bash
 curl -fsSL https://bb.staticvar.dev/install.sh | bash

@@ -101,6 +101,10 @@ trim_version() {
   printf '%s\n' "$value"
 }
 
+escape_basic_regex() {
+  printf '%s' "$1" | sed 's/[][(){}.^$*+?|\/\\-]/\\&/g'
+}
+
 detect_os() {
   case "$(uname -s)" in
     Darwin)
@@ -147,35 +151,62 @@ default_bin_dir() {
   printf '%s\n' "${HOME}/.local/bin"
 }
 
-resolve_version() {
-  if [[ -n "$version" ]]; then
-    trim_version "$version"
-    return
-  fi
-
-  local api_url="https://api.github.com/repos/${repo}/releases/latest"
-  local json
-  json="$(download_to_stdout "$api_url")"
-
+extract_tag_from_release_json() {
+  local json="$1"
   local tag
   tag="$(printf '%s\n' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
   if [[ -z "$tag" ]]; then
-    echo "install.sh: could not determine latest release from ${api_url}" >&2
+    echo "install.sh: could not determine release tag from GitHub release metadata" >&2
     exit 1
   fi
 
   trim_version "$tag"
 }
 
+extract_asset_field_from_release_json() {
+  local json="$1"
+  local asset_name="$2"
+  local field_name="$3"
+  local escaped_name
+  escaped_name="$(escape_basic_regex "$asset_name")"
+  local field_pattern
+  field_pattern="$(escape_basic_regex "$field_name")"
+
+  printf '%s\n' "$json" | tr '\n' ' ' | { grep -o "\"name\":\"${escaped_name}\"[^}]*\"${field_pattern}\":\"[^\"]*\"" || true; } | head -n 1 | sed -n "s/.*\"${field_pattern}\":\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+fetch_release_json() {
+  local api_url
+  if [[ -n "$version" ]]; then
+    local pinned_version
+    pinned_version="$(trim_version "$version")"
+    api_url="https://api.github.com/repos/${repo}/releases/tags/v${pinned_version}"
+  else
+    api_url="https://api.github.com/repos/${repo}/releases/latest"
+  fi
+
+  download_to_stdout "$api_url"
+}
+
+resolve_release_asset() {
+  local asset_name="$1"
+  local field_name="$2"
+  local field_value
+  field_value="$(extract_asset_field_from_release_json "$release_json" "$asset_name" "$field_name")"
+  if [[ -z "$field_value" ]]; then
+    echo "install.sh: could not find ${field_name} for ${asset_name} in release metadata" >&2
+    exit 1
+  fi
+  printf '%s\n' "$field_value"
+}
+
 verify_checksum() {
   local asset_path="$1"
-  local sums_path="$2"
+  local expected="$2"
   local asset_name="$3"
 
-  local expected
-  expected="$(awk -v name="$asset_name" '$2 == "./"name || $2 == name { print $1; exit }' "$sums_path")"
   if [[ -z "$expected" ]]; then
-    echo "install.sh: could not find checksum for ${asset_name}" >&2
+    echo "install.sh: expected checksum is empty for ${asset_name}" >&2
     exit 1
   fi
 
@@ -195,19 +226,26 @@ verify_checksum() {
   fi
 }
 
+checksum_from_sums_file() {
+  local sums_path="$1"
+  local asset_name="$2"
+  awk -v name="$asset_name" '$2 == "./"name || $2 == name { print $1; exit }' "$sums_path"
+}
+
 need_cmd tar
 need_cmd mktemp
 need_cmd install
 
 os="$(detect_os)"
 arch="$(detect_arch)"
-version="$(resolve_version)"
+release_json="$(fetch_release_json)"
+version="$(extract_tag_from_release_json "$release_json")"
 bin_dir="$(default_bin_dir)"
 
 asset_name="build-brief_${version}_${os}_${arch}.tar.gz"
-release_base="https://github.com/${repo}/releases/download/v${version}"
-asset_url="${release_base}/${asset_name}"
-sums_url="${release_base}/SHA256SUMS"
+asset_url="$(resolve_release_asset "$asset_name" "browser_download_url")"
+asset_digest="$(resolve_release_asset "$asset_name" "digest")"
+sums_url="$(resolve_release_asset "SHA256SUMS" "browser_download_url")"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -218,8 +256,12 @@ extract_dir="${tmpdir}/extract"
 
 echo "==> Downloading build-brief ${version} for ${os}/${arch}"
 download_to_file "$asset_url" "$archive_path"
-download_to_file "$sums_url" "$sums_path"
-verify_checksum "$archive_path" "$sums_path" "$asset_name"
+if [[ -n "$asset_digest" ]]; then
+  verify_checksum "$archive_path" "${asset_digest#sha256:}" "$asset_name"
+else
+  download_to_file "$sums_url" "$sums_path"
+  verify_checksum "$archive_path" "$(checksum_from_sums_file "$sums_path" "$asset_name")" "$asset_name"
+fi
 
 mkdir -p "$extract_dir"
 tar -xzf "$archive_path" -C "$extract_dir"
