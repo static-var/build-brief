@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +23,21 @@ type Result struct {
 	RawLogPath string        `json:"raw_log_path"`
 }
 
+type ProgressEvent struct {
+	RawLogPath string
+	Elapsed    time.Duration
+}
+
+type Options struct {
+	Progress         func(ProgressEvent)
+	ProgressInterval time.Duration
+}
+
 func Run(ctx context.Context, command gradle.Command, logDir string) (Result, error) {
+	return RunWithOptions(ctx, command, logDir, Options{})
+}
+
+func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, opts Options) (Result, error) {
 	rawLogPath, rawLogFile, err := newRawLogFile(logDir, command.ProjectDir)
 	if err != nil {
 		return Result{}, fmt.Errorf("create raw log file: %w", err)
@@ -56,6 +71,10 @@ func Run(ctx context.Context, command gradle.Command, logDir string) (Result, er
 	if err := cmd.Start(); err != nil {
 		return Result{RawLogPath: rawLogPath}, fmt.Errorf("start gradle command: %w", err)
 	}
+
+	doneCh := make(chan struct{})
+	startProgressReporter(rawLogPath, startedAt, opts, doneCh)
+	defer close(doneCh)
 
 	linesCh := make(chan string, 64)
 	scanErrCh := make(chan error, 2)
@@ -104,6 +123,28 @@ func Run(ctx context.Context, command gradle.Command, logDir string) (Result, er
 	}, nil
 }
 
+func startProgressReporter(rawLogPath string, startedAt time.Time, opts Options, done <-chan struct{}) {
+	if opts.Progress == nil || opts.ProgressInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(opts.ProgressInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				opts.Progress(ProgressEvent{
+					RawLogPath: rawLogPath,
+					Elapsed:    time.Since(startedAt),
+				})
+			}
+		}
+	}()
+}
+
 func newRawLogFile(logDir, projectDir string) (string, *os.File, error) {
 	if logDir == "" {
 		logDir = filepath.Join(os.TempDir(), "build-brief")
@@ -126,13 +167,28 @@ func scanStream(stream io.ReadCloser, linesCh chan<- string, errCh chan<- error,
 	defer wg.Done()
 	defer stream.Close()
 
-	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		linesCh <- scanner.Text()
+	reader := bufio.NewReaderSize(stream, 64*1024)
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			linesCh <- trimLineEnding(line)
+		}
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			errCh <- nil
+			return
+		}
+		errCh <- err
+		return
 	}
+}
 
-	errCh <- scanner.Err()
+func trimLineEnding(line string) string {
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	return line
 }
 
 func exitCodeFromWait(waitErr error, cmd *exec.Cmd) int {

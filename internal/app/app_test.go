@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -238,17 +239,17 @@ func TestParseGainsArgsReset(t *testing.T) {
 }
 
 func TestRunInstallsLocalAgentsFile(t *testing.T) {
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-
+	originalRTKInstalled := rtkInstalled
+	originalRTKInstallNotice := rtkInstallNotice
+	originalCurrentDir := currentDir
+	rtkInstalled = func() bool { return false }
+	rtkInstallNotice = func() string { return "unused" }
 	tempDir := t.TempDir()
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("chdir tempdir: %v", err)
-	}
+	currentDir = func() (string, error) { return tempDir, nil }
 	t.Cleanup(func() {
-		_ = os.Chdir(originalWD)
+		rtkInstalled = originalRTKInstalled
+		rtkInstallNotice = originalRTKInstallNotice
+		currentDir = originalCurrentDir
 	})
 
 	var stdout bytes.Buffer
@@ -259,12 +260,68 @@ func TestRunInstallsLocalAgentsFile(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
 	}
 
-	content, err := os.ReadFile("AGENTS.md")
+	content, err := os.ReadFile(filepath.Join(tempDir, "AGENTS.md"))
 	if err != nil {
 		t.Fatalf("read AGENTS.md: %v", err)
 	}
 
 	if !strings.Contains(string(content), "build-brief") {
 		t.Fatalf("expected build-brief instructions in AGENTS.md, got %q", string(content))
+	}
+
+	if strings.Contains(stdout.String(), "RTK detected on this machine") {
+		t.Fatalf("expected no RTK notice when RTK is not detected, got %q", stdout.String())
+	}
+}
+
+func TestRunLocalInstallPrintsRTKNoticeWhenDetected(t *testing.T) {
+	originalRTKInstalled := rtkInstalled
+	originalRTKInstallNotice := rtkInstallNotice
+	originalCurrentDir := currentDir
+	rtkInstalled = func() bool { return true }
+	rtkInstallNotice = func() string { return "RTK note for tests" }
+	tempDir := t.TempDir()
+	currentDir = func() (string, error) { return tempDir, nil }
+	t.Cleanup(func() {
+		rtkInstalled = originalRTKInstalled
+		rtkInstallNotice = originalRTKInstallNotice
+		currentDir = originalCurrentDir
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{"--install-force"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+
+	if !strings.Contains(stdout.String(), "RTK note for tests") {
+		t.Fatalf("expected RTK install notice in stdout, got %q", stdout.String())
+	}
+}
+
+func TestRunRawModeStreamsOutput(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho raw-line-1\necho raw-line-2\n"), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"--mode", "raw",
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+
+	if stdout.String() != "raw-line-1\nraw-line-2\n" {
+		t.Fatalf("unexpected raw mode output %q", stdout.String())
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"build-brief/internal/gradle"
 )
@@ -74,6 +76,63 @@ func TestRunPreservesExitCodeAndWritesLog(t *testing.T) {
 
 	if string(content) != "> Task :app:test FAILED\n" {
 		t.Fatalf("unexpected raw log contents: %q", string(content))
+	}
+}
+
+func TestRunWithOptionsReportsProgress(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "slow-gradle.sh")
+
+	writeExecutable(t, scriptPath, "#!/bin/sh\npython3 -c 'import time; time.sleep(0.12); print(\"done\")'\n")
+
+	var (
+		mu     sync.Mutex
+		events []ProgressEvent
+	)
+	result, err := RunWithOptions(context.Background(), gradle.Command{
+		Executable: scriptPath,
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}, logDir, Options{
+		ProgressInterval: 25 * time.Millisecond,
+		Progress: func(event ProgressEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("run with progress: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) == 0 {
+		t.Fatal("expected at least one progress event")
+	}
+	if events[0].RawLogPath != result.RawLogPath {
+		t.Fatalf("expected progress raw log path %q, got %q", result.RawLogPath, events[0].RawLogPath)
+	}
+}
+
+func TestRunHandlesVeryLongLines(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "long-line-gradle.sh")
+
+	writeExecutable(t, scriptPath, "#!/bin/sh\npython3 -c 'print(\"x\" * 1500000)'\n")
+
+	result, err := Run(context.Background(), gradle.Command{
+		Executable: scriptPath,
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}, logDir)
+	if err != nil {
+		t.Fatalf("run long-line command: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
 	}
 }
 

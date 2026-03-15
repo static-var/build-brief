@@ -32,6 +32,12 @@ type Options struct {
 	Global         bool
 }
 
+var (
+	rtkInstalled     = install.RTKInstalled
+	rtkInstallNotice = install.RTKInstallNotice
+	currentDir       = os.Getwd
+)
+
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
@@ -94,7 +100,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	})
 	trackingCommand := command.TrackingLine()
 
-	runResult, err := runner.Run(ctx, command, opts.LogDir)
+	runResult, err := runner.RunWithOptions(ctx, command, opts.LogDir, runner.Options{
+		ProgressInterval: 30 * time.Second,
+		Progress: func(event runner.ProgressEvent) {
+			fmt.Fprintf(stderr, "build-brief: still running after %s (raw log: %s)\n", formatElapsed(event.Elapsed), event.RawLogPath)
+		},
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "build-brief: %v\n", err)
 		if runResult.RawLogPath != "" {
@@ -114,12 +125,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	switch opts.Mode {
 	case "raw":
-		rawOutput, err := os.ReadFile(runResult.RawLogPath)
-		if err != nil {
-			fmt.Fprintf(stderr, "build-brief: read raw output: %v\n", err)
-			return 1
-		}
-		if _, err := stdout.Write(rawOutput); err != nil {
+		if err := output.RenderRaw(stdout, runResult.RawLogPath); err != nil {
 			fmt.Fprintf(stderr, "build-brief: render raw output: %v\n", err)
 			return 1
 		}
@@ -130,7 +136,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			Mode:          opts.Mode,
 			Success:       runResult.ExitCode == 0,
 			RawTokens:     rawTokens,
-			EmittedTokens: tracking.EstimateTokens(string(rawOutput)),
+			EmittedTokens: rawTokens,
 			ExecTimeMs:    runResult.Duration.Milliseconds(),
 			RawLogPath:    runResult.RawLogPath,
 		}, stderr)
@@ -150,12 +156,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		summary.EmittedTokens = tracking.EstimateTokens(rendered)
 		summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
 		summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
-
-		rendered, err = renderSummary(summary)
-		if err != nil {
-			fmt.Fprintf(stderr, "build-brief: render summary: %v\n", err)
-			return 1
-		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
 			return 1
@@ -508,6 +508,20 @@ func renderSummary(summary reducer.Summary) (string, error) {
 	return buffer.String(), nil
 }
 
+func formatElapsed(duration time.Duration) string {
+	if duration < time.Minute {
+		return fmt.Sprintf("%ds", int(duration.Round(time.Second).Seconds()))
+	}
+	if duration < time.Hour {
+		minutes := duration / time.Minute
+		seconds := (duration % time.Minute) / time.Second
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	hours := duration / time.Hour
+	minutes := (duration % time.Hour) / time.Minute
+	return fmt.Sprintf("%dh%02dm", hours, minutes)
+}
+
 func trackRun(record tracking.Record, stderr io.Writer) {
 	record.SavedTokens = tracking.SavedTokens(record.RawTokens, record.EmittedTokens)
 	record.SavingsPct = tracking.SavingsPct(record.RawTokens, record.EmittedTokens)
@@ -519,16 +533,16 @@ func trackRun(record tracking.Record, stderr io.Writer) {
 var timeNow = time.Now
 
 func runLocalInstall(stdout, stderr io.Writer, force bool) int {
-	currentDir, err := os.Getwd()
+	dir, err := currentDir()
 	if err != nil {
 		fmt.Fprintf(stderr, "build-brief: resolve current directory: %v\n", err)
 		return 1
 	}
 
-	target, err := install.InstallLocal(currentDir, force)
+	target, err := install.InstallLocal(dir, force)
 	if err != nil {
 		if install.MissingAgentsError(err) {
-			fmt.Fprintf(stderr, "build-brief: AGENTS.md not found in %s\n", currentDir)
+			fmt.Fprintf(stderr, "build-brief: AGENTS.md not found in %s\n", dir)
 			fmt.Fprintln(stderr, "Run this command from a project directory that already has AGENTS.md, or use --install-force to create one.")
 			return 2
 		}
@@ -537,6 +551,7 @@ func runLocalInstall(stdout, stderr io.Writer, force bool) int {
 	}
 
 	fmt.Fprintf(stdout, "Installed build-brief instructions into %s\n", target)
+	maybePrintRTKInstallNotice(stdout)
 	return 0
 }
 
@@ -574,7 +589,20 @@ func runGlobalInstall(stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if len(installed) > 0 {
+		maybePrintRTKInstallNotice(stdout)
+	}
+
 	return 0
+}
+
+func maybePrintRTKInstallNotice(stdout io.Writer) {
+	if !rtkInstalled() {
+		return
+	}
+
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, rtkInstallNotice())
 }
 
 func runRewrite(args []string, stdout, stderr io.Writer) int {
