@@ -35,6 +35,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sync branch state
+        run: |
+          git fetch origin "${{ github.ref_name }}" --tags
+          git checkout "${{ github.ref_name }}"
+          git reset --hard "origin/${{ github.ref_name }}"
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -70,15 +76,23 @@ jobs:
             --output .release/build-brief.rb
 
       - name: Commit version bump and changelog
+        if: steps.prepare.outputs.needs_commit == 'true'
         run: |
           git add internal/app/version.go CHANGELOG.md
           git commit -m "chore(release): ${{ steps.prepare.outputs.tag }}"
+
+      - name: Create release tag
+        if: steps.prepare.outputs.tag_exists != 'true'
+        run: |
           git tag "${{ steps.prepare.outputs.tag }}"
 
-      - name: Push commit and tag
-        run: |
-          git push origin "HEAD:${{ github.ref_name }}"
-          git push origin "${{ steps.prepare.outputs.tag }}"
+      - name: Push release commit
+        if: steps.prepare.outputs.needs_commit == 'true'
+        run: git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Push release tag
+        if: steps.prepare.outputs.tag_exists != 'true'
+        run: git push origin "${{ steps.prepare.outputs.tag }}"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -90,15 +104,23 @@ jobs:
             .release/release-notes.md
           if-no-files-found: error
 
-      - name: Create GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.prepare.outputs.tag }}" \
-            dist/* \
-            --repo "${{ github.repository }}" \
-            --title "build-brief ${{ steps.prepare.outputs.tag }}" \
-            --notes-file "${{ steps.prepare.outputs.notes_file }}"
+          if gh release view "${{ steps.prepare.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "${{ steps.prepare.outputs.tag }}" dist/* --repo "${{ github.repository }}" --clobber
+            gh release edit "${{ steps.prepare.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --title "build-brief ${{ steps.prepare.outputs.tag }}" \
+              --notes-file "${{ steps.prepare.outputs.notes_file }}"
+          else
+            gh release create "${{ steps.prepare.outputs.tag }}" \
+              dist/* \
+              --repo "${{ github.repository }}" \
+              --title "build-brief ${{ steps.prepare.outputs.tag }}" \
+              --notes-file "${{ steps.prepare.outputs.notes_file }}"
+          fi
 
       - name: Publish Homebrew tap
         env:

@@ -80,4 +80,9 @@ fi
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git commit -m "build-brief v${version}"
+
+if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+  git pull --rebase origin "$branch"
+fi
+
 git push origin "HEAD:${branch}"

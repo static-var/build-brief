@@ -85,26 +85,26 @@ formula = f"""class BuildBrief < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/{repo}/releases/download/v#{{version}}/build-brief_#{{version}}_darwin_arm64.tar.gz"
+      url "https://github.com/{repo}/releases/download/v{version}/build-brief_{version}_darwin_arm64.tar.gz"
       sha256 "{checksums["darwin_arm64"]}"
     elsif Hardware::CPU.intel?
-      url "https://github.com/{repo}/releases/download/v#{{version}}/build-brief_#{{version}}_darwin_amd64.tar.gz"
+      url "https://github.com/{repo}/releases/download/v{version}/build-brief_{version}_darwin_amd64.tar.gz"
       sha256 "{checksums["darwin_amd64"]}"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/{repo}/releases/download/v#{{version}}/build-brief_#{{version}}_linux_arm64.tar.gz"
+      url "https://github.com/{repo}/releases/download/v{version}/build-brief_{version}_linux_arm64.tar.gz"
       sha256 "{checksums["linux_arm64"]}"
     elsif Hardware::CPU.intel?
-      url "https://github.com/{repo}/releases/download/v#{{version}}/build-brief_#{{version}}_linux_amd64.tar.gz"
+      url "https://github.com/{repo}/releases/download/v{version}/build-brief_{version}_linux_amd64.tar.gz"
       sha256 "{checksums["linux_amd64"]}"
     end
   end
 
   def install
-    binary = Dir["**/build-brief"].find {{ |path| File.file?(path) }}
+    binary = Dir["build-brief_*/build-brief"].find {{ |path| File.file?(path) }}
     raise "build-brief binary not found in archive" unless binary
 
     bin.install binary => "build-brief"
