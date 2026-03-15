@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semver part to increment
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: Optional explicit version, for example 0.2.0 or v0.2.0
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare release metadata
+        id: prepare
+        run: |
+          chmod +x scripts/prepare-release.sh scripts/build-artifacts.sh scripts/generate-homebrew-formula.sh scripts/publish-homebrew-tap.sh
+          scripts/prepare-release.sh \
+            --bump "${{ inputs.bump }}" \
+            --version "${{ inputs.version }}" \
+            --output-dir .release
+
+      - name: Run test suite
+        run: go test ./...
+
+      - name: Build release artifacts
+        run: scripts/build-artifacts.sh --version "${{ steps.prepare.outputs.version }}" --output-dir dist
+
+      - name: Generate Homebrew formula
+        run: |
+          scripts/generate-homebrew-formula.sh \
+            --version "${{ steps.prepare.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --artifact-dir dist \
+            --output .release/build-brief.rb
+
+      - name: Commit version bump and changelog
+        run: |
+          git add internal/app/version.go CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.prepare.outputs.tag }}"
+          git tag "${{ steps.prepare.outputs.tag }}"
+
+      - name: Push commit and tag
+        run: |
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "${{ steps.prepare.outputs.tag }}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-brief-${{ steps.prepare.outputs.tag }}
+          path: |
+            dist/*
+            .release/build-brief.rb
+            .release/release-notes.md
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.prepare.outputs.tag }}" \
+            dist/* \
+            --repo "${{ github.repository }}" \
+            --title "build-brief ${{ steps.prepare.outputs.tag }}" \
+            --notes-file "${{ steps.prepare.outputs.notes_file }}"
+
+      - name: Publish Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          HOMEBREW_TAP_BRANCH: ${{ vars.HOMEBREW_TAP_BRANCH }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          tap_repo="${HOMEBREW_TAP_REPOSITORY:-${GITHUB_REPOSITORY_OWNER}/homebrew-tap}"
+          tap_branch="${HOMEBREW_TAP_BRANCH:-main}"
+          scripts/publish-homebrew-tap.sh \
+            --tap-repo "$tap_repo" \
+            --branch "$tap_branch" \
+            --formula-file .release/build-brief.rb \
+            --version "${{ steps.prepare.outputs.version }}"

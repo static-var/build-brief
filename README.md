@@ -42,6 +42,23 @@ mv build-brief /usr/local/bin/
 
 On Windows, build `build-brief.exe` and place it in a directory that is already on `PATH`.
 
+### install with Homebrew or Linuxbrew
+
+Once the release workflow and tap repo are configured, users on macOS and Linux can install with:
+
+```bash
+brew tap <owner>/tap
+brew install <owner>/tap/build-brief
+```
+
+The release workflow generates `Formula/build-brief.rb` from the exact GitHub release archives, then pushes it to a separate tap repository. The default target is `<repo-owner>/homebrew-tap`, and you can override it with the repository variable `HOMEBREW_TAP_REPOSITORY`.
+
+To enable tap publishing from GitHub Actions:
+
+1. create a public tap repo such as `owner/homebrew-tap`
+2. add the repository secret `HOMEBREW_TAP_TOKEN` with permission to push to that repo
+3. optionally set `HOMEBREW_TAP_REPOSITORY` and `HOMEBREW_TAP_BRANCH`
+
 ### how releases should work
 
 If this project is published properly, the practical release model is one binary per OS and CPU architecture.
@@ -55,7 +72,18 @@ There is no single binary that will run everywhere. Go gives you easy cross-comp
 - `build-brief-windows-amd64.exe`
 - `build-brief-windows-arm64.exe`
 
-If we add GitHub Releases later, each release should include those binaries, plus checksums and simple install instructions.
+This repo now includes a manual GitHub Actions release workflow on `ubuntu-latest` that bumps the version, updates `CHANGELOG.md`, commits the release, creates the tag, cross-compiles the binaries, and publishes both workflow artifacts and GitHub release assets.
+
+That same workflow also generates a Homebrew formula from the release assets and, when `HOMEBREW_TAP_TOKEN` is configured, pushes `Formula/build-brief.rb` to the tap repo so `brew install` works on both macOS and Linux.
+
+Each release publishes archived binaries and checksums for:
+
+- `darwin/amd64`
+- `darwin/arm64`
+- `linux/amd64`
+- `linux/arm64`
+- `windows/amd64`
+- `windows/arm64`
 
 ## quick start
 

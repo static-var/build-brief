@@ -1,4 +1,7 @@
 /build-brief
+.release/
+.release-test/
+dist/
 .tmp/
 *.log
 smoke/out/
