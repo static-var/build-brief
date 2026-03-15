@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,8 @@ type Options struct {
 	ProgressInterval time.Duration
 }
 
+const maxProjectRawLogs = 20
+
 func Run(ctx context.Context, command gradle.Command, logDir string) (Result, error) {
 	return RunWithOptions(ctx, command, logDir, Options{})
 }
@@ -48,7 +51,12 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	if err != nil {
 		return Result{}, fmt.Errorf("create raw log file: %w", err)
 	}
-	defer rawLogFile.Close()
+	rawLogClosed := false
+	defer func() {
+		if !rawLogClosed {
+			_ = rawLogFile.Close()
+		}
+	}()
 	artifactSnapshot := artifacts.Capture(command.ProjectDir)
 
 	cmd := exec.CommandContext(runCtx, command.Executable, command.Args...)
@@ -119,6 +127,11 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	duration := time.Since(startedAt)
 	exitCode := exitCodeFromWait(waitErr, cmd)
 
+	if err := rawLogFile.Close(); err != nil && writeErr == nil {
+		writeErr = fmt.Errorf("close raw log: %w", err)
+	}
+	rawLogClosed = true
+
 	result := Result{
 		ExitCode:         exitCode,
 		Duration:         duration,
@@ -126,6 +139,14 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		RawLogPath:       rawLogPath,
 		ArtifactSnapshot: artifactSnapshot,
 	}
+
+	finalRawLogPath, err := finalizeRawLogFile(rawLogPath)
+	if err != nil {
+		return result, fmt.Errorf("finalize raw log file: %w", err)
+	}
+	rawLogPath = finalRawLogPath
+
+	result.RawLogPath = rawLogPath
 
 	if writeErr != nil {
 		return result, writeErr
@@ -140,6 +161,10 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		if !os.IsTimeout(waitErr) && !errors.As(waitErr, &exitErr) {
 			return result, fmt.Errorf("wait for gradle command: %w", waitErr)
 		}
+	}
+
+	if err := pruneProjectRawLogs(filepath.Dir(rawLogPath), command.ProjectDir, rawLogPath); err != nil {
+		return result, fmt.Errorf("prune raw log files: %w", err)
 	}
 
 	return result, nil
@@ -175,14 +200,85 @@ func newRawLogFile(logDir, projectDir string) (string, *os.File, error) {
 		return "", nil, err
 	}
 
-	fileName := fmt.Sprintf("build-brief-%08x.latest.log", projectHash(projectDir))
-	rawLogPath := filepath.Join(logDir, fileName)
-	file, err := os.OpenFile(rawLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	file, err := os.CreateTemp(logDir, fmt.Sprintf("build-brief-%08x-*.partial.log", projectHash(projectDir)))
 	if err != nil {
 		return "", nil, err
 	}
 
-	return rawLogPath, file, nil
+	return file.Name(), file, nil
+}
+
+func finalizeRawLogFile(path string) (string, error) {
+	if !strings.HasSuffix(path, ".partial.log") {
+		return path, nil
+	}
+
+	finalPath := strings.TrimSuffix(path, ".partial.log") + ".log"
+	if err := os.Rename(path, finalPath); err != nil {
+		return "", err
+	}
+
+	return finalPath, nil
+}
+
+func pruneProjectRawLogs(logDir, projectDir, keepPath string) error {
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return err
+	}
+
+	prefix := fmt.Sprintf("build-brief-%08x-", projectHash(projectDir))
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+
+	candidates := make([]candidate, 0, len(entries))
+	currentIncluded := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".partial.log") {
+			continue
+		}
+
+		path := filepath.Join(logDir, name)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		candidateEntry := candidate{
+			path:    path,
+			modTime: info.ModTime(),
+		}
+		if path == keepPath {
+			currentIncluded = true
+			continue
+		}
+		candidates = append(candidates, candidateEntry)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].modTime.Equal(candidates[j].modTime) {
+			return candidates[i].path > candidates[j].path
+		}
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+
+	keepOthers := maxProjectRawLogs
+	if currentIncluded && keepOthers > 0 {
+		keepOthers--
+	}
+
+	for i, candidate := range candidates {
+		if i < keepOthers {
+			continue
+		}
+		if err := os.Remove(candidate.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func scanStream(stream io.ReadCloser, linesCh chan<- string, errCh chan<- error, wg *sync.WaitGroup) {

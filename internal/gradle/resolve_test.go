@@ -147,6 +147,24 @@ func TestTrackingLineKeepsEqualsFormTaskSelectors(t *testing.T) {
 	}
 }
 
+func TestTrackingLineRedactsSpaceSeparatedShortPropertyFlags(t *testing.T) {
+	command := Command{
+		Executable: "/tmp/gradlew",
+		Args: []string{
+			"test",
+			"-P", "signing.keyId=ABC123",
+			"-D", "db.password=secret",
+			"--tests", "com.example.SecretTest",
+		},
+	}
+
+	got := command.TrackingLine()
+
+	if got != "gradlew test -P <redacted> -D <redacted> --tests com.example.SecretTest" {
+		t.Fatalf("unexpected tracking line: %q", got)
+	}
+}
+
 func TestSplitInvocationRecognizesGradleExecutable(t *testing.T) {
 	invocation, args := SplitInvocation([]string{"gradle", "test"})
 	if invocation != "gradle" {

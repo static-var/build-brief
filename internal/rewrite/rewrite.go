@@ -6,7 +6,6 @@ import (
 )
 
 var (
-	envPrefixPattern     = regexp.MustCompile(`^((?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*)`)
 	gradleCheckPattern   = regexp.MustCompile(`^(?:which|command\s+-v)\s+(?:gradle|\.{0,2}/gradlew(?:\.bat)?|gradlew(?:\.bat)?)$`)
 	gradleCommandPattern = regexp.MustCompile(`^(?:gradle|\.{0,2}/gradlew(?:\.bat)?|gradlew(?:\.bat)?)(?:\s+(.*))?$`)
 )
@@ -48,9 +47,7 @@ func rewriteSegment(segment string) (string, bool) {
 		return trimmed, false
 	}
 
-	envPrefix := envPrefixPattern.FindString(trimmed)
-	remainder := strings.TrimSpace(strings.TrimPrefix(trimmed, envPrefix))
-	envPrefix = strings.TrimSpace(envPrefix)
+	envPrefix, remainder := splitEnvPrefix(trimmed)
 
 	if gradleCheckPattern.MatchString(remainder) {
 		return combineSegment(envPrefix, "command -v build-brief"), true
@@ -76,6 +73,108 @@ func combineSegment(prefix, command string) string {
 		return command
 	}
 	return prefix + " " + command
+}
+
+func splitEnvPrefix(segment string) (string, string) {
+	index := 0
+	consumed := 0
+	for {
+		index = skipShellWhitespace(segment, index)
+		if index >= len(segment) {
+			break
+		}
+
+		end := shellTokenEnd(segment, index)
+		token := segment[index:end]
+		if !isEnvAssignmentToken(token) {
+			break
+		}
+
+		consumed = end
+		index = end
+	}
+
+	if consumed == 0 {
+		return "", strings.TrimSpace(segment)
+	}
+
+	return strings.TrimSpace(segment[:consumed]), strings.TrimSpace(segment[consumed:])
+}
+
+func skipShellWhitespace(text string, index int) int {
+	for index < len(text) {
+		switch text[index] {
+		case ' ', '\t':
+			index++
+		default:
+			return index
+		}
+	}
+	return index
+}
+
+func shellTokenEnd(text string, start int) int {
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		switch ch {
+		case '\\':
+			escaped = true
+			continue
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			}
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+		}
+
+		if !inSingleQuote && !inDoubleQuote && (ch == ' ' || ch == '\t') {
+			return i
+		}
+	}
+
+	return len(text)
+}
+
+func isEnvAssignmentToken(token string) bool {
+	equalsIndex := strings.IndexByte(token, '=')
+	if equalsIndex <= 0 {
+		return false
+	}
+
+	return isEnvVarName(token[:equalsIndex])
+}
+
+func isEnvVarName(name string) bool {
+	if name == "" {
+		return false
+	}
+
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if i == 0 {
+			if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && ch != '_' {
+				return false
+			}
+			continue
+		}
+		if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '_' {
+			return false
+		}
+	}
+
+	return true
 }
 
 func joinCommandChain(parts []part) string {

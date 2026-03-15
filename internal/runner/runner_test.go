@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ import (
 	"build-brief/internal/gradle"
 )
 
-func TestRunReusesProjectLatestLog(t *testing.T) {
+func TestRunUsesUniqueRawLogPerRun(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
 	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
@@ -37,17 +39,142 @@ func TestRunReusesProjectLatestLog(t *testing.T) {
 		t.Fatalf("second run: %v", err)
 	}
 
-	if resultOne.RawLogPath != resultTwo.RawLogPath {
-		t.Fatalf("expected log path reuse, got %q and %q", resultOne.RawLogPath, resultTwo.RawLogPath)
+	if resultOne.RawLogPath == resultTwo.RawLogPath {
+		t.Fatalf("expected unique log paths, got %q and %q", resultOne.RawLogPath, resultTwo.RawLogPath)
 	}
 
-	content, err := os.ReadFile(resultTwo.RawLogPath)
+	contentOne, err := os.ReadFile(resultOne.RawLogPath)
 	if err != nil {
-		t.Fatalf("read latest log: %v", err)
+		t.Fatalf("read first raw log: %v", err)
+	}
+	if string(contentOne) != "first run\n" {
+		t.Fatalf("unexpected first raw log contents: %q", string(contentOne))
 	}
 
-	if string(content) != "second run\n" {
-		t.Fatalf("expected truncated latest log, got %q", string(content))
+	contentTwo, err := os.ReadFile(resultTwo.RawLogPath)
+	if err != nil {
+		t.Fatalf("read second raw log: %v", err)
+	}
+	if string(contentTwo) != "second run\n" {
+		t.Fatalf("unexpected second raw log contents: %q", string(contentTwo))
+	}
+}
+
+func TestRunConcurrentInvocationsUseSeparateLogs(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	firstScriptPath := filepath.Join(t.TempDir(), "first-gradle.sh")
+	secondScriptPath := filepath.Join(t.TempDir(), "second-gradle.sh")
+
+	writeExecutable(t, firstScriptPath, "#!/bin/sh\npython3 -c 'import time; time.sleep(0.12); print(\"first run\")'\n")
+	writeExecutable(t, secondScriptPath, "#!/bin/sh\npython3 -c 'import time; time.sleep(0.04); print(\"second run\")'\n")
+
+	type runResult struct {
+		result Result
+		err    error
+	}
+
+	results := make(chan runResult, 2)
+	runCommand := func(executable string) {
+		result, err := Run(context.Background(), gradle.Command{
+			Executable: executable,
+			ProjectDir: projectDir,
+			Source:     gradle.SourceExplicit,
+		}, logDir)
+		results <- runResult{result: result, err: err}
+	}
+
+	go runCommand(firstScriptPath)
+	go runCommand(secondScriptPath)
+
+	first := <-results
+	second := <-results
+
+	if first.err != nil {
+		t.Fatalf("first concurrent run: %v", first.err)
+	}
+	if second.err != nil {
+		t.Fatalf("second concurrent run: %v", second.err)
+	}
+	if first.result.RawLogPath == second.result.RawLogPath {
+		t.Fatalf("expected concurrent runs to use separate logs, got %q", first.result.RawLogPath)
+	}
+
+	contentA, err := os.ReadFile(first.result.RawLogPath)
+	if err != nil {
+		t.Fatalf("read first concurrent raw log: %v", err)
+	}
+	contentB, err := os.ReadFile(second.result.RawLogPath)
+	if err != nil {
+		t.Fatalf("read second concurrent raw log: %v", err)
+	}
+
+	gotA := string(contentA)
+	gotB := string(contentB)
+	validOutputs := map[string]struct{}{
+		"first run\n":  {},
+		"second run\n": {},
+	}
+	if _, ok := validOutputs[gotA]; !ok {
+		t.Fatalf("unexpected first concurrent raw log contents: %q", gotA)
+	}
+	if _, ok := validOutputs[gotB]; !ok {
+		t.Fatalf("unexpected second concurrent raw log contents: %q", gotB)
+	}
+	if gotA == gotB {
+		t.Fatalf("expected concurrent logs to stay isolated, got %q and %q", gotA, gotB)
+	}
+}
+
+func TestRunPrunesOlderCompletedLogs(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"current run\"\nexit 0\n")
+
+	prefix := "build-brief-" + fmt.Sprintf("%08x", projectHash(projectDir)) + "-"
+	baseTime := time.Now().Add(-time.Hour)
+	for i := 0; i < maxProjectRawLogs+5; i++ {
+		path := filepath.Join(logDir, fmt.Sprintf("%sold-%02d.log", prefix, i))
+		if err := os.WriteFile(path, []byte("old run\n"), 0o644); err != nil {
+			t.Fatalf("write old raw log %s: %v", path, err)
+		}
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatalf("chtimes %s: %v", path, err)
+		}
+	}
+
+	result, err := Run(context.Background(), gradle.Command{
+		Executable: scriptPath,
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}, logDir)
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read log dir: %v", err)
+	}
+
+	kept := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".log") && !strings.HasSuffix(name, ".partial.log") {
+			kept++
+		}
+		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".partial.log") {
+			t.Fatalf("expected no partial logs to remain, found %q", name)
+		}
+	}
+
+	if kept != maxProjectRawLogs {
+		t.Fatalf("expected %d completed logs after prune, got %d", maxProjectRawLogs, kept)
+	}
+	if _, err := os.Stat(result.RawLogPath); err != nil {
+		t.Fatalf("expected current raw log to remain after prune, stat err=%v", err)
 	}
 }
 
@@ -121,8 +248,12 @@ func TestRunWithOptionsReportsProgress(t *testing.T) {
 	if result.StartTime.IsZero() {
 		t.Fatal("expected start time to be recorded")
 	}
-	if events[0].RawLogPath != result.RawLogPath {
-		t.Fatalf("expected progress raw log path %q, got %q", result.RawLogPath, events[0].RawLogPath)
+	if !strings.HasSuffix(events[0].RawLogPath, ".partial.log") {
+		t.Fatalf("expected progress raw log path to point at a live partial log, got %q", events[0].RawLogPath)
+	}
+	expectedFinalPath := strings.TrimSuffix(events[0].RawLogPath, ".partial.log") + ".log"
+	if result.RawLogPath != expectedFinalPath {
+		t.Fatalf("expected finalized raw log path %q, got %q", expectedFinalPath, result.RawLogPath)
 	}
 }
 

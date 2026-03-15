@@ -63,6 +63,26 @@ func TestShellCommandPreservesEnvPrefix(t *testing.T) {
 	}
 }
 
+func TestShellCommandPreservesQuotedEnvPrefix(t *testing.T) {
+	rewritten, changed := ShellCommand(`JAVA_OPTS="-Xmx2g -Dfoo=bar" ./gradlew test`)
+	if !changed {
+		t.Fatal("expected env-prefixed wrapper command rewrite")
+	}
+	if rewritten != `JAVA_OPTS="-Xmx2g -Dfoo=bar" build-brief ./gradlew test` {
+		t.Fatalf("unexpected rewrite: %q", rewritten)
+	}
+}
+
+func TestShellCommandPreservesMultipleQuotedEnvPrefixes(t *testing.T) {
+	rewritten, changed := ShellCommand(`JAVA_HOME=/tmp/jdk JAVA_OPTS='-Xmx2g -Dfoo=bar' gradle test`)
+	if !changed {
+		t.Fatal("expected multiple env-prefixed command rewrite")
+	}
+	if rewritten != `JAVA_HOME=/tmp/jdk JAVA_OPTS='-Xmx2g -Dfoo=bar' build-brief gradle test` {
+		t.Fatalf("unexpected rewrite: %q", rewritten)
+	}
+}
+
 func TestShellCommandDoesNotRewriteExistingBuildBriefCommand(t *testing.T) {
 	command := "build-brief test"
 	rewritten, changed := ShellCommand(command)

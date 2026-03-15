@@ -153,6 +153,10 @@ func (c Command) TrackingLine() string {
 			continue
 		case strings.HasPrefix(arg, "--gradle-user-home="):
 			continue
+		case arg == "-P" || arg == "-D":
+			filtered = append(filtered, arg)
+			skipNext = true
+			nextValueMode = "redact"
 		case arg == "--project-prop" || arg == "--system-prop":
 			filtered = append(filtered, arg)
 			skipNext = true
@@ -176,8 +180,8 @@ func (c Command) TrackingLine() string {
 }
 
 func shouldRedactTrackingArg(arg string) bool {
-	return strings.HasPrefix(arg, "-P") ||
-		strings.HasPrefix(arg, "-D") ||
+	return (strings.HasPrefix(arg, "-P") && arg != "-P") ||
+		(strings.HasPrefix(arg, "-D") && arg != "-D") ||
 		arg == "--project-prop" ||
 		arg == "--system-prop"
 }

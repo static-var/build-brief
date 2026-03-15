@@ -96,6 +96,7 @@ func InstallLocal(currentDir string, force bool) (string, error) {
 func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 	installed := make([]string, 0, len(selected))
 	failures := make([]error, 0)
+	rtkInstalled := RTKInstalled()
 
 	for _, tool := range selected {
 		pluginInstalled := false
@@ -127,7 +128,7 @@ func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 			continue
 		}
 
-		if err := upsertInstructionBlock(target, globalInstructions(tool.Tool, RTKInstalled()), false); err != nil {
+		if err := upsertInstructionBlock(target, globalInstructions(tool.Tool, rtkInstalled), false); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", tool.Tool.Name, err))
 			continue
 		}
