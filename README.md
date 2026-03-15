@@ -6,14 +6,18 @@ Gradle output gets noisy fast. That is manageable when you are running one build
 
 `build-brief` keeps the full raw log on disk and cuts the terminal output down to the parts that usually matter.
 
+It is inspired by [`rtk`](https://github.com/rtk-ai/rtk), but RTK is not compatible enough with Gradle workflows to reuse directly here, so `build-brief` applies the same output-reduction idea specifically to Gradle builds.
+
 ## what it does
 
-- prefers `./gradlew` when it exists and falls back to system `gradle`
-- injects `--console=plain` unless you already set a console mode
-- can force daemon policy with `--daemon-mode` and share a Gradle user home across runs
+- resolves Gradle in this order: explicit `--gradle` path, explicit invocation like `build-brief gradle ...` or `build-brief ./gradlew ...`, project-local `./gradlew`, then system `gradle`
+- injects `--console=plain` unless you already set that exact console mode
+- rejects flags that would suppress the signal it needs, including `--daemon`, `--quiet`, `-q`, `--warn`, `-w`, `--warning-mode none`, and non-plain `--console` values
+- accepts either the original `gradle` command or `./gradlew` explicitly when you want to preserve that choice
+- always runs Gradle with `--no-daemon` and can still share a Gradle user home across runs
 - preserves the Gradle exit code
 - writes the raw log to a reusable per-project `latest` log file
-- summarizes failed tasks, failed tests, warnings, and the final build status
+- summarizes failed tasks, failed tests, warnings, generated bundle artifacts, omitted compilation-output counts, and the final build status
 - supports concise default output plus `raw` replay mode
 - tracks rough token savings over time with `build-brief gains`
 - can install agent instructions locally and into selected global agent instruction files
@@ -90,11 +94,15 @@ Each release publishes archived binaries and checksums for:
 ```bash
 build-brief test
 build-brief build
-build-brief --daemon-mode on --gradle-user-home /tmp/build-brief-gradle-home test
+build-brief gradle test
+build-brief ./gradlew test
+build-brief --gradle-user-home /tmp/build-brief-gradle-home ./gradlew test
 build-brief --project-dir /path/to/project test
 build-brief gains --history
 build-brief -- --stacktrace test
 ```
+
+If you want to keep the original command shape explicit, prefer `build-brief gradle ...` for a PATH-resolved Gradle binary and `build-brief ./gradlew ...` for a project-local wrapper.
 
 If you want to pass Gradle flags that look like `build-brief` flags, use `--` to separate them.
 
@@ -106,28 +114,38 @@ build-brief --help
 
 ## output modes
 
-- default: concise Gradle summary, with especially short output on clean success cases
+- default: concise Gradle summary, with especially short output on clean success cases and standard packaged outputs like APK/AAB/AAR/JAR/WAR/ZIP plus KMP artifacts such as frameworks, XCFrameworks, KLIBs, and KEXEs when they were generated
 - `raw`: replay the captured Gradle log without reduction
+
+For standard Gradle output locations, `build-brief` now uses a hybrid detector: it snapshots known artifact roots before the build, scans them again afterward, and reports only new or changed outputs.
+
+If Gradle or a plugin prints an explicit artifact path in the log, `build-brief` can also use that as a verified hint, but it still checks that the file or bundle really exists and was updated during the current run before showing it.
+
+Successful artifact reporting is only shown for successful runs today. Failed builds still focus on failures, tests, warnings, highlights, and the raw log path.
 
 ## daemon reuse
 
-`build-brief` does not implement its own daemon. It leans on Gradle's normal daemon behavior.
+`build-brief` does not implement its own daemon, and it always adds `--no-daemon` to the Gradle invocation unless you already passed `--no-daemon` yourself.
 
-If you want repeated agent or script runs to reuse the same daemon and caches more reliably, use a shared Gradle user home and keep daemon mode on:
+That means it will not leave a Gradle daemon behind after each run.
+
+If you try to force the opposite behavior with `--daemon`, `build-brief` rejects that flag instead of silently ignoring it.
+
+If you want repeated agent or script runs to reuse caches more reliably, use a shared Gradle user home:
 
 ```bash
-build-brief --daemon-mode on --gradle-user-home /tmp/build-brief-gradle-home test
+build-brief --gradle-user-home /tmp/build-brief-gradle-home ./gradlew test
 ```
 
-That matters most when a CLI or agent is running a loop of Gradle commands in separate subprocesses.
-
-Gradle 9 did not add a single universal "live daemon" for every build. Reuse still depends on normal Gradle compatibility rules like version, Java, JVM args, and Gradle user home.
+That matters most when a CLI or agent is running a loop of Gradle commands in separate subprocesses and you still want a stable cache location even without daemon reuse.
 
 ## raw log behavior
 
 `build-brief` does not keep the full Gradle log in memory.
 
 Instead, it streams output straight to disk and reuses one per-project `latest` log file under the system temp directory. That keeps memory use steady and still leaves you with the full log when the short summary is not enough.
+
+On failures, the concise summary prints the raw log path directly. On long-running builds, `build-brief` also emits periodic stderr heartbeats with the raw log path. Clean successful summaries stay shorter, but the log is still retained on disk and available through `raw` mode.
 
 ## gains and token tracking
 
@@ -141,6 +159,8 @@ build-brief gains --reset
 ```
 
 This is meant as operational feedback, not billing-grade accounting.
+
+The gains view is intentionally token-focused. It does not report execution time or timing-based efficiency stats.
 
 You will see some commands save a lot of tokens and some save none. The feature is most useful when agents are hitting noisy builds, tests, or failures repeatedly.
 
@@ -221,16 +241,15 @@ build-brief rewrite "./gradlew --stacktrace test"
 
 Examples:
 
-- `gradle clean` -> `build-brief -- clean`
-- `./gradlew test` -> `build-brief -- test`
-- `which gradle && gradle clean` -> `command -v build-brief && build-brief -- clean`
+- `gradle clean` -> `build-brief gradle clean`
+- `./gradlew test` -> `build-brief ./gradlew test`
+- `which gradle && gradle clean` -> `command -v build-brief && build-brief gradle clean`
 
 The idea is simple: keep the rewrite rules in one place inside `build-brief`, then let thin integrations call into that logic instead of duplicating shell parsing in every plugin.
 
 ## environment variables
 
 - `BUILD_BRIEF_MODE`
-- `BUILD_BRIEF_DAEMON_MODE`
 - `BUILD_BRIEF_PROJECT_DIR`
 - `BUILD_BRIEF_GRADLE_PATH`
 - `BUILD_BRIEF_GRADLE_USER_HOME`

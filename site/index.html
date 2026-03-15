@@ -42,7 +42,10 @@
           <p class="hero-desc">
             <code>build-brief</code> sits in front of Gradle, keeps the full raw log on
             disk, and cuts terminal output down to the parts that actually matter &mdash;
-            failed tasks, test names, warnings, and build status.
+            failed tasks, test names, warnings, generated artifacts, and build status.
+          </p>
+          <p class="install-note">
+            Inspired by <a href="https://github.com/rtk-ai/rtk" target="_blank" rel="noreferrer">rtk</a>, but built separately because RTK is not compatible enough with Gradle workflows to reuse directly.
           </p>
           <div class="hero-actions">
             <a href="#install" class="btn btn-accent">Install</a>
@@ -112,9 +115,11 @@
             <span class="step-num">01</span>
             <h3>Wraps Gradle</h3>
             <p>
-              Prefers <code>./gradlew</code> when present, falls back to system
-              <code>gradle</code>. Injects <code>--console=plain</code> unless you already
-              set a console mode. Preserves the Gradle exit code.
+              Resolves an explicit <code>--gradle</code> path, an explicit
+              <code>build-brief gradle ...</code> or <code>build-brief ./gradlew ...</code>
+              invocation, then falls back to <code>./gradlew</code> and finally system
+              <code>gradle</code>. Injects <code>--console=plain</code> and blocks
+              flags that would suppress useful signal.
             </p>
           </article>
           <article class="step-card">
@@ -129,8 +134,9 @@
             <span class="step-num">03</span>
             <h3>Returns the signal</h3>
             <p>
-              Default output shows failed tasks, failed test names, warnings, and build
-              status. Clean successes are especially short. Full log path is always printed.
+              Default output shows failed tasks, failed test names, warnings, generated
+              artifacts, and build status. Clean successes are especially short. Failures
+              include the raw log path directly.
             </p>
           </article>
         </div>
@@ -230,10 +236,10 @@
             </p>
           </article>
           <article class="feature-card">
-            <h3>Raw log always available</h3>
+            <h3>Raw log retained on disk</h3>
             <p>
-              The full log is streamed to disk and the path is printed after every run.
-              When the summary is not enough, the complete output is right there.
+              The full log is streamed to disk for every run. Failures and long-running
+              progress updates surface the path directly, and raw mode can replay the full log.
             </p>
           </article>
           <article class="feature-card">
@@ -307,24 +313,24 @@ go build -o build-brief ./cmd/build-brief</code></pre>
           <span class="label-tag">Quick start</span>
           <h2>Commands you will actually use.</h2>
         </div>
-        <div class="cmd-grid" data-stagger>
-          <div class="cmd-card">
-            <span class="cmd-label">Run tests</span>
-            <pre><code>build-brief test</code></pre>
-          </div>
-          <div class="cmd-card">
-            <span class="cmd-label">Run a build</span>
-            <pre><code>build-brief build</code></pre>
-          </div>
-          <div class="cmd-card">
-            <span class="cmd-label">Pin daemon reuse</span>
-            <pre><code>build-brief --daemon-mode on \
-  --gradle-user-home /tmp/bb-gradle test</code></pre>
-          </div>
-          <div class="cmd-card">
+          <div class="cmd-grid" data-stagger>
+            <div class="cmd-card">
+            <span class="cmd-label">Use system Gradle</span>
+            <pre><code>build-brief gradle test</code></pre>
+            </div>
+            <div class="cmd-card">
+            <span class="cmd-label">Use the project wrapper</span>
+            <pre><code>build-brief ./gradlew build</code></pre>
+            </div>
+            <div class="cmd-card">
+            <span class="cmd-label">Share Gradle caches</span>
+            <pre><code>build-brief --gradle-user-home \
+  /tmp/bb-gradle ./gradlew test</code></pre>
+            </div>
+            <div class="cmd-card">
             <span class="cmd-label">Pass flags to Gradle</span>
-            <pre><code>build-brief -- --stacktrace test</code></pre>
-          </div>
+            <pre><code>build-brief gradle --stacktrace test</code></pre>
+            </div>
           <div class="cmd-card">
             <span class="cmd-label">Check token savings</span>
             <pre><code>build-brief gains --history</code></pre>
@@ -411,7 +417,7 @@ build-brief --install-force</code></pre>
             <p>
               <code>build-brief gains</code> reports rough token savings using a
               chars-divided-by-4 estimate. Useful when agents hit noisy builds
-              repeatedly. Not billing-grade.
+              repeatedly. Not billing-grade, and intentionally focused on tokens rather than timing stats.
             </p>
             <pre><code>build-brief gains --history
 build-brief gains --format json
@@ -469,9 +475,19 @@ build-brief gains --reset</code></pre>
           <details>
             <summary>How does daemon reuse work?</summary>
             <p>
-              build-brief does not implement its own daemon. It leans on Gradle's normal
-              daemon behavior. Use <code>--daemon-mode on</code> and a shared
-              <code>--gradle-user-home</code> for more reliable reuse across repeated runs.
+              build-brief always runs Gradle with <code>--no-daemon</code>, so it does not
+              leave a live daemon behind after the command finishes. If you want repeated
+              runs to share caches, point them at the same
+              <code>--gradle-user-home</code>. Trying to force <code>--daemon</code> is rejected.
+            </p>
+          </details>
+          <details>
+            <summary>Why not just use RTK?</summary>
+            <p>
+              build-brief is inspired by RTK, but RTK is not compatible enough with Gradle
+              workflows for this use case. build-brief keeps the same goal &mdash; reducing
+              noisy tool output for humans and agents &mdash; while handling Gradle-specific
+              command resolution, flag rules, failure summaries, and artifact reporting.
             </p>
           </details>
           <details>
