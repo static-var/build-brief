@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>build-brief | Gradle output, compressed</title>
+    <meta
+      name="description"
+      content="build-brief turns noisy Gradle output into short, useful summaries for humans, scripts, and coding agents without hiding the raw log."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;500;600&family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-noise"></div>
+    <header class="topbar">
+      <a class="brand" href="#top">
+        <span class="brand-mark">bb</span>
+        <span class="brand-text">build-brief</span>
+      </a>
+      <nav class="topnav">
+        <a href="#why">why</a>
+        <a href="#install">install</a>
+        <a href="#faq">faq</a>
+        <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer">github</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero shell">
+        <div class="hero-copy">
+          <p class="eyebrow">gradle build brief / bb.staticvar.dev</p>
+          <h1>Keep the log. Lose the wall of text.</h1>
+          <p class="lede">
+            <code>build-brief</code> sits in front of Gradle, keeps the full raw log on disk,
+            and returns the parts people and coding agents actually need: failures, warnings,
+            test summaries, and final status.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#install">Install it</a>
+            <a
+              class="button button-secondary"
+              href="https://github.com/static-var/build-brief/releases/tag/v0.0.1"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Latest release
+            </a>
+          </div>
+          <ul class="hero-points">
+            <li>Made for humans, scripts, and agent loops.</li>
+            <li>Works with Spring Boot, Ktor, Android, KMP, and plain JVM builds.</li>
+            <li>Available with Homebrew on macOS and Linuxbrew on Linux.</li>
+          </ul>
+        </div>
+
+        <aside class="terminal-card" aria-label="Example terminal output">
+          <div class="terminal-head">
+            <span></span><span></span><span></span>
+            <p>summary mode</p>
+          </div>
+          <div class="terminal-body">
+            <p><span class="prompt">$</span> build-brief test</p>
+            <p class="muted">build-brief: still running after 30s (raw log retained)</p>
+            <p><span class="label">failed tasks</span> <strong>:app:test</strong></p>
+            <p><span class="label">failed tests</span> <strong>2</strong></p>
+            <p class="indent">- ExampleServiceTest > returns 500 on timeout</p>
+            <p class="indent">- CacheLayerTest > evicts stale entry</p>
+            <p><span class="label">warnings</span> <strong>6</strong></p>
+            <p><span class="label">status</span> <strong class="danger">FAILED</strong></p>
+            <p class="muted">raw log: /tmp/build-brief/build-brief-a13f.latest.log</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="signal-strip">
+        <div>
+          <span class="signal-value">brew</span>
+          <span class="signal-label">macOS + Linux install</span>
+        </div>
+        <div>
+          <span class="signal-value">v0.0.1</span>
+          <span class="signal-label">live release</span>
+        </div>
+        <div>
+          <span class="signal-value">raw logs</span>
+          <span class="signal-label">always retained</span>
+        </div>
+        <div>
+          <span class="signal-value">agents</span>
+          <span class="signal-label">less context pollution</span>
+        </div>
+      </section>
+
+      <section id="why" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">why teams use it</p>
+          <h2>Gradle output is fine until it becomes everyone’s problem.</h2>
+          <p>
+            It’s not just a readability thing. Long Gradle output slows down debugging,
+            buries the actual failure, and burns tokens when coding agents keep re-running
+            builds in a loop.
+          </p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>Readable by default</h3>
+            <p>
+              Successful runs stay short. Failing runs surface the failed tasks, test names,
+              warnings, and the final result without making you scroll through pages of noise.
+            </p>
+          </article>
+          <article class="feature-card">
+            <h3>Agent-friendly on purpose</h3>
+            <p>
+              The tool is built for coding loops. That means less junk in terminal transcripts
+              and less wasted context when agents keep hitting Gradle commands.
+            </p>
+          </article>
+          <article class="feature-card">
+            <h3>Raw logs stay available</h3>
+            <p>
+              Nothing important is thrown away. `build-brief` streams the full log to disk and
+              points you to it whenever the short summary is not enough.
+            </p>
+          </article>
+          <article class="feature-card">
+            <h3>Works across Gradle stacks</h3>
+            <p>
+              Spring Boot, Ktor, Android, Kotlin Multiplatform, plain JVM, and multi-module
+              projects all work because the tool wraps the Gradle process itself.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section callout-grid">
+        <article class="callout">
+          <p class="eyebrow">especially useful when</p>
+          <h3>You are running build loops all day</h3>
+          <p>
+            If you bounce between `test`, `build`, `assemble`, and failing retries, the gain is
+            immediate. Less scroll. Faster failure recognition. Cleaner terminal history.
+          </p>
+        </article>
+        <article class="callout callout-accent">
+          <p class="eyebrow">especially useful when</p>
+          <h3>You are using AI tools against a Gradle repo</h3>
+          <p>
+            Coding agents do not need every task line and daemon blip. They need signal.
+            `build-brief` was built to preserve that signal while keeping the raw log one step away.
+          </p>
+        </article>
+      </section>
+
+      <section id="install" class="section install-shell">
+        <div class="section-heading">
+          <p class="eyebrow">install</p>
+          <h2>Use brew on macOS or Linux, or grab a release binary directly.</h2>
+        </div>
+
+        <div class="install-tabs" role="tablist" aria-label="Install methods">
+          <button class="install-tab is-active" data-tab="brew" role="tab" aria-selected="true">brew</button>
+          <button class="install-tab" data-tab="binary" role="tab" aria-selected="false">binary</button>
+          <button class="install-tab" data-tab="source" role="tab" aria-selected="false">source</button>
+        </div>
+
+        <div class="install-panels">
+          <article class="install-panel is-active" data-panel="brew">
+            <div class="code-block">
+              <button class="copy-button" data-copy="brew tap static-var/tap&#10;brew install static-var/tap/build-brief">copy</button>
+              <pre><code>brew tap static-var/tap
+brew install static-var/tap/build-brief</code></pre>
+            </div>
+            <p class="install-note">
+              This formula works with Homebrew on macOS and Linuxbrew on Linux.
+            </p>
+          </article>
+
+          <article class="install-panel" data-panel="binary">
+            <div class="code-block">
+              <button class="copy-button" data-copy="open https://github.com/static-var/build-brief/releases/tag/v0.0.1">copy link</button>
+              <pre><code>Download the archive that matches your machine:
+
+- build-brief_0.0.1_darwin_arm64.tar.gz
+- build-brief_0.0.1_darwin_amd64.tar.gz
+- build-brief_0.0.1_linux_arm64.tar.gz
+- build-brief_0.0.1_linux_amd64.tar.gz
+- build-brief_0.0.1_windows_arm64.zip
+- build-brief_0.0.1_windows_amd64.zip</code></pre>
+            </div>
+          </article>
+
+          <article class="install-panel" data-panel="source">
+            <div class="code-block">
+              <button class="copy-button" data-copy="git clone https://github.com/static-var/build-brief.git&#10;cd build-brief&#10;go build -o build-brief ./cmd/build-brief">copy</button>
+              <pre><code>git clone https://github.com/static-var/build-brief.git
+cd build-brief
+go build -o build-brief ./cmd/build-brief</code></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">quick start</p>
+          <h2>A few commands you’ll actually use.</h2>
+        </div>
+
+        <div class="command-grid">
+          <article class="command-card">
+            <p class="command-title">Run tests</p>
+            <pre><code>build-brief test</code></pre>
+          </article>
+          <article class="command-card">
+            <p class="command-title">Run a build</p>
+            <pre><code>build-brief build</code></pre>
+          </article>
+          <article class="command-card">
+            <p class="command-title">Keep daemon reuse steady</p>
+            <pre><code>build-brief --daemon-mode on --gradle-user-home /tmp/build-brief-gradle-home test</code></pre>
+          </article>
+          <article class="command-card">
+            <p class="command-title">Inspect savings</p>
+            <pre><code>build-brief gains --history</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="faq" class="section faq-section">
+        <div class="section-heading">
+          <p class="eyebrow">faq</p>
+          <h2>The usual questions.</h2>
+        </div>
+
+        <div class="faq-list">
+          <details open>
+            <summary>Does it replace Gradle?</summary>
+            <p>
+              No. It wraps Gradle, keeps the exit code, and preserves the raw output. The goal is
+              a better default terminal view, not a new build system.
+            </p>
+          </details>
+          <details>
+            <summary>Does it hide stack traces or real failures?</summary>
+            <p>
+              No. Failures stay visible. If the short summary is not enough, the raw log path is
+              already there so you can inspect the full output.
+            </p>
+          </details>
+          <details>
+            <summary>Is this only for one type of Gradle project?</summary>
+            <p>
+              No. It works at the Gradle process and log level, so it is designed for Spring Boot,
+              Ktor, Android, KMP, plain JVM projects, and multi-project builds.
+            </p>
+          </details>
+          <details>
+            <summary>Why use this with coding agents?</summary>
+            <p>
+              Because agents tend to re-run noisy commands over and over. Short summaries make it
+              easier for them and for you to spot what changed without flooding the transcript.
+            </p>
+          </details>
+          <details>
+            <summary>Which domain should we use?</summary>
+            <p>
+              I’d use <strong>bb.staticvar.dev</strong>. It is shorter, easier to say out loud,
+              and still maps cleanly to “build brief.” If you prefer the more explicit version,
+              `gbb.staticvar.dev` is still easy to support later.
+            </p>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>build-brief by static-var</p>
+      <div>
+        <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/static-var/build-brief/releases/tag/v0.0.1" target="_blank" rel="noreferrer">Release</a>
+        <a href="https://github.com/static-var/homebrew-tap" target="_blank" rel="noreferrer">Tap</a>
+      </div>
+    </footer>
+
+    <script src="./site.js"></script>
+  </body>
+</html>
