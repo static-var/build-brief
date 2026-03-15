@@ -79,7 +79,7 @@ checksums = {name: sha256(path) for name, path in artifacts.items()}
 
 formula = f"""class BuildBrief < Formula
   desc "Reduce noisy Gradle output into concise build summaries"
-  homepage "https://github.com/{repo}"
+  homepage "https://bb.staticvar.dev"
   version "{version}"
   license "MIT"
 

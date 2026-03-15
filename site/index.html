@@ -258,15 +258,31 @@
       <div class="container">
         <div class="section-head" data-animate>
           <span class="label-tag">Install</span>
-          <h2>Homebrew, binary, or source.</h2>
+          <h2>Script, Homebrew, binary, or source.</h2>
         </div>
         <div data-animate>
           <div class="tab-bar" role="tablist" aria-label="Install methods">
+            <button class="tab" data-tab="script" role="tab" aria-selected="false">script</button>
             <button class="tab is-active" data-tab="brew" role="tab" aria-selected="true">brew</button>
             <button class="tab" data-tab="binary" role="tab" aria-selected="false">binary</button>
             <button class="tab" data-tab="source" role="tab" aria-selected="false">source</button>
           </div>
           <div class="tab-panels">
+            <div class="tab-panel" data-panel="script">
+              <div class="code-block">
+                <button class="copy-btn" data-copy="curl -fsSL https://bb.staticvar.dev/install.sh | bash">copy</button>
+                <pre><code>curl -fsSL https://bb.staticvar.dev/install.sh | bash
+wget -qO- https://bb.staticvar.dev/install.sh | bash</code></pre>
+              </div>
+              <p class="install-note">
+                macOS/Linux installer. Downloads the latest matching release archive, verifies checksums, and installs into a writable bin directory.
+              </p>
+              <div class="code-block">
+                <button class="copy-btn" data-copy="curl -fsSL https://bb.staticvar.dev/install.sh | bash -s -- --bin-dir /usr/local/bin">copy args</button>
+                <pre><code>curl -fsSL https://bb.staticvar.dev/install.sh | bash -s -- --bin-dir /usr/local/bin
+curl -fsSL https://bb.staticvar.dev/install.sh | bash -s -- --version 0.1.0</code></pre>
+              </div>
+            </div>
             <div class="tab-panel is-active" data-panel="brew">
               <div class="code-block">
                 <button class="copy-btn" data-copy="brew tap static-var/tap&#10;brew install static-var/tap/build-brief">copy</button>
@@ -402,6 +418,9 @@ build-brief --install-force</code></pre>
             <span class="label-tag">Scope</span>
             <h2>What it covers.</h2>
             <p>build-brief works at the Gradle process and log level. It is not tied to any particular plugin stack or framework.</p>
+            <p class="install-note">
+              Coverage is broad, but still early. Standard Gradle layouts work best today; unusual plugins, custom output directories, or unsupported tool integrations may still have rough edges.
+            </p>
             <div class="scope-tags">
               <span class="scope-tag">Spring Boot</span>
               <span class="scope-tag">Ktor</span>
@@ -488,6 +507,23 @@ build-brief gains --reset</code></pre>
               workflows for this use case. build-brief keeps the same goal &mdash; reducing
               noisy tool output for humans and agents &mdash; while handling Gradle-specific
               command resolution, flag rules, failure summaries, and artifact reporting.
+            </p>
+          </details>
+          <details>
+            <summary>Where might it not work as expected yet?</summary>
+            <p>
+              The happy path is strongest for standard Gradle command shapes and standard
+              output locations. Custom artifact directories, unusual plugins, unsupported
+              agent integrations, or odd shell wrappers may still need the retained raw log
+              as the fallback source of truth.
+            </p>
+          </details>
+          <details>
+            <summary>Is it heavily tested on every platform?</summary>
+            <p>
+              Not yet. The project targets macOS, Linux, and Windows, but it has not been
+              heavily tested across every OS, shell, CI environment, and Gradle/plugin
+              combination so far. Some bugs and rough edges are still expected.
             </p>
           </details>
           <details>

@@ -8,6 +8,8 @@ Gradle output gets noisy fast. That is manageable when you are running one build
 
 It is inspired by [`rtk`](https://github.com/rtk-ai/rtk), but RTK is not compatible enough with Gradle workflows to reuse directly here, so `build-brief` applies the same output-reduction idea specifically to Gradle builds.
 
+Project site: <https://bb.staticvar.dev>
+
 ## what it does
 
 - resolves Gradle in this order: explicit `--gradle` path, explicit invocation like `build-brief gradle ...` or `build-brief ./gradlew ...`, project-local `./gradlew`, then system `gradle`
@@ -45,6 +47,24 @@ mv build-brief /usr/local/bin/
 ```
 
 On Windows, build `build-brief.exe` and place it in a directory that is already on `PATH`.
+
+### install with a shell script
+
+For macOS and Linux, there is also a pipe-to-bash installer that downloads the latest matching release archive, verifies its checksum, and installs `build-brief` into a writable bin directory.
+
+```bash
+curl -fsSL https://bb.staticvar.dev/install.sh | bash
+wget -qO- https://bb.staticvar.dev/install.sh | bash
+```
+
+You can pass installer options through `bash -s --`, for example:
+
+```bash
+curl -fsSL https://bb.staticvar.dev/install.sh | bash -s -- --bin-dir /usr/local/bin
+curl -fsSL https://bb.staticvar.dev/install.sh | bash -s -- --version 0.1.0
+```
+
+The script currently targets Unix-like systems. Windows should keep using the release archives or build-from-source path.
 
 ### install with Homebrew or Linuxbrew
 
@@ -176,6 +196,17 @@ That means it is meant to work across:
 - Kotlin Multiplatform
 - plain JVM projects
 - multi-project Gradle builds
+
+## current limitations
+
+`build-brief` is meant to be broadly useful across Gradle projects, but some parts are still best-effort today.
+
+- Artifact reporting is strongest for standard Gradle output locations plus verified artifact paths that appear in logs. Custom output directories or unusual plugin layouts may not always be detected correctly.
+- The command-rewrite and agent-install flows target common Gradle command shapes and known tool integrations. Unusual shell constructs, custom hooks, or unsupported agent tools may bypass that path.
+- Clean successful runs intentionally stay very short, so some details are only available through the retained raw log or `raw` mode.
+- Platform support exists for macOS, Linux, and Windows, but the project has not been heavily tested across every OS, shell, CI environment, and Gradle/plugin combination yet.
+
+Expect some bugs and rough edges, especially on less-common setups. If something looks wrong, keep the raw log, rerun in `raw` mode if needed, and treat that as the fallback source of truth.
 
 ## installing agent instructions
 
