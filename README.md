@@ -16,8 +16,35 @@ Project site: <https://bb.staticvar.dev>
 - writes the raw log to a reusable per-project `latest` log file
 - summarizes failed tasks, failed tests, warnings, generated bundle artifacts, omitted compilation-output counts, and the final build status
 - supports concise default output plus `raw` replay mode
-- tracks rough token savings over time with `build-brief gains`
+- keeps rough token-savings history with `build-brief gains`
 - can install agent instructions locally and into selected global agent instruction files
+
+## real output examples
+
+Failure summary with assertion mismatch:
+
+```text
+$ build-brief gradle test --tests example.FailingTest
+BUILD FAILED in 564ms
+Command: gradle --console=plain test --tests example.FailingTest
+Failed tasks:
+  - :test
+Failed tests:
+  - FailingTest > intentionalFailure()
+Highlights:
+  - FailingTest > intentionalFailure(): org.opentest4j.AssertionFailedError: expected: <expected> but was: <hello, build-brief>
+  - at example.FailingTest.intentionalFailure(FailingTest.java:10)
+Raw log: /tmp/build-brief/...latest.log
+```
+
+Warm successful Android build with APK path:
+
+```text
+$ build-brief ./gradlew :androidApp:assembleDebug
+BUILD SUCCESSFUL in 3s
+Artifacts:
+  - APK: androidApp/build/outputs/apk/debug/androidApp-debug.apk (24.5 MB)
+```
 
 ## installation
 
@@ -100,33 +127,6 @@ For the full command reference, run:
 build-brief --help
 ```
 
-## real output examples
-
-Failure summary with assertion mismatch:
-
-```text
-$ build-brief gradle test --tests example.FailingTest
-BUILD FAILED in 564ms
-Command: gradle --console=plain test --tests example.FailingTest
-Failed tasks:
-  - :test
-Failed tests:
-  - FailingTest > intentionalFailure()
-Highlights:
-  - FailingTest > intentionalFailure(): org.opentest4j.AssertionFailedError: expected: <expected> but was: <hello, build-brief>
-  - at example.FailingTest.intentionalFailure(FailingTest.java:10)
-Raw log: /tmp/build-brief/...latest.log
-```
-
-Warm successful Android build with APK path:
-
-```text
-$ build-brief ./gradlew :androidApp:assembleDebug
-BUILD SUCCESSFUL in 3s
-Artifacts:
-  - APK: androidApp/build/outputs/apk/debug/androidApp-debug.apk (24.5 MB)
-```
-
 ## output modes
 
 - default: concise Gradle summary, with especially short output on clean success cases and standard packaged outputs like APK/AAB/AAR/JAR/WAR/ZIP plus KMP artifacts such as frameworks, XCFrameworks, KLIBs, and KEXEs when they were generated or are still available for the targeted artifact-producing task
@@ -158,7 +158,7 @@ Instead, it streams output straight to disk and reuses one per-project `latest` 
 
 On failures, the concise summary prints the raw log path directly. On long-running builds, `build-brief` also emits periodic stderr heartbeats with the raw log path. Clean successful summaries stay shorter, but the log is still retained on disk and available through `raw` mode.
 
-## gains and token tracking
+## gains and token estimates
 
 `build-brief gains` shows rough token savings based on a simple chars-divided-by-4 estimate.
 
@@ -169,7 +169,7 @@ build-brief gains --format json
 build-brief gains --reset
 ```
 
-It is meant as operational feedback, not billing-grade accounting, and it stays intentionally token-focused rather than time-focused.
+It is meant for rough savings/accounting feedback, not billing-grade accounting, and it stays intentionally token-focused rather than time-focused.
 
 ## supported Gradle projects
 
@@ -232,6 +232,44 @@ Today the registry covers these tools:
 | Gemini CLI | `gemini` | `~/.gemini/GEMINI.md` |
 
 For OpenCode, `--global` also writes `plugins/build-brief.ts` next to the selected config root, and that plugin delegates rewrite decisions to `build-brief rewrite`.
+
+## other agentic AI tools
+
+If your tool supports `AGENTS.md`, an instructions file, or something similar, drop in a short block like this:
+
+```md
+Use `build-brief` for routine Gradle commands.
+
+- Prefer `build-brief gradle ...` for a PATH-resolved Gradle binary.
+- Prefer `build-brief ./gradlew ...` when the repo has a Gradle wrapper.
+- Let `build-brief` keep `--console=plain` and normalize output-shaping flags.
+- Do not add `--daemon` or `--no-daemon`; let normal daemon reuse happen.
+- Fall back to raw Gradle only when the reduced summary is not enough.
+```
+
+That gives unsupported tools a simple, portable default without depending on a custom plugin API.
+
+## Claude Code hook example
+
+Claude Code hooks do not behave the same way as the managed OpenCode plugin.
+
+- OpenCode can transparently rewrite a command before execution.
+- Claude Code `PreToolUse` hooks can inspect a bash command, block it, and suggest the rewritten command, but they cannot transparently mutate the command and continue in place.
+
+Example files:
+
+- `examples/hooks/claude-code/pretooluse-build-brief.sh`
+- `examples/hooks/claude-code/settings.json`
+
+Typical setup:
+
+```bash
+mkdir -p .claude/hooks
+cp examples/hooks/claude-code/pretooluse-build-brief.sh .claude/hooks/
+chmod +x .claude/hooks/pretooluse-build-brief.sh
+```
+
+Then merge the `PreToolUse` snippet from `examples/hooks/claude-code/settings.json` into your Claude Code settings file.
 
 ## rewrite command
 

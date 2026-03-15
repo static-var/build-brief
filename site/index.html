@@ -51,6 +51,10 @@
             <a href="#install" class="btn btn-accent">Install</a>
             <a href="https://github.com/static-var/build-brief" target="_blank" rel="noreferrer" class="btn btn-outline">View on GitHub</a>
           </div>
+          <div class="hero-gains">
+            <span class="label-tag">Recent local gains</span>
+            <p><strong>40.5K raw tokens -&gt; 1.3K emitted</strong> across recent runs, or roughly <strong>96.8% saved</strong>.</p>
+          </div>
           <ul class="hero-facts">
             <li>Made for humans, scripts, and agent loops.</li>
             <li>Works with Spring Boot, Ktor, Android, KMP, and plain JVM builds.</li>
@@ -97,44 +101,6 @@
         </div>
       </div>
     </div>
-
-    <!-- ── How it works ──────────────────────────────────────── -->
-    <section id="how" class="section">
-      <div class="container">
-        <div class="section-head" data-animate>
-          <span class="label-tag">How it works</span>
-          <h2>Three steps. Nothing hidden.</h2>
-        </div>
-        <div class="steps" data-stagger>
-          <article class="step-card">
-            <span class="step-num">01</span>
-              <h3>Wraps Gradle</h3>
-              <p>
-                Resolves an explicit <code>--gradle</code> path, an explicit
-                <code>build-brief gradle ...</code> or <code>build-brief ./gradlew ...</code>
-                invocation, then falls back to <code>./gradlew</code> and finally system
-                <code>gradle</code>. It normalizes output-shaping flags to keep parsing stable.
-              </p>
-            </article>
-          <article class="step-card">
-            <span class="step-num">02</span>
-            <h3>Logs everything to disk</h3>
-            <p>
-              Streams the full raw output to a reusable per-project log file. Nothing is
-              thrown away. Memory use stays steady regardless of output size.
-            </p>
-          </article>
-          <article class="step-card">
-            <span class="step-num">03</span>
-              <h3>Returns the signal</h3>
-              <p>
-                Default output shows failed tasks, failed test names, warnings, generated
-                artifacts, assertion details, and build status.
-              </p>
-            </article>
-          </div>
-      </div>
-    </section>
 
     <!-- ── Before / After ────────────────────────────────────── -->
     <section id="compare" class="section">
@@ -183,6 +149,44 @@
               <p class="t-dim">raw log: /tmp/build-brief/...latest.log</p>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── How it works ──────────────────────────────────────── -->
+    <section id="how" class="section">
+      <div class="container">
+        <div class="section-head" data-animate>
+          <span class="label-tag">How it works</span>
+          <h2>Three steps. Nothing hidden.</h2>
+        </div>
+        <div class="steps" data-stagger>
+          <article class="step-card">
+            <span class="step-num">01</span>
+            <h3>Wraps Gradle</h3>
+            <p>
+              Resolves an explicit <code>--gradle</code> path, an explicit
+              <code>build-brief gradle ...</code> or <code>build-brief ./gradlew ...</code>
+              invocation, then falls back to <code>./gradlew</code> and finally system
+              <code>gradle</code>. It normalizes output-shaping flags to keep parsing stable.
+            </p>
+          </article>
+          <article class="step-card">
+            <span class="step-num">02</span>
+            <h3>Logs everything to disk</h3>
+            <p>
+              Streams the full raw output to a reusable per-project log file. Nothing is
+              thrown away. Memory use stays steady regardless of output size.
+            </p>
+          </article>
+          <article class="step-card">
+            <span class="step-num">03</span>
+            <h3>Returns the signal</h3>
+            <p>
+              Default output shows failed tasks, failed test names, warnings, generated
+              artifacts, assertion details, and build status.
+            </p>
+          </article>
         </div>
       </div>
     </section>
@@ -299,7 +303,7 @@ go build -o build-brief ./cmd/build-brief</code></pre>
         <div class="section-head" data-animate>
           <span class="label-tag">Agent integration</span>
           <h2>Teach your tools to use it.</h2>
-          <p>Install instructions so supported tools route routine Gradle work through <code>build-brief</code>.</p>
+          <p>Install instructions for supported tools, or paste a short rule block into any other AI tool that supports repo or user instructions.</p>
         </div>
         <div class="agent-modes" data-stagger>
           <div class="agent-mode-card">
@@ -337,6 +341,27 @@ build-brief --install-force</code></pre>
             <code class="tool-path">~/.gemini/GEMINI.md</code>
           </div>
         </div>
+        <div class="agent-guides" data-stagger>
+          <div class="agent-guide-card">
+            <h3>Any other AI tool</h3>
+            <p>Paste this into <code>AGENTS.md</code>, an instructions file, or the closest equivalent.</p>
+            <pre><code>Use `build-brief` for routine Gradle commands.
+
+- Prefer `build-brief gradle ...` for a PATH-resolved Gradle binary.
+- Prefer `build-brief ./gradlew ...` when the repo has a Gradle wrapper.
+- Let `build-brief` keep `--console=plain` and normalize output-shaping flags.
+- Do not add `--daemon` or `--no-daemon`; let normal daemon reuse happen.
+- Fall back to raw Gradle only when the reduced summary is not enough.</code></pre>
+          </div>
+          <div class="agent-guide-card">
+            <h3>Claude Code hook</h3>
+            <p>Claude Code can block and suggest a rewritten Gradle command via <code>PreToolUse</code>. Unlike the managed OpenCode plugin, it cannot transparently mutate the command and continue in place.</p>
+            <pre><code>cp examples/hooks/claude-code/pretooluse-build-brief.sh \
+  .claude/hooks/
+chmod +x .claude/hooks/pretooluse-build-brief.sh</code></pre>
+            <p class="install-note">Then merge <code>examples/hooks/claude-code/settings.json</code> into your Claude Code settings.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -361,11 +386,11 @@ build-brief --install-force</code></pre>
             </div>
           </div>
           <div class="gains-box" data-animate>
-            <span class="label-tag">Token tracking</span>
-            <h3>Operational feedback</h3>
+            <span class="label-tag">Token savings</span>
+            <h3>Rough token accounting</h3>
             <p>
-              <code>build-brief gains</code> reports rough token savings using a
-              chars-divided-by-4 estimate. Useful for noisy repeated builds. Not billing-grade.
+              <code>build-brief gains</code> estimates rough token savings with a
+              chars-divided-by-4 heuristic. Useful for noisy repeated builds. Not billing-grade.
             </p>
             <pre><code>build-brief gains --history
 build-brief gains --format json
@@ -396,9 +421,9 @@ build-brief gains --reset</code></pre>
             </p>
           </details>
           <details>
-            <summary>How accurate is the token tracking?</summary>
+            <summary>How accurate are the savings numbers?</summary>
             <p>
-              Approximate. It uses a chars-divided-by-4 estimate and is meant as operational feedback.
+              Approximate. It uses a chars-divided-by-4 estimate and is meant for rough savings/accounting feedback.
             </p>
           </details>
           <details>

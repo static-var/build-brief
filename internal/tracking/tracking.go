@@ -192,7 +192,7 @@ func Reset() error {
 
 func RenderText(w io.Writer, report Report, history bool) error {
 	if report.Summary.TotalCommands == 0 {
-		_, err := fmt.Fprintln(w, "No tracking data yet.")
+		_, err := fmt.Fprintln(w, "No gains data yet.")
 		return err
 	}
 

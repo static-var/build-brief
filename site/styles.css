@@ -285,6 +285,20 @@ main {
   top: 0.4em;
 }
 
+.hero-gains {
+  margin: 0 0 1.1rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(186, 230, 55, 0.16);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(186, 230, 55, 0.06), rgba(125, 211, 252, 0.04));
+}
+
+.hero-gains p {
+  margin: 0.45rem 0 0;
+  color: var(--text-2);
+  font-size: 0.92rem;
+}
+
 /* ── Buttons ───────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
@@ -709,6 +723,38 @@ main {
   color: var(--text-3);
 }
 
+.agent-guides {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin-top: 1.2rem;
+}
+
+.agent-guide-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.4rem;
+}
+
+.agent-guide-card p {
+  color: var(--text-2);
+  margin: 0.4rem 0;
+  font-size: 0.92rem;
+}
+
+.agent-guide-card pre {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  margin: 0.7rem 0 0;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 /* ── Scope ─────────────────────────────────────────────────── */
 .scope-split {
   display: grid;
@@ -772,7 +818,7 @@ main {
 .faq-list {
   display: grid;
   gap: 0.6rem;
-  max-width: 800px;
+  width: 100%;
 }
 
 .faq-list details {
@@ -908,6 +954,7 @@ main {
   .steps,
   .features,
   .agent-modes,
+  .agent-guides,
   .scope-split {
     grid-template-columns: 1fr;
   }
