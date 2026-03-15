@@ -24,40 +24,22 @@ type Command struct {
 	Source     Source   `json:"source"`
 }
 
-type DaemonMode string
-
-const (
-	DaemonModeAuto DaemonMode = "auto"
-	DaemonModeOn   DaemonMode = "on"
-	DaemonModeOff  DaemonMode = "off"
-)
-
 type StableArgsOptions struct {
-	DaemonMode     DaemonMode
 	GradleUserHome string
 }
 
-func Resolve(projectDir, explicitPath string) (Command, error) {
+func Resolve(projectDir, explicitPath, invocation string) (Command, error) {
 	absProjectDir, err := filepath.Abs(projectDir)
 	if err != nil {
 		return Command{}, fmt.Errorf("resolve project directory: %w", err)
 	}
 
 	if explicitPath != "" {
-		absGradle, err := filepath.Abs(explicitPath)
-		if err != nil {
-			return Command{}, fmt.Errorf("resolve explicit Gradle path: %w", err)
-		}
+		return resolveExplicitExecutable(absProjectDir, explicitPath)
+	}
 
-		if _, err := os.Stat(absGradle); err != nil {
-			return Command{}, fmt.Errorf("explicit Gradle path %q is not available: %w", absGradle, err)
-		}
-
-		return Command{
-			Executable: absGradle,
-			ProjectDir: absProjectDir,
-			Source:     SourceExplicit,
-		}, nil
+	if invocation != "" {
+		return resolveInvocation(absProjectDir, invocation)
 	}
 
 	for _, candidate := range wrapperCandidates(absProjectDir) {
@@ -97,15 +79,64 @@ func ApplyStableArgs(args []string, opts StableArgsOptions) []string {
 	}
 
 	if !hasDaemonFlag(args) {
-		switch normalizeDaemonMode(opts.DaemonMode) {
-		case DaemonModeOn:
-			stable = append(stable, "--daemon")
-		case DaemonModeOff:
-			stable = append(stable, "--no-daemon")
-		}
+		stable = append(stable, "--no-daemon")
 	}
 
 	return append(stable, args...)
+}
+
+func SplitInvocation(args []string) (string, []string) {
+	if len(args) == 0 {
+		return "", args
+	}
+
+	if !looksLikeGradleInvocation(args[0]) {
+		return "", args
+	}
+
+	return args[0], args[1:]
+}
+
+func ValidateArgs(args []string) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--daemon":
+			return fmt.Errorf("Gradle flag %q is not allowed; build-brief always runs Gradle with --no-daemon", arg)
+		case arg == "--quiet" || arg == "-q" || arg == "--warn" || arg == "-w" || arg == "--silent" || arg == "--silence" || arg == "--slience":
+			return fmt.Errorf("Gradle flag %q is not allowed; build-brief already reduces noisy output and needs the normal Gradle signal", arg)
+		case arg == "--console":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for Gradle flag %s", arg)
+			}
+			i++
+			value := strings.TrimSpace(args[i])
+			if !strings.EqualFold(value, "plain") {
+				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief always uses --console=plain", arg, value)
+			}
+		case strings.HasPrefix(arg, "--console="):
+			value := strings.TrimSpace(strings.TrimPrefix(arg, "--console="))
+			if !strings.EqualFold(value, "plain") {
+				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief always uses --console=plain", "--console", value)
+			}
+		case arg == "--warning-mode":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for Gradle flag %s", arg)
+			}
+			i++
+			value := strings.TrimSpace(args[i])
+			if strings.EqualFold(value, "none") {
+				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief keeps warnings visible in its summary", arg, value)
+			}
+		case strings.HasPrefix(arg, "--warning-mode="):
+			value := strings.TrimSpace(strings.TrimPrefix(arg, "--warning-mode="))
+			if strings.EqualFold(value, "none") {
+				return fmt.Errorf("Gradle flag %q with value %q is not allowed; build-brief keeps warnings visible in its summary", "--warning-mode", value)
+			}
+		}
+	}
+
+	return nil
 }
 
 func (c Command) DisplayLine() string {
@@ -115,9 +146,17 @@ func (c Command) DisplayLine() string {
 func (c Command) TrackingLine() string {
 	filtered := make([]string, 0, len(c.Args))
 	skipNext := false
+	nextValueMode := ""
 	for _, arg := range c.Args {
 		if skipNext {
 			skipNext = false
+			switch nextValueMode {
+			case "keep":
+				filtered = append(filtered, arg)
+			case "redact":
+				filtered = append(filtered, "<redacted>")
+			}
+			nextValueMode = ""
 			continue
 		}
 
@@ -128,15 +167,79 @@ func (c Command) TrackingLine() string {
 			continue
 		case arg == "--gradle-user-home":
 			skipNext = true
+			nextValueMode = "drop"
 			continue
 		case strings.HasPrefix(arg, "--gradle-user-home="):
 			continue
-		default:
+		case arg == "--project-prop" || arg == "--system-prop":
 			filtered = append(filtered, arg)
+			skipNext = true
+			nextValueMode = "redact"
+		case arg == "--tests" || arg == "-x" || arg == "--exclude-task":
+			filtered = append(filtered, arg)
+			skipNext = true
+			nextValueMode = "keep"
+		case strings.HasPrefix(arg, "--tests="), strings.HasPrefix(arg, "--exclude-task="):
+			filtered = append(filtered, arg)
+		case shouldRedactTrackingArg(arg):
+			filtered = append(filtered, redactTrackingArg(arg))
+		case shouldKeepTrackingArg(arg):
+			filtered = append(filtered, arg)
+		default:
+			continue
 		}
 	}
 
 	return strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " ")
+}
+
+func shouldRedactTrackingArg(arg string) bool {
+	return strings.HasPrefix(arg, "-P") ||
+		strings.HasPrefix(arg, "-D") ||
+		arg == "--project-prop" ||
+		arg == "--system-prop"
+}
+
+func redactTrackingArg(arg string) string {
+	switch {
+	case strings.HasPrefix(arg, "-P"):
+		return "-P<redacted>"
+	case strings.HasPrefix(arg, "-D"):
+		return "-D<redacted>"
+	default:
+		return "<redacted>"
+	}
+}
+
+func shouldKeepTrackingArg(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	if !strings.HasPrefix(arg, "-") {
+		return true
+	}
+
+	switch arg {
+	case "--stacktrace",
+		"--full-stacktrace",
+		"--scan",
+		"--no-scan",
+		"--parallel",
+		"--no-parallel",
+		"--rerun-tasks",
+		"--offline",
+		"--refresh-dependencies",
+		"--continue",
+		"--dry-run",
+		"--info",
+		"--debug",
+		"-i",
+		"-d",
+		"-s":
+		return true
+	default:
+		return false
+	}
 }
 
 func wrapperCandidates(projectDir string) []string {
@@ -150,6 +253,15 @@ func wrapperCandidates(projectDir string) []string {
 	return []string{
 		filepath.Join(projectDir, "gradlew"),
 		filepath.Join(projectDir, "gradlew.bat"),
+	}
+}
+
+func looksLikeGradleInvocation(arg string) bool {
+	switch gradleBaseName(arg) {
+	case "gradle", "gradlew", "gradlew.bat":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -180,15 +292,64 @@ func hasGradleUserHomeFlag(args []string) bool {
 	return false
 }
 
-func normalizeDaemonMode(mode DaemonMode) DaemonMode {
-	switch strings.ToLower(strings.TrimSpace(string(mode))) {
-	case "", string(DaemonModeAuto):
-		return DaemonModeAuto
-	case string(DaemonModeOn):
-		return DaemonModeOn
-	case string(DaemonModeOff):
-		return DaemonModeOff
-	default:
-		return DaemonModeAuto
+func resolveInvocation(projectDir, invocation string) (Command, error) {
+	if strings.ContainsAny(invocation, `/\`) {
+		return resolveExecutable(projectDir, invocation, SourceWrapper)
 	}
+
+	systemGradle, err := exec.LookPath(invocation)
+	if err != nil {
+		return Command{}, fmt.Errorf("could not find %q on PATH", invocation)
+	}
+
+	return Command{
+		Executable: systemGradle,
+		ProjectDir: projectDir,
+		Source:     SourceSystem,
+	}, nil
+}
+
+func resolveExplicitExecutable(projectDir, executable string) (Command, error) {
+	absGradle, err := filepath.Abs(filepath.FromSlash(strings.ReplaceAll(executable, `\`, `/`)))
+	if err != nil {
+		return Command{}, fmt.Errorf("resolve Gradle executable path: %w", err)
+	}
+	if filepath.IsAbs(executable) {
+		absGradle = executable
+	}
+	if _, err := os.Stat(absGradle); err != nil {
+		return Command{}, fmt.Errorf("Gradle executable %q is not available: %w", absGradle, err)
+	}
+
+	return Command{
+		Executable: absGradle,
+		ProjectDir: projectDir,
+		Source:     SourceExplicit,
+	}, nil
+}
+
+func resolveExecutable(projectDir, executable string, source Source) (Command, error) {
+	absGradle, err := filepath.Abs(filepath.Join(projectDir, filepath.FromSlash(strings.ReplaceAll(executable, `\`, `/`))))
+	if err != nil {
+		return Command{}, fmt.Errorf("resolve Gradle executable path: %w", err)
+	}
+
+	if filepath.IsAbs(executable) {
+		absGradle = executable
+	}
+
+	if _, err := os.Stat(absGradle); err != nil {
+		return Command{}, fmt.Errorf("Gradle executable %q is not available: %w", absGradle, err)
+	}
+
+	return Command{
+		Executable: absGradle,
+		ProjectDir: projectDir,
+		Source:     source,
+	}, nil
+}
+
+func gradleBaseName(arg string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(arg), `\`, `/`)
+	return strings.ToLower(filepath.Base(normalized))
 }

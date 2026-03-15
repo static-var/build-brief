@@ -24,7 +24,6 @@ type Options struct {
 	GradlePath     string
 	LogDir         string
 	GradleUserHome string
-	DaemonMode     string
 	Help           bool
 	Version        bool
 	Install        bool
@@ -89,13 +88,22 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		opts.ProjectDir = wd
 	}
 
-	command, err := gradle.Resolve(opts.ProjectDir, opts.GradlePath)
+	invocation, gradleArgs := gradle.SplitInvocation(gradleArgs)
+	if opts.GradlePath != "" && invocation != "" {
+		fmt.Fprintln(stderr, "build-brief: cannot combine --gradle with an explicit Gradle command token; use one or the other")
+		return 2
+	}
+	if err := gradle.ValidateArgs(gradleArgs); err != nil {
+		fmt.Fprintf(stderr, "build-brief: %v\n", err)
+		return 2
+	}
+
+	command, err := gradle.Resolve(opts.ProjectDir, opts.GradlePath, invocation)
 	if err != nil {
 		fmt.Fprintf(stderr, "build-brief: %v\n", err)
 		return 1
 	}
 	command.Args = gradle.ApplyStableArgs(gradleArgs, gradle.StableArgsOptions{
-		DaemonMode:     gradle.DaemonMode(opts.DaemonMode),
 		GradleUserHome: opts.GradleUserHome,
 	})
 	trackingCommand := command.TrackingLine()
@@ -137,7 +145,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			Success:       runResult.ExitCode == 0,
 			RawTokens:     rawTokens,
 			EmittedTokens: rawTokens,
-			ExecTimeMs:    runResult.Duration.Milliseconds(),
 			RawLogPath:    runResult.RawLogPath,
 		}, stderr)
 	default:
@@ -168,7 +175,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			Success:       summary.Success,
 			RawTokens:     summary.RawOutputTokens,
 			EmittedTokens: summary.EmittedTokens,
-			ExecTimeMs:    summary.DurationMs,
 			RawLogPath:    summary.RawLogPath,
 			FailedTasks:   len(summary.FailedTasks),
 			FailedTests:   len(summary.FailedTests),
@@ -185,7 +191,6 @@ func parseArgs(args []string) (Options, []string, error) {
 		GradlePath:     os.Getenv("BUILD_BRIEF_GRADLE_PATH"),
 		LogDir:         os.Getenv("BUILD_BRIEF_LOG_DIR"),
 		GradleUserHome: os.Getenv("BUILD_BRIEF_GRADLE_USER_HOME"),
-		DaemonMode:     envOrDefault("BUILD_BRIEF_DAEMON_MODE", string(gradle.DaemonModeAuto)),
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -213,15 +218,6 @@ func parseArgs(args []string) (Options, []string, error) {
 				return Options{}, nil, err
 			}
 			opts.Mode = value
-			i = next
-		case strings.HasPrefix(arg, "--daemon-mode="):
-			opts.DaemonMode = strings.TrimPrefix(arg, "--daemon-mode=")
-		case arg == "--daemon-mode":
-			value, next, err := nextArg(args, i, "--daemon-mode")
-			if err != nil {
-				return Options{}, nil, err
-			}
-			opts.DaemonMode = value
 			i = next
 		case strings.HasPrefix(arg, "--project-dir="):
 			opts.ProjectDir = strings.TrimPrefix(arg, "--project-dir=")
@@ -287,17 +283,6 @@ func normalizeMode(opts Options) (Options, error) {
 		return Options{}, fmt.Errorf("invalid mode %q (expected human or raw)", opts.Mode)
 	}
 
-	switch strings.ToLower(strings.TrimSpace(opts.DaemonMode)) {
-	case "", string(gradle.DaemonModeAuto):
-		opts.DaemonMode = string(gradle.DaemonModeAuto)
-	case string(gradle.DaemonModeOn):
-		opts.DaemonMode = string(gradle.DaemonModeOn)
-	case string(gradle.DaemonModeOff):
-		opts.DaemonMode = string(gradle.DaemonModeOff)
-	default:
-		return Options{}, fmt.Errorf("invalid daemon mode %q (expected auto, on, or off)", opts.DaemonMode)
-	}
-
 	if opts.Global && opts.InstallForce {
 		return Options{}, fmt.Errorf("--install-force cannot be combined with --global (build-brief only updates existing global instruction files)")
 	}
@@ -328,6 +313,7 @@ func envOrDefault(name, fallback string) string {
 
 func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  build-brief [build-brief flags] [gradle|./gradlew|PATH-TO-GRADLE] [gradle task/args...]")
 	fmt.Fprintln(w, "  build-brief [build-brief flags] [gradle task/args...]")
 	fmt.Fprintln(w, "  build-brief [build-brief flags] -- [gradle flags/tasks...]")
 	fmt.Fprintln(w, "  build-brief gains [--project] [--history] [--format text|json]")
@@ -336,10 +322,9 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Core flags:")
 	fmt.Fprintln(w, "  --mode [human|raw]        Output mode (default: human)")
-	fmt.Fprintln(w, "  --daemon-mode MODE        Daemon policy: auto, on, or off (default: auto)")
 	fmt.Fprintln(w, "  --project-dir PATH        Project directory to run in")
 	fmt.Fprintln(w, "  --gradle PATH             Explicit gradle/gradlew path")
-	fmt.Fprintln(w, "  --gradle-user-home PATH   Shared Gradle user home for caches and daemon registry")
+	fmt.Fprintln(w, "  --gradle-user-home PATH   Shared Gradle user home for Gradle caches")
 	fmt.Fprintln(w, "  --log-dir PATH            Directory for retained raw logs")
 	fmt.Fprintln(w, "  --version                 Show build-brief version")
 	fmt.Fprintln(w, "  --help, -h                Show this help")
@@ -350,8 +335,9 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "Common commands:")
 	fmt.Fprintln(w, "  build-brief test")
 	fmt.Fprintln(w, "  build-brief build")
-	fmt.Fprintln(w, "  build-brief --daemon-mode on test")
-	fmt.Fprintln(w, "  build-brief --daemon-mode on --gradle-user-home /tmp/build-brief-gradle-home test")
+	fmt.Fprintln(w, "  build-brief gradle test")
+	fmt.Fprintln(w, "  build-brief ./gradlew test")
+	fmt.Fprintln(w, "  build-brief --gradle-user-home /tmp/build-brief-gradle-home ./gradlew test")
 	fmt.Fprintln(w, "  build-brief -- --stacktrace test")
 	fmt.Fprintln(w, "  build-brief --install")
 	fmt.Fprintln(w, "  build-brief --install-force")
@@ -397,7 +383,6 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment overrides:")
 	fmt.Fprintln(w, "  BUILD_BRIEF_MODE")
-	fmt.Fprintln(w, "  BUILD_BRIEF_DAEMON_MODE")
 	fmt.Fprintln(w, "  BUILD_BRIEF_PROJECT_DIR")
 	fmt.Fprintln(w, "  BUILD_BRIEF_GRADLE_PATH")
 	fmt.Fprintln(w, "  BUILD_BRIEF_GRADLE_USER_HOME")

@@ -62,8 +62,10 @@ func rewriteSegment(segment string) (string, bool) {
 	}
 
 	rewritten := "build-brief"
+	gradleExecutable := strings.Fields(remainder)[0]
+	rewritten += " " + gradleExecutable
 	if rest := strings.TrimSpace(matches[1]); rest != "" {
-		rewritten += " -- " + rest
+		rewritten += " " + rest
 	}
 
 	return combineSegment(envPrefix, rewritten), true

@@ -18,7 +18,7 @@ func TestShellCommandRewritesGradleInvocation(t *testing.T) {
 	if !changed {
 		t.Fatal("expected gradle command to be rewritten")
 	}
-	if rewritten != "build-brief -- clean test" {
+	if rewritten != "build-brief gradle clean test" {
 		t.Fatalf("unexpected rewrite: %q", rewritten)
 	}
 }
@@ -28,7 +28,7 @@ func TestShellCommandRewritesGradleWrapperInvocation(t *testing.T) {
 	if !changed {
 		t.Fatal("expected gradle wrapper command to be rewritten")
 	}
-	if rewritten != "build-brief -- --stacktrace test" {
+	if rewritten != "build-brief ./gradlew --stacktrace test" {
 		t.Fatalf("unexpected rewrite: %q", rewritten)
 	}
 }
@@ -38,7 +38,7 @@ func TestShellCommandRewritesCommandChains(t *testing.T) {
 	if !changed {
 		t.Fatal("expected command chain rewrite")
 	}
-	if rewritten != "command -v build-brief && build-brief -- clean" {
+	if rewritten != "command -v build-brief && build-brief gradle clean" {
 		t.Fatalf("unexpected rewrite: %q", rewritten)
 	}
 }
@@ -48,7 +48,7 @@ func TestShellCommandPreservesLeadingCommands(t *testing.T) {
 	if !changed {
 		t.Fatal("expected rewrite in chained command")
 	}
-	if rewritten != "cd smoke && build-brief -- test" {
+	if rewritten != "cd smoke && build-brief ./gradlew test" {
 		t.Fatalf("unexpected rewrite: %q", rewritten)
 	}
 }
@@ -58,7 +58,7 @@ func TestShellCommandPreservesEnvPrefix(t *testing.T) {
 	if !changed {
 		t.Fatal("expected env-prefixed command rewrite")
 	}
-	if rewritten != "JAVA_HOME=/tmp/jdk build-brief -- test" {
+	if rewritten != "JAVA_HOME=/tmp/jdk build-brief gradle test" {
 		t.Fatalf("unexpected rewrite: %q", rewritten)
 	}
 }

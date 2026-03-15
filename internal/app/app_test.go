@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"build-brief/internal/gradle"
 )
 
 func TestParseArgsStopsAtGradleArgs(t *testing.T) {
@@ -19,10 +17,6 @@ func TestParseArgsStopsAtGradleArgs(t *testing.T) {
 
 	if opts.Mode != "raw" {
 		t.Fatalf("expected raw mode, got %s", opts.Mode)
-	}
-
-	if opts.DaemonMode != string(gradle.DaemonModeAuto) {
-		t.Fatalf("expected auto daemon mode by default, got %s", opts.DaemonMode)
 	}
 
 	if len(gradleArgs) != 2 || gradleArgs[0] != "test" || gradleArgs[1] != "--stacktrace" {
@@ -45,14 +39,10 @@ func TestParseArgsTreatsJSONModeAsHuman(t *testing.T) {
 	}
 }
 
-func TestParseArgsReadsDaemonAndGradleUserHome(t *testing.T) {
-	opts, gradleArgs, err := parseArgs([]string{"--daemon-mode", "on", "--gradle-user-home", "/tmp/shared-home", "test"})
+func TestParseArgsReadsGradleUserHome(t *testing.T) {
+	opts, gradleArgs, err := parseArgs([]string{"--gradle-user-home", "/tmp/shared-home", "test"})
 	if err != nil {
-		t.Fatalf("parse daemon args: %v", err)
-	}
-
-	if opts.DaemonMode != string(gradle.DaemonModeOn) {
-		t.Fatalf("expected daemon mode on, got %s", opts.DaemonMode)
+		t.Fatalf("parse gradle user home args: %v", err)
 	}
 
 	if opts.GradleUserHome != "/tmp/shared-home" {
@@ -64,13 +54,13 @@ func TestParseArgsReadsDaemonAndGradleUserHome(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsInvalidDaemonMode(t *testing.T) {
-	_, _, err := parseArgs([]string{"--daemon-mode", "maybe", "test"})
+func TestParseArgsRejectsUnknownBuildBriefFlag(t *testing.T) {
+	_, _, err := parseArgs([]string{"--daemon-mode", "on", "test"})
 	if err == nil {
-		t.Fatal("expected invalid daemon mode to be rejected")
+		t.Fatal("expected unknown build-brief flag error")
 	}
 
-	if !strings.Contains(err.Error(), "invalid daemon mode") {
+	if !strings.Contains(err.Error(), "unknown build-brief flag") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -90,7 +80,7 @@ func TestParseArgsHonorsDelimiter(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsUnknownBuildBriefFlag(t *testing.T) {
+func TestParseArgsRejectsUnknownBuildBriefGradleLookingFlag(t *testing.T) {
 	_, _, err := parseArgs([]string{"--stacktrace", "test"})
 	if err == nil {
 		t.Fatal("expected unknown build-brief flag error")
@@ -178,8 +168,9 @@ func TestRunPrintsHelp(t *testing.T) {
 		"build-brief gains --history",
 		"build-brief gains --reset",
 		"build-brief rewrite 'gradle test'",
-		"--daemon-mode MODE",
-		"BUILD_BRIEF_DAEMON_MODE",
+		"build-brief gradle test",
+		"build-brief ./gradlew test",
+		"[gradle|./gradlew|PATH-TO-GRADLE]",
 		"Selection accepts comma-separated numbers, '*' or 'all', or blank to cancel.",
 		"Only existing global instruction files are updated; OpenCode also installs a managed plugin file.",
 		"Must be used by itself; do not combine it with --install or --install-force.",
@@ -193,6 +184,8 @@ func TestRunPrintsHelp(t *testing.T) {
 	for _, unexpected := range []string{
 		"--mode [human|json|raw]",
 		"build-brief --mode json build",
+		"--daemon-mode MODE",
+		"BUILD_BRIEF_DAEMON_MODE",
 	} {
 		if strings.Contains(help, unexpected) {
 			t.Fatalf("expected help not to contain %q, got %q", unexpected, help)
@@ -211,7 +204,7 @@ func TestRunRewrite(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
-	if strings.TrimSpace(stdout.String()) != "build-brief -- clean" {
+	if strings.TrimSpace(stdout.String()) != "build-brief gradle clean" {
 		t.Fatalf("unexpected rewrite output %q", stdout.String())
 	}
 }

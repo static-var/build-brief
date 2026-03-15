@@ -300,9 +300,11 @@ func localInstructions() string {
 %s
 ## build-brief
 
-- Prefer `+"`build-brief`"+` over raw `+"`gradle`"+` or `+"`./gradlew`"+` for routine Gradle work.
+- Prefer `+"`build-brief gradle ...`"+` for PATH Gradle and `+"`build-brief ./gradlew ...`"+` for the project wrapper.
 - Use default `+"`build-brief`"+` output for routine Gradle work; it stays intentionally short on clean success cases.
-- Use `+"`build-brief -- --stacktrace ...`"+` when you need to pass raw Gradle flags through.
+- Use `+"`build-brief gradle --stacktrace ...`"+` or `+"`build-brief ./gradlew --stacktrace ...`"+` when you need Gradle stack traces.
+- Do not add Gradle log-silencing flags like `+"`--quiet`"+`, `+"`--warn`"+`, or `+"`--warning-mode none`"+`; `+"`build-brief`"+` already reduces output and needs the normal signal.
+- `+"`build-brief`"+` always runs Gradle with `+"`--no-daemon`"+`; do not add `+"`--daemon`"+`.
 - Preserve the raw log path from `+"`build-brief`"+` output when handing build failures to another tool or agent.
 %s
 `, blockStart, blockEnd))
@@ -313,9 +315,11 @@ func globalInstructions(tool Tool) string {
 		blockStart,
 		"## build-brief",
 		"",
-		"- Prefer `build-brief` over raw `gradle` or `./gradlew` for routine Gradle work.",
+		"- Prefer `build-brief gradle ...` for PATH Gradle and `build-brief ./gradlew ...` for the project wrapper.",
 		"- Use the default `build-brief` output for routine Gradle work; clean success cases stay intentionally short.",
-		"- Use `build-brief -- --stacktrace ...` for raw Gradle flags that should pass through untouched.",
+		"- Use `build-brief gradle --stacktrace ...` or `build-brief ./gradlew --stacktrace ...` when you need Gradle stack traces.",
+		"- Do not add Gradle log-silencing flags like `--quiet`, `--warn`, or `--warning-mode none`; `build-brief` already reduces output and needs the normal signal.",
+		"- `build-brief` always runs Gradle with `--no-daemon`; do not add `--daemon`.",
 		"- Keep the raw log path in your response when build diagnostics may need deeper inspection.",
 	}
 
@@ -324,7 +328,7 @@ func globalInstructions(tool Tool) string {
 			"",
 			"### Hook guidance",
 			"",
-			"- If this tool supports command hooks, add a guardrail that reminds or rewrites routine `gradle`/`./gradlew` usage to `build-brief` where safe.",
+			"- If this tool supports command hooks, add a guardrail that reminds or rewrites routine `gradle`/`./gradlew` usage to `build-brief gradle ...` or `build-brief ./gradlew ...` where safe.",
 			"- Keep raw Gradle available as a fallback for unusual cases or when full unfiltered output is explicitly needed.",
 		)
 	}
@@ -334,7 +338,7 @@ func globalInstructions(tool Tool) string {
 			"",
 			"### Plugin guidance",
 			"",
-			"- The managed OpenCode plugin rewrites routine `gradle` and `./gradlew` shell commands to `build-brief` before execution.",
+			"- The managed OpenCode plugin rewrites routine `gradle` and `./gradlew` shell commands to explicit `build-brief gradle ...` or `build-brief ./gradlew ...` commands before execution.",
 			"- Keep using raw Gradle intentionally only when you want to bypass that reduction layer.",
 		)
 	}

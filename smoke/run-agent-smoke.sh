@@ -65,7 +65,6 @@ ln -sfn "$OUTPUT_ROOT" "$LATEST_LINK"
 printf 'tool\tcase_id\tstatus\texit_code\tused_build_brief\tbuild_brief_count\texpectation\ttranscript\n' >> "$RESULTS_FILE"
 
 export PATH="$HOME/.local/bin:$PATH"
-export BUILD_BRIEF_DAEMON_MODE="on"
 export BUILD_BRIEF_GRADLE_USER_HOME="$SHARED_GRADLE_HOME"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"

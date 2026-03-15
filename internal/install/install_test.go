@@ -28,7 +28,7 @@ func TestInstallLocalRequiresExistingAgentsUnlessForced(t *testing.T) {
 	}
 
 	text := string(content)
-	if !strings.Contains(text, "Prefer `build-brief` over raw `gradle`") {
+	if !strings.Contains(text, "Prefer `build-brief gradle ...` for PATH Gradle") {
 		t.Fatalf("unexpected local instructions: %q", text)
 	}
 	if strings.Contains(text, "RTK") {
