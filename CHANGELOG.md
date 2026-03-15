@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.0.3 - 2026-03-15
+
+- fix: surface warm artifact outputs (8d0b6b6)
+- feat: harden installer asset resolution (3a0f907)
+
 ## v0.0.2 - 2026-03-15
 
 - feat: publish hosted installer entrypoint (f49d07b)
