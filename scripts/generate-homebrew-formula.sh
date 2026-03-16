@@ -104,7 +104,7 @@ formula = f"""class BuildBrief < Formula
   end
 
   def install
-    binary = Dir["build-brief_*/build-brief"].find {{ |path| File.file?(path) }}
+    binary = ["build-brief", *Dir["build-brief_*/build-brief"].sort].find {{ |path| File.file?(path) }}
     raise "build-brief binary not found in archive" unless binary
 
     bin.install binary => "build-brief"
