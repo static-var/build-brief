@@ -47,6 +47,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
@@ -55,7 +60,7 @@ jobs:
       - name: Prepare release metadata
         id: prepare
         run: |
-          chmod +x scripts/prepare-release.sh scripts/build-artifacts.sh scripts/generate-homebrew-formula.sh scripts/publish-homebrew-tap.sh
+          chmod +x scripts/prepare-release.sh scripts/build-artifacts.sh scripts/generate-homebrew-formula.sh scripts/validate-homebrew-formula.sh scripts/publish-homebrew-tap.sh
           scripts/prepare-release.sh \
             --bump "${{ inputs.bump }}" \
             --version "${{ inputs.version }}" \
@@ -74,6 +79,13 @@ jobs:
             --repo "${{ github.repository }}" \
             --artifact-dir dist \
             --output .release/build-brief.rb
+
+      - name: Validate Homebrew formula
+        run: |
+          scripts/validate-homebrew-formula.sh \
+            --version "${{ steps.prepare.outputs.version }}" \
+            --artifact-dir dist \
+            --formula .release/build-brief.rb
 
       - name: Commit version bump and changelog
         if: steps.prepare.outputs.needs_commit == 'true'
