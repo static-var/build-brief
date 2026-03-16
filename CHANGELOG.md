@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.4 - 2026-03-16
+
+- fix: harden homebrew formula install (4f812ad)
+- fix: harden tracking rewrite and raw logs (932535d)
+- refactor: merge RTK guidance into managed installs (dcee73e)
+- docs: trim README and normalize titles (959b27a)
+- docs: refresh agent integration and site copy (550c6a1)
+- feat: add Claude Code hook example (0c9bb85)
+- docs: use real output examples (e329675)
+- refactor: preserve Gradle daemon reuse (f3e2b99)
+
 ## v0.0.3 - 2026-03-15
 
 - fix: surface warm artifact outputs (8d0b6b6)
