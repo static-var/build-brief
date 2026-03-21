@@ -70,11 +70,11 @@
       </div>
       <div class="terminal__body"><span class="dim">$</span> <span class="brt">build-brief :androidApp:clean :androidApp:assembleDebug</span>
 
-<span class="grn">BUILD SUCCESSFUL</span> in 2s
-<span class="brt">Warnings: 3</span>
-<span class="dim">  - WARNING: The option setting 'android.nonFinalResIds=false' is deprecated.</span>
-<span class="dim">  - Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.</span>
-<span class="dim">  - You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.</span></div>
+<span class="grn">BUILD SUCCESSFUL</span> in 1s
+<span class="brt">Artifacts:</span>
+<span class="dim">  - APK: androidApp/build/outputs/apk/debug/androidApp-debug.apk (24.5 MB)</span>
+<span class="brt">Compilation outputs omitted:</span>
+<span class="dim">  - 1 generated source/codegen file updated.</span></div>
     </div>
     <p style="font-family:var(--mono);font-size:.72rem;color:var(--text-dim);margin-top:.75rem;text-align:right">
       414 lines of raw Gradle output &rarr; 5 lines printed.
@@ -359,8 +359,8 @@
           <span class="terminal__dot terminal__dot--g"></span>
           <span class="terminal__title">install via Homebrew</span>
         </div>
-        <div class="terminal__body"><span class="brt">brew tap nickcosta/tap</span>
-<span class="brt">brew install build-brief</span></div>
+        <div class="terminal__body"><span class="brt">brew tap static-var/tap</span>
+<span class="brt">brew install static-var/tap/build-brief</span></div>
       </div>
     </div>
 
@@ -442,13 +442,13 @@
       <div class="terminal__body"><span class="dim"># Rewrite transforms Gradle commands for agent hooks</span>
 
 <span class="dim">$</span> <span class="brt">build-brief rewrite 'gradle build'</span>
-<span class="grn">build-brief -- build</span>
+<span class="grn">build-brief gradle build</span>
 
 <span class="dim">$</span> <span class="brt">build-brief rewrite './gradlew test'</span>
-<span class="grn">build-brief -- test</span>
+<span class="grn">build-brief ./gradlew test</span>
 
 <span class="dim">$</span> <span class="brt">build-brief rewrite './gradlew --stacktrace assembleDebug'</span>
-<span class="grn">build-brief -- --stacktrace assembleDebug</span></div>
+<span class="grn">build-brief ./gradlew --stacktrace assembleDebug</span></div>
     </div>
 
     <div class="terminal fade-in" style="margin-top:1.25rem">
