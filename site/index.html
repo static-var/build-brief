@@ -485,22 +485,22 @@
 
     <div class="gains-visual fade-in">
       <div class="gains-bar">
-        <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.5rem;font-family:var(--mono)">Token output comparison (real data from 43 builds)</p>
+        <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.5rem;font-family:var(--mono)">Token output comparison (real data from 38 tracked commands)</p>
         <div class="gains-bar__row">
           <span class="gains-bar__label">raw</span>
           <div class="gains-bar__track">
             <div class="gains-bar__fill gains-bar__fill--raw" data-width="100%" style="width:0"></div>
           </div>
-          <span class="gains-bar__value">68.7K</span>
+          <span class="gains-bar__value">80.9K</span>
         </div>
         <div class="gains-bar__row">
           <span class="gains-bar__label">emitted</span>
           <div class="gains-bar__track">
-            <div class="gains-bar__fill gains-bar__fill--brief" data-width="18.3%" style="width:0"></div>
+            <div class="gains-bar__fill gains-bar__fill--brief" data-width="4.6%" style="width:0"></div>
           </div>
-          <span class="gains-bar__value">12.6K</span>
+          <span class="gains-bar__value">3.8K</span>
         </div>
-        <p style="font-size:.72rem;color:var(--accent);margin-top:.75rem;font-family:var(--mono)">81.7% reduction &mdash; 56.1K tokens saved across 43 commands</p>
+        <p style="font-size:.72rem;color:var(--accent);margin-top:.75rem;font-family:var(--mono)">95.4% reduction &mdash; 77.2K tokens saved across 38 commands</p>
       </div>
 
       <div class="terminal">
@@ -515,21 +515,21 @@
 <span class="acc">build-brief Token Savings (Global Scope)</span>
 <span class="dim">============================================================</span>
 
-<span class="brt">Total commands:  </span><span class="grn">43</span>
-<span class="brt">Raw tokens:      </span>68.7K
-<span class="brt">Emitted tokens:  </span>12.6K
-<span class="brt">Tokens saved:    </span><span class="grn">56.1K (81.7%)</span>
-<span class="brt">Efficiency:      </span><span class="grn">||||||||||||||||||||</span><span class="dim">||||</span> 81.7%
+<span class="brt">Total commands:  </span><span class="grn">38</span>
+<span class="brt">Raw tokens:      </span>80.9K
+<span class="brt">Emitted tokens:  </span>3.8K
+<span class="brt">Tokens saved:    </span><span class="grn">77.2K (95.4%)</span>
+<span class="brt">Efficiency:      </span><span class="grn">|||||||||||||||||||||||</span><span class="dim">|</span> 95.4%
 
 <span class="acc">By Command</span>
 <span class="dim">--------------------------------------------------------------</span>
 <span class="dim">  #  Command                        Count     Saved    Avg%</span>
 <span class="dim">--------------------------------------------------------------</span>
   1  gradlew :androidApp:assembl…      6     <span class="grn">38.6K</span>   98.2%
-  2  gradlew :androidApp:clean :…      3     <span class="grn">13.0K</span>   66.0%
-  3  gradlew ./gradlew build           10      <span class="grn">2.0K</span>   43.4%
-  4  gradlew assembleDebug              4      <span class="grn">1.4K</span>   49.6%
-  5  gradlew :domain:desktopTest…       1       <span class="grn">704</span>   91.2%</div>
+  2  gradlew :androidApp:clean :…      6     <span class="grn">32.7K</span>   92.5%
+  3  gradlew build                      9      <span class="grn">2.6K</span>   60.8%
+  4  gradlew assembleDebug              2      <span class="grn">1.4K</span>   99.1%
+  5  gradle clean jvmTest               6       <span class="grn">848</span>   47.5%</div>
       </div>
     </div>
   </div>

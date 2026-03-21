@@ -106,25 +106,27 @@ Example text output:
 build-brief Token Savings (Global Scope)
 ============================================================
 
-Total commands:  3
-Raw tokens:      40.5K
-Emitted tokens:  1.9K
-Tokens saved:    38.7K (95.3%)
-Efficiency:      ██████████████████████░░ 95.3%
+Total commands:  38
+Raw tokens:      80.9K
+Emitted tokens:  3.8K
+Tokens saved:    77.2K (95.4%)
+Efficiency:      ██████████████████████░ 95.4%
 
 By Command
 ------------------------------------------------------------------------------
   #  Command                       Count     Saved    Avg%
 ------------------------------------------------------------------------------
-  1  ./gradlew :app:testDebugUni…      1     17.7K   97.1%
-  2  ./gradlew :app:assembleDebug      1     14.2K   96.9%
-  3  ./gradlew lintDebug               1      6.7K   88.1%
+  1  gradlew :androidApp:assembl…      6     38.6K   98.2%
+  2  gradlew :androidApp:clean :…      6     32.7K   92.5%
+  3  gradlew build                     9      2.6K   60.8%
+  4  gradlew assembleDebug             2      1.4K   99.1%
+  5  gradle clean jvmTest              6       848   47.5%
 
 Recent Commands
 ----------------------------------------------------------
-03-21 09:54 ▲ ./gradlew lintDebug            88.1% (6.7K)
-03-21 09:48 ▲ ./gradlew :app:assembleDebug   96.9% (14.2K)
-03-21 09:42 ▲ ./gradlew :app:testDebugUni…   97.1% (17.7K)
+03-21 13:02 ▲ gradle clean test              67.2% (90)
+03-21 13:02 ▲ gradle clean jvmTest           35.8% (82)
+03-21 13:02 ▲ gradle clean test              49.2% (62)
 ```
 
 Example JSON output:
@@ -132,29 +134,29 @@ Example JSON output:
 ```json
 {
   "summary": {
-    "total_commands": 3,
-    "total_raw_tokens": 40550,
-    "total_emitted_tokens": 1890,
-    "total_saved_tokens": 38660,
-    "avg_savings_pct": 95.33908754623921,
+    "total_commands": 38,
+    "total_raw_tokens": 80925,
+    "total_emitted_tokens": 3757,
+    "total_saved_tokens": 77168,
+    "avg_savings_pct": 95.3574297188755,
     "by_command": [
       {
-        "command": "./gradlew :app:testDebugUnitTest",
-        "count": 1,
-        "saved_tokens": 17720,
-        "avg_savings_pct": 97.14912280701755
+        "command": "gradlew :androidApp:assembleDebug",
+        "count": 6,
+        "saved_tokens": 38555,
+        "avg_savings_pct": 98.18226065576931
       },
       {
-        "command": "./gradlew :app:assembleDebug",
-        "count": 1,
-        "saved_tokens": 14220,
-        "avg_savings_pct": 96.86648501362399
+        "command": "gradlew :androidApp:clean :androidApp:assembleDebug",
+        "count": 6,
+        "saved_tokens": 32680,
+        "avg_savings_pct": 92.50760139796417
       },
       {
-        "command": "./gradlew lintDebug",
-        "count": 1,
-        "saved_tokens": 6720,
-        "avg_savings_pct": 88.07339449541286
+        "command": "gradlew build",
+        "count": 9,
+        "saved_tokens": 2557,
+        "avg_savings_pct": 60.75767841011745
       }
     ]
   }
