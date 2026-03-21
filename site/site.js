@@ -1,50 +1,75 @@
-// Scroll-triggered animations
-const observer = new IntersectionObserver(
-  (entries) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) {
-        entry.target.classList.add("in-view");
-      }
-    });
-  },
-  { threshold: 0.08, rootMargin: "0px 0px -40px 0px" }
-);
+/* build-brief  --  "Signal" site interactions */
+(function () {
+  "use strict";
 
-document
-  .querySelectorAll("[data-animate], [data-stagger]")
-  .forEach((el) => observer.observe(el));
+  /* ---- Mobile nav toggle ---------------------------------- */
+  const toggle = document.querySelector(".topbar__toggle");
+  const topbar = document.querySelector(".topbar");
+  if (toggle && topbar) {
+    toggle.addEventListener("click", () =>
+      topbar.classList.toggle("topbar--open")
+    );
+  }
 
-// Install tabs
-const tabs = document.querySelectorAll(".tab");
-const panels = document.querySelectorAll(".tab-panel");
-
-tabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const target = tab.dataset.tab;
-    tabs.forEach((t) => {
-      const active = t === tab;
-      t.classList.toggle("is-active", active);
-      t.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    panels.forEach((p) => {
-      p.classList.toggle("is-active", p.dataset.panel === target);
+  /* ---- Install tabs --------------------------------------- */
+  document.querySelectorAll(".install-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const group = tab.closest(".install-section");
+      group
+        .querySelectorAll(".install-tab")
+        .forEach((t) => t.setAttribute("aria-selected", "false"));
+      group
+        .querySelectorAll(".install-panel")
+        .forEach((p) => p.removeAttribute("data-active"));
+      tab.setAttribute("aria-selected", "true");
+      const target = group.querySelector(
+        `.install-panel[data-panel="${tab.dataset.target}"]`
+      );
+      if (target) target.setAttribute("data-active", "");
     });
   });
-});
 
-// Copy buttons
-document.querySelectorAll(".copy-btn").forEach((btn) => {
-  btn.addEventListener("click", async () => {
-    const text = btn.dataset.copy;
-    const original = btn.textContent;
-    try {
-      await navigator.clipboard.writeText(text);
-      btn.textContent = "copied";
-    } catch {
-      btn.textContent = "failed";
-    }
-    setTimeout(() => {
-      btn.textContent = original;
-    }, 1400);
+  /* ---- Scroll fade-in ------------------------------------- */
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) {
+          e.target.classList.add("visible");
+          observer.unobserve(e.target);
+        }
+      });
+    },
+    { threshold: 0.12 }
+  );
+  document.querySelectorAll(".fade-in").forEach((el) => observer.observe(el));
+
+  /* ---- Animate gain bars on scroll ------------------------ */
+  const barObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) {
+          e.target.querySelectorAll(".gains-bar__fill").forEach((fill) => {
+            fill.style.width = fill.dataset.width;
+          });
+          barObserver.unobserve(e.target);
+        }
+      });
+    },
+    { threshold: 0.3 }
+  );
+  document
+    .querySelectorAll(".gains-bar")
+    .forEach((el) => barObserver.observe(el));
+
+  /* ---- Copy install snippet ------------------------------- */
+  document.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const text = btn.dataset.copy;
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = "copied";
+        setTimeout(() => (btn.textContent = orig), 1200);
+      });
+    });
   });
-});
+})();
