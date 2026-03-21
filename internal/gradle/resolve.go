@@ -143,6 +143,8 @@ func (c Command) TrackingLine() string {
 		}
 
 		switch {
+		case looksLikeGradleInvocation(arg):
+			continue
 		case arg == "--console" || strings.HasPrefix(arg, "--console="):
 			continue
 		case arg == "--daemon" || arg == "--no-daemon":
@@ -176,7 +178,7 @@ func (c Command) TrackingLine() string {
 		}
 	}
 
-	return strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " ")
+	return normalizeTrackingCommand(strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " "))
 }
 
 func shouldRedactTrackingArg(arg string) bool {
@@ -355,4 +357,21 @@ func resolveExecutable(projectDir, executable string, source Source) (Command, e
 func gradleBaseName(arg string) string {
 	normalized := strings.ReplaceAll(strings.TrimSpace(arg), `\`, `/`)
 	return strings.ToLower(filepath.Base(normalized))
+}
+
+func normalizeTrackingCommand(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+
+	normalized := make([]string, 0, len(fields))
+	normalized = append(normalized, fields[0])
+	for _, field := range fields[1:] {
+		if looksLikeGradleInvocation(field) {
+			continue
+		}
+		normalized = append(normalized, field)
+	}
+	return strings.Join(normalized, " ")
 }

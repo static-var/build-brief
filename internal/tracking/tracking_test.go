@@ -286,6 +286,116 @@ func TestRenderJSONOmitsTimeFields(t *testing.T) {
 	}
 }
 
+func TestSummarizeUsesWeightedOverallSavingsPct(t *testing.T) {
+	records := []Record{
+		{
+			Command:       "gradlew big",
+			RawTokens:     1000,
+			EmittedTokens: 900,
+			SavedTokens:   100,
+			SavingsPct:    10,
+		},
+		{
+			Command:       "gradlew tiny",
+			RawTokens:     10,
+			EmittedTokens: 0,
+			SavedTokens:   10,
+			SavingsPct:    100,
+		},
+	}
+
+	summary := summarize(records)
+
+	if summary.TotalRawTokens != 1010 || summary.TotalEmitted != 900 || summary.TotalSaved != 110 {
+		t.Fatalf("unexpected aggregate totals: %+v", summary)
+	}
+
+	want := SavingsPct(summary.TotalRawTokens, summary.TotalEmitted)
+	if summary.AvgSavingsPct != want {
+		t.Fatalf("expected weighted overall savings pct %.6f, got %.6f", want, summary.AvgSavingsPct)
+	}
+	if summary.AvgSavingsPct == 55 {
+		t.Fatalf("expected weighted overall savings pct, got naive average %.2f", summary.AvgSavingsPct)
+	}
+}
+
+func TestLoadReportExcludesRawModeRunsFromGains(t *testing.T) {
+	setTrackingEnv(t)
+
+	if err := RecordRun(Record{
+		Timestamp:     time.Now().Add(-time.Minute),
+		ProjectPath:   "/tmp/project",
+		Command:       "gradlew assembleDebug",
+		Mode:          "raw",
+		RawTokens:     1000,
+		EmittedTokens: 1000,
+		SavedTokens:   0,
+		SavingsPct:    0,
+	}); err != nil {
+		t.Fatalf("record raw run: %v", err)
+	}
+
+	if err := RecordRun(Record{
+		Timestamp:     time.Now(),
+		ProjectPath:   "/tmp/project",
+		Command:       "gradlew assembleDebug",
+		Mode:          "human",
+		RawTokens:     1000,
+		EmittedTokens: 100,
+		SavedTokens:   900,
+		SavingsPct:    90,
+	}); err != nil {
+		t.Fatalf("record human run: %v", err)
+	}
+
+	report, err := LoadReport("", true)
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+
+	if report.Summary.TotalCommands != 1 {
+		t.Fatalf("expected only human runs in gains report, got %d commands", report.Summary.TotalCommands)
+	}
+	if report.Summary.TotalSaved != 900 || report.Summary.TotalRawTokens != 1000 || report.Summary.TotalEmitted != 100 {
+		t.Fatalf("unexpected filtered totals: %+v", report.Summary)
+	}
+	if len(report.Recent) != 1 || report.Recent[0].Mode != "human" {
+		t.Fatalf("expected recent history to exclude raw runs, got %+v", report.Recent)
+	}
+	if len(report.Summary.ByCommand) != 1 || report.Summary.ByCommand[0].Count != 1 {
+		t.Fatalf("expected by-command aggregation to exclude raw runs, got %+v", report.Summary.ByCommand)
+	}
+}
+
+func TestLoadReportNormalizesHistoricCommandLabels(t *testing.T) {
+	setTrackingEnv(t)
+
+	if err := RecordRun(Record{
+		Timestamp:     time.Now(),
+		ProjectPath:   "/tmp/project",
+		Command:       "gradlew ./gradlew build",
+		Mode:          "human",
+		RawTokens:     100,
+		EmittedTokens: 10,
+		SavedTokens:   90,
+		SavingsPct:    90,
+	}); err != nil {
+		t.Fatalf("record run: %v", err)
+	}
+
+	report, err := LoadReport("", true)
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+
+	if len(report.Summary.ByCommand) != 1 || report.Summary.ByCommand[0].Command != "gradlew build" {
+		t.Fatalf("expected normalized by-command label, got %+v", report.Summary.ByCommand)
+	}
+	if len(report.Recent) != 1 || report.Recent[0].Command != "gradlew build" {
+		t.Fatalf("expected normalized recent label, got %+v", report.Recent)
+	}
+}
+
 func setTrackingEnv(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

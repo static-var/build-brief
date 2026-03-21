@@ -157,6 +157,10 @@ func LoadReport(projectPath string, history bool) (Report, error) {
 		if projectPath != "" && filepath.Clean(record.ProjectPath) != filepath.Clean(projectPath) {
 			continue
 		}
+		if strings.EqualFold(record.Mode, "raw") {
+			continue
+		}
+		record.Command = normalizeHistoricCommand(record.Command)
 		filtered = append(filtered, record)
 	}
 
@@ -355,6 +359,26 @@ func summarize(records []Record) Summary {
 	}
 
 	return summary
+}
+
+func normalizeHistoricCommand(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+
+	normalized := make([]string, 0, len(fields))
+	normalized = append(normalized, fields[0])
+	for _, field := range fields[1:] {
+		switch filepath.Base(strings.ReplaceAll(field, `\`, `/`)) {
+		case "gradle", "gradlew", "gradlew.bat":
+			continue
+		default:
+			normalized = append(normalized, field)
+		}
+	}
+
+	return strings.Join(normalized, " ")
 }
 
 func dbPath() (string, error) {

@@ -130,6 +130,22 @@ func TestTrackingLineRedactsSecretFlags(t *testing.T) {
 	}
 }
 
+func TestTrackingLineDropsDuplicatedGradleInvocationArgs(t *testing.T) {
+	command := Command{
+		Executable: "/tmp/gradlew",
+		Args: []string{
+			"./gradlew",
+			"build",
+		},
+	}
+
+	got := command.TrackingLine()
+
+	if got != "gradlew build" {
+		t.Fatalf("unexpected tracking line: %q", got)
+	}
+}
+
 func TestTrackingLineKeepsEqualsFormTaskSelectors(t *testing.T) {
 	command := Command{
 		Executable: "/tmp/gradlew",
