@@ -27,6 +27,7 @@ var (
 	contextCaptureLines  = 2
 	compilerCaptureLines = 3
 	maxJUnitReportFiles  = 100
+	junitTimeSkew        = time.Second
 )
 
 type Artifact = artifacts.Artifact
@@ -51,6 +52,8 @@ type Summary struct {
 	BuildStatusLine           string     `json:"build_status_line"`
 	FailedTasks               []string   `json:"failed_tasks"`
 	FailedTests               []string   `json:"failed_tests"`
+	PassedTestCount           int        `json:"passed_test_count,omitempty"`
+	FailedTestCount           int        `json:"failed_test_count,omitempty"`
 	WarningCount              int        `json:"warning_count"`
 	Warnings                  []string   `json:"warnings"`
 	ImportantLines            []string   `json:"important_lines"`
@@ -69,6 +72,7 @@ type junitTestCase struct {
 	ClassName string        `xml:"classname,attr"`
 	Failure   *junitFailure `xml:"failure"`
 	Error     *junitFailure `xml:"error"`
+	Skipped   *struct{}     `xml:"skipped"`
 }
 
 type junitFailure struct {
@@ -196,7 +200,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		summary.ImportantLines = append(summary.ImportantLines, summary.BuildStatusLine)
 	}
 
-	enrichWithJUnitFailures(command.ProjectDir, &summary, failedTests, important)
+	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important)
 	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints)
 
 	return summary, nil
@@ -295,12 +299,13 @@ func commandProjectPrefixes(command []string) []string {
 	return prefixes
 }
 
-func enrichWithJUnitFailures(projectDir string, summary *Summary, failedTests, important map[string]struct{}) {
-	if !shouldEnrichWithJUnit(summary) {
+func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Summary, failedTests, important map[string]struct{}) {
+	if !summary.Success && !shouldReadJUnitReportsOnFailure(summary) {
 		return
 	}
-
-	reportFiles := findJUnitReportFiles(projectDir)
+	reportFiles := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(summary.Command))
+	passedCount := 0
+	failedCount := 0
 	for _, path := range reportFiles {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -317,9 +322,14 @@ func enrichWithJUnitFailures(projectDir string, summary *Summary, failedTests, i
 			if failure == nil {
 				failure = testCase.Error
 			}
-			if failure == nil {
+			if failure == nil && testCase.Skipped != nil {
 				continue
 			}
+			if failure == nil {
+				passedCount++
+				continue
+			}
+			failedCount++
 
 			failedTestName := formatJUnitFailedTest(testCase.ClassName, testCase.Name)
 			addUnique(&summary.FailedTests, failedTests, failedTestName, 0)
@@ -331,6 +341,11 @@ func enrichWithJUnitFailures(projectDir string, summary *Summary, failedTests, i
 				addUnique(&summary.ImportantLines, important, location, maxImportantLines)
 			}
 		}
+	}
+
+	if passedCount > 0 || failedCount > 0 {
+		summary.PassedTestCount = passedCount
+		summary.FailedTestCount = failedCount
 	}
 }
 
@@ -356,6 +371,38 @@ func findJUnitReportFiles(projectDir string) []string {
 	})
 
 	return reportFiles
+}
+
+func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) []string {
+	reportFiles := findJUnitReportFiles(projectDir)
+	if len(reportFiles) == 0 {
+		return nil
+	}
+	if startedAt.IsZero() {
+		if allowFallback {
+			return reportFiles
+		}
+		return nil
+	}
+
+	threshold := startedAt.Add(-junitTimeSkew)
+	fresh := make([]string, 0, len(reportFiles))
+	for _, path := range reportFiles {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if !info.ModTime().Before(threshold) {
+			fresh = append(fresh, path)
+		}
+	}
+	if len(fresh) > 0 {
+		return fresh
+	}
+	if allowFallback {
+		return reportFiles
+	}
+	return nil
 }
 
 func addUnique(items *[]string, seen map[string]struct{}, value string, limit int) {
@@ -484,18 +531,32 @@ func extractRelevantStackFrame(stack string) string {
 	return ""
 }
 
-func shouldEnrichWithJUnit(summary *Summary) bool {
+func shouldFallbackToAvailableJUnitReports(command []string) bool {
+	for _, arg := range command {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		taskName := strings.ToLower(arg)
+		if index := strings.LastIndex(taskName, ":"); index >= 0 {
+			taskName = taskName[index+1:]
+		}
+		if strings.Contains(taskName, "test") || taskName == "check" {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldReadJUnitReportsOnFailure(summary *Summary) bool {
 	if len(summary.FailedTests) > 0 {
 		return true
 	}
-
 	for _, task := range summary.FailedTasks {
 		lower := strings.ToLower(task)
 		if strings.Contains(lower, "test") {
 			return true
 		}
 	}
-
 	return false
 }
 

@@ -66,12 +66,28 @@ func TestReduceSuccessSummary(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradle",
 		Args:       []string{"--console=plain", "build"},
-		ProjectDir: "/tmp/project",
+		ProjectDir: t.TempDir(),
 		Source:     gradle.SourceSystem,
 	}
+	startTime := time.Now()
+	reportDir := filepath.Join(command.ProjectDir, "app", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	report := `<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="example.SampleTest" tests="3" skipped="1" failures="1" errors="0">
+  <testcase name="passesOne" classname="example.SampleTest"></testcase>
+  <testcase name="passesTwo" classname="example.SampleTest"></testcase>
+  <testcase name="fails" classname="example.SampleTest"><failure message="boom" type="AssertionError">boom</failure></testcase>
+  <testcase name="skipped" classname="example.SampleTest"><skipped/></testcase>
+</testsuite>`
+	if err := os.WriteFile(filepath.Join(reportDir, "TEST-example.SampleTest.xml"), []byte(report), 0o644); err != nil {
+		t.Fatalf("write junit report: %v", err)
+	}
 	result := runner.Result{
-		ExitCode: 0,
-		Duration: 5 * time.Second,
+		ExitCode:  0,
+		Duration:  5 * time.Second,
+		StartTime: startTime,
 		RawLogPath: writeTestLog(t, []string{
 			"> Task :compileKotlin",
 			"BUILD SUCCESSFUL in 5s",
@@ -94,6 +110,9 @@ func TestReduceSuccessSummary(t *testing.T) {
 	}
 	if summary.Duration != "5s" {
 		t.Fatalf("unexpected duration: %s", summary.Duration)
+	}
+	if summary.PassedTestCount != 2 || summary.FailedTestCount != 1 {
+		t.Fatalf("expected junit counts 2 passed / 1 failed, got %d passed / %d failed", summary.PassedTestCount, summary.FailedTestCount)
 	}
 	if summary.FailedTasks == nil || summary.FailedTests == nil || summary.Warnings == nil || summary.ImportantLines == nil {
 		t.Fatal("expected summary slices to be initialized")
@@ -286,7 +305,8 @@ func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
 	}
 
 	report := `<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="example.FailingTest" tests="1" skipped="0" failures="1" errors="0">
+<testsuite name="example.FailingTest" tests="2" skipped="0" failures="1" errors="0">
+  <testcase name="passes()" classname="example.FailingTest"></testcase>
   <testcase name="intentionalFailure()" classname="example.FailingTest">
     <failure message="org.opentest4j.AssertionFailedError: expected: &lt;expected&gt; but was: &lt;hello, build-brief&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;expected&gt; but was: &lt;hello, build-brief&gt;
 	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1145)
@@ -304,9 +324,11 @@ func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
 		ProjectDir: projectDir,
 		Source:     gradle.SourceSystem,
 	}
+	startTime := time.Now()
 	result := runner.Result{
-		ExitCode: 1,
-		Duration: time.Second,
+		ExitCode:  1,
+		Duration:  time.Second,
+		StartTime: startTime,
 		RawLogPath: writeTestLog(t, []string{
 			"> Task :test FAILED",
 			"FailingTest > intentionalFailure() FAILED",
@@ -327,11 +349,65 @@ func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
 	if !contains(summary.FailedTests, "FailingTest > intentionalFailure()") {
 		t.Fatalf("expected failed test to be present: %v", summary.FailedTests)
 	}
+	if summary.PassedTestCount != 1 || summary.FailedTestCount != 1 {
+		t.Fatalf("expected junit counts 1 passed / 1 failed, got %d passed / %d failed", summary.PassedTestCount, summary.FailedTestCount)
+	}
 	if !contains(summary.ImportantLines, "FailingTest > intentionalFailure(): org.opentest4j.AssertionFailedError: expected: <expected> but was: <hello, build-brief>") {
 		t.Fatalf("expected assertion detail in important lines: %v", summary.ImportantLines)
 	}
 	if !contains(summary.ImportantLines, "at example.FailingTest.intentionalFailure(FailingTest.java:10)") {
 		t.Fatalf("expected user stack frame in important lines: %v", summary.ImportantLines)
+	}
+}
+
+func TestReduceDoesNotReuseStaleJUnitCountsOnEarlyFailure(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+
+	report := `<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="example.StaleSuite" tests="2" skipped="0" failures="0" errors="0">
+  <testcase name="passesOne" classname="example.StaleSuite"></testcase>
+  <testcase name="passesTwo" classname="example.StaleSuite"></testcase>
+</testsuite>`
+	reportPath := filepath.Join(reportDir, "TEST-example.StaleSuite.xml")
+	if err := os.WriteFile(reportPath, []byte(report), 0o644); err != nil {
+		t.Fatalf("write junit report: %v", err)
+	}
+
+	startTime := time.Now()
+	oldTime := startTime.Add(-2 * time.Second)
+	if err := os.Chtimes(reportPath, oldTime, oldTime); err != nil {
+		t.Fatalf("age junit report: %v", err)
+	}
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "jvmTest"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:  1,
+		Duration:  time.Second,
+		StartTime: startTime,
+		RawLogPath: writeTestLog(t, []string{
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"Task 'jvmTest' not found in root project 'sample'.",
+			"BUILD FAILED in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce stale junit fallback failure: %v", err)
+	}
+
+	if summary.PassedTestCount != 0 || summary.FailedTestCount != 0 {
+		t.Fatalf("expected no stale junit counts, got %d passed / %d failed", summary.PassedTestCount, summary.FailedTestCount)
 	}
 }
 

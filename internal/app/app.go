@@ -175,7 +175,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			EmittedTokens: summary.EmittedTokens,
 			RawLogPath:    summary.RawLogPath,
 			FailedTasks:   len(summary.FailedTasks),
-			FailedTests:   len(summary.FailedTests),
+			PassedTests:   summary.PassedTestCount,
+			FailedTests:   summary.FailedTestCount,
 		}, stderr)
 	}
 

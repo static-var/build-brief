@@ -17,6 +17,12 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		return err
 	}
 
+	if summary.PassedTestCount > 0 || summary.FailedTestCount > 0 {
+		if _, err := fmt.Fprintf(bw, "Tests: %d passed, %d failed\n", summary.PassedTestCount, summary.FailedTestCount); err != nil {
+			return err
+		}
+	}
+
 	if summary.WarningCount > 0 {
 		if _, err := fmt.Fprintf(bw, "Warnings: %d\n", summary.WarningCount); err != nil {
 			return err

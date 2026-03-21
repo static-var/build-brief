@@ -35,6 +35,7 @@ type Record struct {
 	ExecTimeMs    int64     `json:"-"`
 	RawLogPath    string    `json:"raw_log_path,omitempty"`
 	FailedTasks   int       `json:"failed_tasks,omitempty"`
+	PassedTests   int       `json:"passed_tests,omitempty"`
 	FailedTests   int       `json:"failed_tests,omitempty"`
 }
 

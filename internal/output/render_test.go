@@ -67,6 +67,8 @@ func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,
 		BuildStatusLine: "BUILD SUCCESSFUL in 5s",
+		PassedTestCount: 24,
+		FailedTestCount: 1,
 		Artifacts: []reducer.Artifact{
 			{Kind: "APK", Path: "androidApp/build/outputs/apk/debug/androidApp-debug.apk", SizeBytes: 24 * 1024 * 1024},
 			{Kind: "JAR", Path: "server/build/libs/server.jar", SizeBytes: 512 * 1024},
@@ -83,6 +85,7 @@ func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	rendered := out.String()
 	for _, expected := range []string{
 		"BUILD SUCCESSFUL in 5s",
+		"Tests: 24 passed, 1 failed",
 		"Artifacts:",
 		"APK: androidApp/build/outputs/apk/debug/androidApp-debug.apk",
 		"JAR: server/build/libs/server.jar",
