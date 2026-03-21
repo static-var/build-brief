@@ -60,6 +60,32 @@ build-brief --help
 
 If you want to keep the original command shape explicit, prefer `build-brief gradle ...` for a PATH-resolved Gradle binary and `build-brief ./gradlew ...` for a project-local wrapper.
 
+Example successful test run:
+
+```text
+$ build-brief test
+BUILD SUCCESSFUL in 2s
+Tests: 2 passed, 0 failed
+Warnings: 1
+  - OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+```
+
+Example failed test run:
+
+```text
+$ build-brief test
+BUILD FAILED in 900ms
+Tests: 7 passed, 1 failed
+Command: gradle --console=plain test
+Failed tasks:
+  - :test
+Failed tests:
+  - GreetingServiceTest > returns fallback message
+Highlights:
+  - GreetingServiceTest > returns fallback message: expected:<Hello> but was:<null>
+Raw log: /tmp/build-brief/build-brief-abcd1234.latest.log
+```
+
 ## Check your gains
 
 `build-brief` records rough token savings automatically whenever it wraps a Gradle command. Use the `gains` subcommand to inspect totals, recent runs, project-only scope, or machine-readable output:
