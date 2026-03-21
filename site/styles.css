@@ -487,6 +487,16 @@ section{padding:var(--section-py) 0}
 }
 .footer__logo span{color:var(--accent-dim)}
 .footer__copy{font-size:.75rem;color:var(--text-dim)}
+.footer__credit{
+  margin-top:.45rem;
+  font-size:.78rem;
+  color:var(--text-dim);
+}
+.footer__credit a{
+  color:var(--accent);
+  text-decoration:none;
+}
+.footer__credit a:hover{color:var(--text-bright)}
 .footer__links{
   display:flex;justify-content:center;gap:1.5rem;margin-top:.75rem;list-style:none;
 }
