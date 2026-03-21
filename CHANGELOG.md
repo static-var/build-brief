@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.5 - 2026-03-21
+
+- fix: clean up gains tracking labels (9a4f287)
+- docs: fix website examples (adef13a)
+- docs: show test count examples (8ef20e5)
+- feat: report test pass and fail counts (9b01755)
+- docs: redesign website (731dd76)
+- docs: tighten site layout (8aed3d3)
+- docs: polish gains section (4336568)
+- docs: add gains usage section (627e048)
+
 ## v0.0.4 - 2026-03-16
 
 - fix: harden homebrew formula install (4f812ad)
