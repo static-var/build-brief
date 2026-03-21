@@ -666,12 +666,8 @@ main {
 .gains-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  gap: 1.2rem;
   align-items: start;
-}
-
-.gains-box--wide {
-  grid-column: 1 / -1;
 }
 
 /* ── Agent integration ─────────────────────────────────────── */
@@ -801,7 +797,12 @@ main {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 1.6rem;
+  padding: 1.6rem 1.8rem;
+  transition: border-color 0.25s;
+}
+
+.gains-box:hover {
+  border-color: var(--border-hi);
 }
 
 .gains-box p {
@@ -816,14 +817,15 @@ main {
 }
 
 .gains-box pre {
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 8px;
-  padding: 0.7rem 0.8rem;
-  margin: 0.7rem 0 0;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem;
+  margin: 0.8rem 0 0;
   overflow-x: auto;
   font-family: var(--mono);
   font-size: 0.78rem;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 /* ── FAQ ───────────────────────────────────────────────────── */

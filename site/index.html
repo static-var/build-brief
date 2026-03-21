@@ -306,13 +306,13 @@ go build -o build-brief ./cmd/build-brief</code></pre>
           <h2>See what the reducer is saving you.</h2>
           <p>
             After a few runs, use <code>build-brief gains</code> to inspect rough
-            token savings. Add <code>--history</code> for recent commands,
-            <code>--project</code> to scope to the current repo, or
-            <code>--format json</code> for scripts, dashboards, and other tooling.
+            token savings. Add <code>--history</code> for recent commands or
+            <code>--project</code> to scope to the current repo.
           </p>
         </div>
         <div class="gains-grid">
           <div class="gains-box" data-animate>
+            <span class="label-tag">Commands</span>
             <h3>What to run</h3>
             <p>
               <code>build-brief</code> records raw-vs-emitted token estimates
@@ -354,43 +354,6 @@ Recent Commands
 03-21 09:54 ▲ ./gradlew lintDebug            88.1% (6.7K)
 03-21 09:48 ▲ ./gradlew :app:assembleDebug   96.9% (14.2K)
 03-21 09:42 ▲ ./gradlew :app:testDebugUni…   97.1% (17.7K)</code></pre>
-          </div>
-          <div class="gains-box gains-box--wide" data-animate>
-            <span class="label-tag">Sample JSON output</span>
-            <h3>Structured data for tools</h3>
-            <p>
-              Use <code>--format json</code> when you want to feed gains into
-              scripts, dashboards, or agent tooling.
-            </p>
-            <pre><code>{
-  "summary": {
-    "total_commands": 3,
-    "total_raw_tokens": 40550,
-    "total_emitted_tokens": 1890,
-    "total_saved_tokens": 38660,
-    "avg_savings_pct": 95.33908754623921,
-    "by_command": [
-      {
-        "command": "./gradlew :app:testDebugUnitTest",
-        "count": 1,
-        "saved_tokens": 17720,
-        "avg_savings_pct": 97.14912280701755
-      },
-      {
-        "command": "./gradlew :app:assembleDebug",
-        "count": 1,
-        "saved_tokens": 14220,
-        "avg_savings_pct": 96.86648501362399
-      },
-      {
-        "command": "./gradlew lintDebug",
-        "count": 1,
-        "saved_tokens": 6720,
-        "avg_savings_pct": 88.07339449541286
-      }
-    ]
-  }
-}</code></pre>
           </div>
         </div>
       </div>
