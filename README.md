@@ -60,6 +60,81 @@ build-brief --help
 
 If you want to keep the original command shape explicit, prefer `build-brief gradle ...` for a PATH-resolved Gradle binary and `build-brief ./gradlew ...` for a project-local wrapper.
 
+## Check your gains
+
+`build-brief` records rough token savings automatically whenever it wraps a Gradle command. Use the `gains` subcommand to inspect totals, recent runs, project-only scope, or machine-readable output:
+
+```bash
+build-brief gains
+build-brief gains --history
+build-brief gains --project
+build-brief gains --format json
+build-brief gains --reset
+```
+
+The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting.
+
+Example text output:
+
+```text
+build-brief Token Savings (Global Scope)
+============================================================
+
+Total commands:  3
+Raw tokens:      40.5K
+Emitted tokens:  1.9K
+Tokens saved:    38.7K (95.3%)
+Efficiency:      ██████████████████████░░ 95.3%
+
+By Command
+------------------------------------------------------------------------------
+  #  Command                       Count     Saved    Avg%
+------------------------------------------------------------------------------
+  1  ./gradlew :app:testDebugUni…      1     17.7K   97.1%
+  2  ./gradlew :app:assembleDebug      1     14.2K   96.9%
+  3  ./gradlew lintDebug               1      6.7K   88.1%
+
+Recent Commands
+----------------------------------------------------------
+03-21 09:54 ▲ ./gradlew lintDebug            88.1% (6.7K)
+03-21 09:48 ▲ ./gradlew :app:assembleDebug   96.9% (14.2K)
+03-21 09:42 ▲ ./gradlew :app:testDebugUni…   97.1% (17.7K)
+```
+
+Example JSON output:
+
+```json
+{
+  "summary": {
+    "total_commands": 3,
+    "total_raw_tokens": 40550,
+    "total_emitted_tokens": 1890,
+    "total_saved_tokens": 38660,
+    "avg_savings_pct": 95.33908754623921,
+    "by_command": [
+      {
+        "command": "./gradlew :app:testDebugUnitTest",
+        "count": 1,
+        "saved_tokens": 17720,
+        "avg_savings_pct": 97.14912280701755
+      },
+      {
+        "command": "./gradlew :app:assembleDebug",
+        "count": 1,
+        "saved_tokens": 14220,
+        "avg_savings_pct": 96.86648501362399
+      },
+      {
+        "command": "./gradlew lintDebug",
+        "count": 1,
+        "saved_tokens": 6720,
+        "avg_savings_pct": 88.07339449541286
+      }
+    ]
+  }
+}
+```
+
 ## Agent integration
 
 `build-brief` can install managed instruction blocks for supported tools:

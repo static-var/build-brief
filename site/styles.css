@@ -662,6 +662,18 @@ main {
   white-space: pre-wrap;
 }
 
+/* ── Gains ──────────────────────────────────────────────────── */
+.gains-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.gains-box--wide {
+  grid-column: 1 / -1;
+}
+
 /* ── Agent integration ─────────────────────────────────────── */
 .agent-modes {
   display: grid;
@@ -955,6 +967,7 @@ main {
   .features,
   .agent-modes,
   .agent-guides,
+  .gains-grid,
   .scope-split {
     grid-template-columns: 1fr;
   }
