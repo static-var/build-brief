@@ -168,12 +168,14 @@ func TestRunPrintsHelp(t *testing.T) {
 		"build-brief gains --history",
 		"build-brief gains --reset",
 		"build-brief rewrite 'gradle test'",
+		"build-brief rewrite 'gradle test && gradle check'",
 		"build-brief gradle test",
 		"build-brief ./gradlew test",
 		"[gradle|./gradlew|PATH-TO-GRADLE]",
 		"Selection accepts comma-separated numbers, '*' or 'all', or blank to cancel.",
 		"Only existing global instruction files are updated; OpenCode also installs a managed plugin file.",
 		"Must be used by itself; do not combine it with --install or --install-force.",
+		"including chained `&&`, `||`, and `;` segments.",
 		"Intended for hooks/plugins such as the OpenCode tool.execute.before hook.",
 	} {
 		if !strings.Contains(help, expected) {
@@ -205,6 +207,22 @@ func TestRunRewrite(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
 	if strings.TrimSpace(stdout.String()) != "build-brief gradle clean" {
+		t.Fatalf("unexpected rewrite output %q", stdout.String())
+	}
+}
+
+func TestRunRewriteCommandChain(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{"rewrite", "gradle test && gradle check"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "build-brief gradle test && build-brief gradle check" {
 		t.Fatalf("unexpected rewrite output %q", stdout.String())
 	}
 }

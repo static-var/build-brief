@@ -43,6 +43,16 @@ func TestShellCommandRewritesCommandChains(t *testing.T) {
 	}
 }
 
+func TestShellCommandRewritesMultipleGradleSegmentsInCommandChain(t *testing.T) {
+	rewritten, changed := ShellCommand("gradle test && gradle check")
+	if !changed {
+		t.Fatal("expected chained gradle commands to be rewritten")
+	}
+	if rewritten != "build-brief gradle test && build-brief gradle check" {
+		t.Fatalf("unexpected rewrite: %q", rewritten)
+	}
+}
+
 func TestShellCommandPreservesLeadingCommands(t *testing.T) {
 	rewritten, changed := ShellCommand("cd smoke && ./gradlew test")
 	if !changed {

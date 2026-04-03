@@ -40,7 +40,7 @@ if [[ -z "$rewritten_command" || "$rewritten_command" == "$original_command" ]];
 fi
 
 cat >&2 <<EOF
-[build-brief] Claude Code intercepted a routine Gradle command.
+[build-brief] Claude Code intercepted a routine Gradle command or chain.
 [build-brief] Use this instead:
 
   $rewritten_command
