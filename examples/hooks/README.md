@@ -7,7 +7,7 @@ Recommended use of hooks:
 
 - remind agents to prefer `build-brief` over raw `gradle`
 - archive raw log locations after command completion
-- intercept routine Gradle shell commands before execution when the host supports it
+- intercept routine Gradle shell commands before execution when the host supports it, including chained `&&`, `||`, and `;` segments
 
 Why hooks are secondary:
 
@@ -17,7 +17,7 @@ Why hooks are secondary:
 
 ## OpenCode
 
-OpenCode is the current managed integration. `build-brief --global` writes a thin
+OpenCode is the managed transparent-rewrite integration. `build-brief --global` writes a thin
 plugin that uses OpenCode's `tool.execute.before` hook and delegates rewrite
 decisions to:
 
@@ -25,13 +25,37 @@ decisions to:
 build-brief rewrite "<original shell command>"
 ```
 
-That plugin can transparently replace routine Gradle commands before execution.
+That plugin can transparently replace routine Gradle commands before execution,
+including chained commands such as `gradle test && gradle check`.
+
+## GitHub Copilot CLI
+
+GitHub Copilot CLI now has official plugin packaging plus hook support. The
+managed `build-brief --global` integration installs a local Copilot plugin and
+registers it with:
+
+```bash
+copilot plugin install <local-plugin-path>
+```
+
+That plugin uses a `preToolUse` hook to inspect Bash commands, block routine raw
+Gradle usage including chained segments such as `gradle test && gradle check`,
+and suggest the `build-brief rewrite ...` result instead.
+
+Like Codex and Claude Code, this is a guardrail rather than an in-place command
+rewriter, so the plugin blocks and suggests instead of mutating the original
+command and continuing automatically.
 
 ## Claude Code
 
-Claude Code hooks are different. A `PreToolUse` hook can inspect a bash command and
-block it with a suggested replacement, but it cannot transparently mutate the
-command and continue in place the way the OpenCode plugin can.
+Claude Code now has an official plugin system, so `build-brief --global` can
+install a managed local plugin for Claude instead of only relying on a manual
+hook setup.
+
+That managed plugin uses Claude Code `PreToolUse` hooks under the hood. The
+runtime behavior is still different from OpenCode: it can block a Bash command
+and suggest the replacement, but it cannot transparently mutate the command and
+continue in place the way the OpenCode plugin can.
 
 Example files live here:
 
@@ -45,5 +69,24 @@ Recommended setup:
 3. merge the `PreToolUse` snippet from `examples/hooks/claude-code/settings.json`
    into your Claude Code settings
 
-The example hook blocks routine raw Gradle commands and suggests the
-`build-brief rewrite ...` result instead.
+The example hook and the managed Claude plugin both block routine raw Gradle
+commands, including chained segments such as `gradle test && gradle check`, and
+suggest the `build-brief rewrite ...` result instead.
+
+## Codex
+
+Codex now has official hooks and plugin packaging, but the runtime constraint is
+similar to Claude Code for this use case: `PreToolUse` can block a Bash command
+and explain the replacement, but it cannot rewrite the command in place and
+continue automatically.
+
+The managed `build-brief --global` Codex integration therefore installs:
+
+- a local Codex plugin bundle with `hooks.json`
+- a local marketplace entry under `~/.agents/plugins/marketplace.json`
+- a cached installed copy under the Codex plugin cache
+- `config.toml` updates that enable `codex_hooks` and turn the plugin on
+
+That managed hook blocks routine raw Gradle commands, including chained segments
+such as `gradle test && gradle check`, and suggests the `build-brief rewrite ...`
+result instead.

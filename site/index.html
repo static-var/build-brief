@@ -432,15 +432,15 @@
     <div class="agents-grid fade-in">
       <div class="agent-card">
         <p class="agent-card__name">GitHub Copilot CLI</p>
-        <p class="agent-card__desc">Custom instructions in copilot config</p>
+        <p class="agent-card__desc">Copilot plugin + instruction integration</p>
       </div>
       <div class="agent-card">
         <p class="agent-card__name">Claude Code</p>
-        <p class="agent-card__desc">CLAUDE.md instruction file</p>
+        <p class="agent-card__desc">Claude plugin + instruction integration</p>
       </div>
       <div class="agent-card">
         <p class="agent-card__name">Codex CLI</p>
-        <p class="agent-card__desc">Codex instruction integration</p>
+        <p class="agent-card__desc">Codex plugin + instruction integration</p>
       </div>
       <div class="agent-card">
         <p class="agent-card__name">Gemini CLI</p>
@@ -468,7 +468,10 @@
 <span class="grn">build-brief ./gradlew test</span>
 
 <span class="dim">$</span> <span class="brt">build-brief rewrite './gradlew --stacktrace assembleDebug'</span>
-<span class="grn">build-brief ./gradlew --stacktrace assembleDebug</span></div>
+<span class="grn">build-brief ./gradlew --stacktrace assembleDebug</span>
+
+<span class="dim">$</span> <span class="brt">build-brief rewrite 'gradle test && gradle check'</span>
+<span class="grn">build-brief gradle test && build-brief gradle check</span></div>
     </div>
 
     <div class="terminal fade-in" style="margin-top:1.25rem">

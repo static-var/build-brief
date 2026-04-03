@@ -2,6 +2,7 @@ package install
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,46 @@ var runRTKHelp = func() error {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run()
+}
+
+var userHomeDir = os.UserHomeDir
+var userConfigDir = os.UserConfigDir
+var runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope string) error {
+	addOutput, addErr := exec.Command(binary, "plugin", "marketplace", "add", marketplaceDir).CombinedOutput()
+	if addErr != nil {
+		message := strings.TrimSpace(string(addOutput))
+		if message != "" && !strings.Contains(strings.ToLower(message), "already") {
+			return fmt.Errorf("%w: %s", addErr, message)
+		}
+		if message == "" && addErr != nil {
+			return addErr
+		}
+	}
+
+	installOutput, installErr := exec.Command(binary, "plugin", "install", pluginRef, "--scope", scope).CombinedOutput()
+	if installErr == nil {
+		return nil
+	}
+
+	message := strings.TrimSpace(string(installOutput))
+	if message == "" {
+		return installErr
+	}
+
+	return fmt.Errorf("%w: %s", installErr, message)
+}
+var runCopilotPluginInstall = func(binary, pluginDir string) error {
+	output, err := exec.Command(binary, "plugin", "install", pluginDir).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		return err
+	}
+
+	return fmt.Errorf("%w: %s", err, message)
 }
 
 type Tool struct {
@@ -102,8 +143,32 @@ func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 		pluginInstalled := false
 		if tool.Tool.SupportsPlugin {
 			switch tool.Tool.ID {
+			case "copilot-cli":
+				target, err := installCopilotPlugin(tool)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
+				} else {
+					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
+					pluginInstalled = true
+				}
+			case "claude-code":
+				target, err := installClaudePlugin(tool)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
+				} else {
+					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
+					pluginInstalled = true
+				}
 			case "opencode":
 				target, err := installOpenCodePlugin(tool)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
+				} else {
+					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
+					pluginInstalled = true
+				}
+			case "codex-cli":
+				target, err := installCodexPlugin(tool)
 				if err != nil {
 					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
 				} else {
@@ -202,12 +267,12 @@ func RTKInstalled() bool {
 }
 
 func knownTools() ([]Tool, error) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return nil, err
 	}
 
-	configDir, err := os.UserConfigDir()
+	configDir, err := userConfigDir()
 	if err != nil {
 		configDir = filepath.Join(home, ".config")
 	}
@@ -220,6 +285,7 @@ func knownTools() ([]Tool, error) {
 			Binaries:         []string{"copilot"},
 			GlobalTargets:    []string{filepath.Join(home, ".copilot", "copilot-instructions.md")},
 			LocalInstruction: []string{"AGENTS.md", ".github/copilot-instructions.md", ".github/instructions/*.instructions.md", "CLAUDE.md", "GEMINI.md"},
+			SupportsPlugin:   true,
 		},
 		{
 			ID:                 "claude-code",
@@ -228,6 +294,7 @@ func knownTools() ([]Tool, error) {
 			GlobalTargets:      []string{filepath.Join(home, ".claude", "CLAUDE.md")},
 			LocalInstruction:   []string{"CLAUDE.md"},
 			SupportsHookGuides: true,
+			SupportsPlugin:     true,
 		},
 		{
 			ID:       "codex-cli",
@@ -241,6 +308,7 @@ func knownTools() ([]Tool, error) {
 				"AGENTS.md",
 			),
 			LocalInstruction: []string{"AGENTS.md", "CODEX.md"},
+			SupportsPlugin:   true,
 		},
 		{
 			ID:                 "opencode",
@@ -290,6 +358,7 @@ func localInstructions(rtkInstalled bool) string {
 		"## build-brief",
 		"",
 		"- Prefer `build-brief gradle ...` for PATH Gradle and `build-brief ./gradlew ...` for the project wrapper.",
+		"- For chained shell commands, rewrite each Gradle segment individually, for example `build-brief gradle test && build-brief gradle check`.",
 		"- Use default `build-brief` output for routine Gradle work; it stays intentionally short on clean success cases.",
 		"- Use `build-brief gradle --stacktrace ...` or `build-brief ./gradlew --stacktrace ...` when you need Gradle stack traces.",
 		"- `build-brief` normalizes output-shaping flags like `--quiet`, `--warn`, `--warning-mode ...`, and `--console ...` so its reducer keeps working reliably.",
@@ -300,7 +369,7 @@ func localInstructions(rtkInstalled bool) string {
 	if rtkInstalled {
 		lines = append(lines,
 			"- RTK is installed on this machine. Prefer `build-brief` directly for Gradle commands instead of wrapping Gradle work in RTK first.",
-			"- If hooks or plugins rewrite raw `gradle` / `./gradlew` commands for you, let them route those commands to `build-brief` rather than sending Gradle through RTK first.",
+			"- If hooks or plugins rewrite raw `gradle` / `./gradlew` commands for you, let them route those commands — including chained `&&`, `||`, and `;` segments — to `build-brief` rather than sending Gradle through RTK first.",
 		)
 	}
 
@@ -314,6 +383,7 @@ func globalInstructions(tool Tool, rtkInstalled bool) string {
 		"## build-brief",
 		"",
 		"- Prefer `build-brief gradle ...` for PATH Gradle and `build-brief ./gradlew ...` for the project wrapper.",
+		"- For chained shell commands, rewrite each Gradle segment individually, for example `build-brief gradle test && build-brief gradle check`.",
 		"- Use the default `build-brief` output for routine Gradle work; clean success cases stay intentionally short.",
 		"- Use `build-brief gradle --stacktrace ...` or `build-brief ./gradlew --stacktrace ...` when you need Gradle stack traces.",
 		"- `build-brief` normalizes output-shaping flags like `--quiet`, `--warn`, `--warning-mode ...`, and `--console ...` so its reducer keeps working reliably.",
@@ -324,7 +394,7 @@ func globalInstructions(tool Tool, rtkInstalled bool) string {
 	if rtkInstalled {
 		lines = append(lines,
 			"- RTK is installed on this machine. Prefer `build-brief` directly for Gradle commands instead of wrapping Gradle work in RTK first.",
-			"- If this tool rewrites or intercepts raw Gradle commands, let that path route to `build-brief` instead of sending Gradle through RTK first.",
+			"- If this tool rewrites or intercepts raw Gradle commands, let that path route chained `&&`, `||`, and `;` Gradle segments to `build-brief` too instead of sending Gradle through RTK first.",
 		)
 	}
 
@@ -333,7 +403,7 @@ func globalInstructions(tool Tool, rtkInstalled bool) string {
 			"",
 			"### Hook guidance",
 			"",
-			"- If this tool supports command hooks, add a guardrail that reminds or rewrites routine `gradle`/`./gradlew` usage to `build-brief gradle ...` or `build-brief ./gradlew ...` where safe.",
+			"- If this tool supports command hooks, add a guardrail that reminds or rewrites routine `gradle`/`./gradlew` usage to `build-brief gradle ...` or `build-brief ./gradlew ...` where safe, including chained `&&`, `||`, and `;` shell segments.",
 			"- Keep raw Gradle available as a fallback for unusual cases or when full unfiltered output is explicitly needed.",
 		)
 	}
@@ -343,19 +413,46 @@ func globalInstructions(tool Tool, rtkInstalled bool) string {
 			"",
 			"### Plugin guidance",
 			"",
-			"- The managed OpenCode plugin rewrites routine `gradle` and `./gradlew` shell commands to explicit `build-brief gradle ...` or `build-brief ./gradlew ...` commands before execution.",
-			"- Keep using raw Gradle intentionally only when you want to bypass that reduction layer.",
 		)
+		lines = append(lines, pluginGuidance(tool)...)
 	}
 
 	lines = append(lines, blockEnd)
 	return strings.Join(lines, "\n")
 }
 
+func pluginGuidance(tool Tool) []string {
+	switch tool.ID {
+	case "copilot-cli":
+		return []string{
+			"- The managed GitHub Copilot CLI plugin installs a local plugin bundle and registers it with `copilot plugin install`.",
+			"- Its `preToolUse` hook blocks routine raw `gradle` and `./gradlew` Bash commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
+			"- GitHub Copilot CLI hooks act as a guardrail here rather than an in-place command rewriter, so keep raw Gradle available for intentional bypasses.",
+		}
+	case "claude-code":
+		return []string{
+			"- The managed Claude Code plugin installs a local marketplace and registers a local `build-brief` plugin with `claude plugin install`.",
+			"- Its `PreToolUse` hook blocks routine raw `gradle` and `./gradlew` Bash commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
+			"- Claude Code hooks provide the blocking guardrail, not an in-place command rewrite, so keep raw Gradle available when you intentionally want to bypass it.",
+		}
+	case "codex-cli":
+		return []string{
+			"- The managed Codex plugin installs a local plugin bundle and enables Codex `PreToolUse` hooks for `build-brief`.",
+			"- Its Bash hook blocks routine raw `gradle` and `./gradlew` commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
+			"- Codex hooks cannot transparently rewrite and continue in place today, so keep raw Gradle available when you intentionally want to bypass that guardrail.",
+		}
+	default:
+		return []string{
+			"- The managed OpenCode plugin rewrites routine `gradle` and `./gradlew` shell commands — including chained `&&`, `||`, and `;` Gradle segments — to explicit `build-brief gradle ...` or `build-brief ./gradlew ...` commands before execution.",
+			"- Keep using raw Gradle intentionally only when you want to bypass that reduction layer.",
+		}
+	}
+}
+
 func installOpenCodePlugin(tool DetectedTool) (string, error) {
 	baseDir := filepath.Dir(tool.PreferredTarget)
 	if baseDir == "." || baseDir == "" {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err != nil {
 			return "", err
 		}
@@ -370,6 +467,111 @@ func installOpenCodePlugin(tool DetectedTool) (string, error) {
 		return "", err
 	}
 	return target, nil
+}
+
+func installClaudePlugin(tool DetectedTool) (string, error) {
+	if strings.TrimSpace(tool.DetectedBinary) == "" {
+		return "", errors.New("claude binary not found in PATH")
+	}
+
+	home, err := userHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	marketplaceRoot := filepath.Join(home, ".claude", "marketplaces", "build-brief")
+	pluginRoot := filepath.Join(marketplaceRoot, "plugins", "build-brief")
+
+	if err := writeJSONFile(filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"), claudePluginManifest()); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(pluginRoot, "hooks", "hooks.json"), claudePluginHooksConfig()); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "scripts"), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh"), []byte(claudePluginPreToolUseScript()), 0o755); err != nil {
+		return "", err
+	}
+
+	if err := writeJSONFile(filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"), claudePluginMarketplace()); err != nil {
+		return "", err
+	}
+
+	if err := runClaudePluginInstall(tool.DetectedBinary, marketplaceRoot, claudePluginRef(), "user"); err != nil {
+		return "", err
+	}
+
+	return pluginRoot, nil
+}
+
+func installCopilotPlugin(tool DetectedTool) (string, error) {
+	if strings.TrimSpace(tool.DetectedBinary) == "" {
+		return "", errors.New("copilot binary not found in PATH")
+	}
+
+	home, err := userHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	sourceDir := filepath.Join(home, ".copilot", "plugins", "build-brief")
+	if err := writeJSONFile(filepath.Join(sourceDir, "plugin.json"), copilotPluginManifest()); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(sourceDir, "hooks.json"), copilotHooksConfig()); err != nil {
+		return "", err
+	}
+
+	if err := runCopilotPluginInstall(tool.DetectedBinary, sourceDir); err != nil {
+		return "", err
+	}
+
+	return sourceDir, nil
+}
+
+func installCodexPlugin(tool DetectedTool) (string, error) {
+	home, err := userHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	baseDir := filepath.Dir(tool.PreferredTarget)
+	if baseDir == "." || baseDir == "" {
+		baseDir = filepath.Join(home, ".codex")
+	}
+
+	sourceDir := filepath.Join(baseDir, "plugins", codexPluginName)
+	if err := writeJSONFile(filepath.Join(sourceDir, ".codex-plugin", "plugin.json"), codexPluginManifest()); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(sourceDir, "hooks.json"), codexHooksConfig()); err != nil {
+		return "", err
+	}
+
+	marketplacePath := filepath.Join(home, ".agents", "plugins", "marketplace.json")
+	if err := upsertCodexMarketplace(marketplacePath, codexMarketplaceSourcePath()); err != nil {
+		return "", err
+	}
+
+	cacheDir := filepath.Join(baseDir, "plugins", "cache", codexMarketplaceName, codexPluginName, "local")
+	if err := os.RemoveAll(cacheDir); err != nil {
+		return "", err
+	}
+	if err := copyDir(sourceDir, cacheDir); err != nil {
+		return "", err
+	}
+
+	configPath := filepath.Join(baseDir, "config.toml")
+	if err := upsertTOMLBool(configPath, "[features]", "codex_hooks", true); err != nil {
+		return "", err
+	}
+	if err := upsertTOMLBool(configPath, fmt.Sprintf(`[plugins.%q]`, codexPluginID()), "enabled", true); err != nil {
+		return "", err
+	}
+
+	return sourceDir, nil
 }
 
 func openCodePluginSource() string {
@@ -419,6 +621,511 @@ func openCodePluginSource() string {
 	}
 
 	return strings.Join(lines, "\n") + "\n"
+}
+
+const (
+	codexMarketplaceName        = "local-user-plugins"
+	codexMarketplaceDisplayName = "Local User Plugins"
+	codexPluginName             = "build-brief"
+)
+
+func codexPluginID() string {
+	return codexPluginName + "@" + codexMarketplaceName
+}
+
+func codexMarketplaceSourcePath() string {
+	return "./" + filepath.ToSlash(filepath.Join(".codex", "plugins", codexPluginName))
+}
+
+func copilotPluginManifest() map[string]any {
+	return map[string]any{
+		"name":        "build-brief",
+		"description": "Guard routine Gradle Bash commands by steering GitHub Copilot CLI toward build-brief.",
+		"version":     "1.0.0",
+		"author": map[string]any{
+			"name": "Static Var",
+			"url":  "https://bb.staticvar.dev",
+		},
+		"license":  "MIT",
+		"keywords": []string{"gradle", "build-brief", "copilot"},
+		"hooks":    "hooks.json",
+	}
+}
+
+func copilotHooksConfig() map[string]any {
+	return map[string]any{
+		"version": 1,
+		"hooks": map[string]any{
+			"preToolUse": []any{
+				map[string]any{
+					"type":       "command",
+					"bash":       copilotPreToolUseCommand(),
+					"timeoutSec": 30,
+				},
+			},
+		},
+	}
+}
+
+func copilotPreToolUseCommand() string {
+	return `python3 -c "
+import json
+import subprocess
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+tool_name = str(payload.get('toolName', '')).lower()
+if tool_name != 'bash':
+    raise SystemExit(0)
+
+tool_args = payload.get('toolArgs')
+if not isinstance(tool_args, str) or not tool_args.strip():
+    raise SystemExit(0)
+
+try:
+    parsed_args = json.loads(tool_args)
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(parsed_args, dict):
+    raise SystemExit(0)
+
+command = parsed_args.get('command', '')
+if not isinstance(command, str) or not command.strip():
+    raise SystemExit(0)
+if 'build-brief' in command:
+    raise SystemExit(0)
+
+try:
+    result = subprocess.run(
+        ['build-brief', 'rewrite', command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+except FileNotFoundError:
+    raise SystemExit(0)
+
+rewritten = result.stdout.strip()
+if result.returncode != 0 or not rewritten or rewritten == command.strip():
+    raise SystemExit(0)
+
+json.dump(
+    {
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': 'Routine Gradle command or chain intercepted by build-brief. Use: ' + rewritten,
+    },
+    sys.stdout,
+    separators=(',', ':'),
+)
+"`
+}
+
+const (
+	claudeMarketplaceName = "build-brief-local"
+	claudePluginName      = "build-brief"
+)
+
+func claudePluginRef() string {
+	return claudePluginName + "@" + claudeMarketplaceName
+}
+
+func claudePluginManifest() map[string]any {
+	return map[string]any{
+		"name":        claudePluginName,
+		"version":     "1.0.0",
+		"description": "Guard routine Gradle Bash commands by steering Claude Code toward build-brief.",
+		"author": map[string]any{
+			"name": "Static Var",
+			"url":  "https://bb.staticvar.dev",
+		},
+		"homepage":   "https://bb.staticvar.dev",
+		"repository": "https://github.com/static-var/build-brief",
+		"license":    "MIT",
+		"keywords":   []string{"gradle", "build-brief", "claude-code"},
+	}
+}
+
+func claudePluginMarketplace() map[string]any {
+	return map[string]any{
+		"name": claudeMarketplaceName,
+		"owner": map[string]any{
+			"name": "Static Var",
+		},
+		"plugins": []any{
+			map[string]any{
+				"name":        claudePluginName,
+				"source":      "./plugins/build-brief",
+				"description": "Guard routine Gradle Bash commands by steering Claude Code toward build-brief.",
+			},
+		},
+	}
+}
+
+func claudePluginHooksConfig() map[string]any {
+	return map[string]any{
+		"description": "build-brief guardrail hooks",
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "Bash",
+					"hooks": []any{
+						map[string]any{
+							"type":          "command",
+							"command":       `"${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-build-brief.sh"`,
+							"timeout":       30,
+							"statusMessage": "Checking Bash command for build-brief",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func claudePluginPreToolUseScript() string {
+	return `#!/usr/bin/env bash
+
+set -euo pipefail
+
+if ! command -v build-brief >/dev/null 2>&1; then
+  exit 0
+fi
+
+payload="$(cat)"
+if [[ -z "$payload" ]]; then
+  exit 0
+fi
+
+original_command="$(python3 - "$payload" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    print("")
+    raise SystemExit(0)
+
+tool_name = payload.get("tool_name", "")
+if tool_name != "Bash":
+    print("")
+    raise SystemExit(0)
+
+tool_input = payload.get("tool_input", {})
+if not isinstance(tool_input, dict):
+    print("")
+    raise SystemExit(0)
+
+command = tool_input.get("command", "")
+print(command if isinstance(command, str) else "")
+PY
+)"
+
+if [[ -z "$original_command" || "$original_command" == *"build-brief"* ]]; then
+  exit 0
+fi
+
+rewritten_command="$(build-brief rewrite "$original_command" 2>/dev/null || true)"
+if [[ -z "$rewritten_command" || "$rewritten_command" == "$original_command" ]]; then
+  exit 0
+fi
+
+python3 - "$rewritten_command" <<'PY'
+import json
+import sys
+
+rewritten = sys.argv[1]
+json.dump(
+    {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"Routine Gradle command or chain intercepted by build-brief. Use: {rewritten}",
+        }
+    },
+    sys.stdout,
+    separators=(",", ":"),
+)
+PY
+`
+}
+
+func codexPluginManifest() map[string]any {
+	return map[string]any{
+		"name":        codexPluginName,
+		"version":     "1.0.0",
+		"description": "Guard routine Gradle Bash commands by steering Codex toward build-brief.",
+		"author": map[string]any{
+			"name": "Static Var",
+			"url":  "https://bb.staticvar.dev",
+		},
+		"homepage":   "https://bb.staticvar.dev",
+		"repository": "https://github.com/static-var/build-brief",
+		"license":    "MIT",
+		"keywords":   []string{"gradle", "build-brief", "codex"},
+		"hooks":      "./hooks.json",
+		"interface": map[string]any{
+			"displayName":      "build-brief",
+			"shortDescription": "Steer routine Gradle work through build-brief.",
+			"longDescription":  "Blocks routine raw Gradle Bash commands in Codex and suggests the equivalent build-brief command instead.",
+			"developerName":    "Static Var",
+			"category":         "Productivity",
+			"websiteURL":       "https://bb.staticvar.dev",
+			"defaultPrompt": []string{
+				"Use build-brief for this Gradle task.",
+				"Prefer build-brief over raw gradle for routine builds.",
+			},
+			"brandColor": "#0f172a",
+		},
+	}
+}
+
+func codexHooksConfig() map[string]any {
+	return map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "Bash",
+					"hooks": []any{
+						map[string]any{
+							"type":          "command",
+							"statusMessage": "Checking Bash command for build-brief",
+							"command":       codexPreToolUseCommand(),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func codexPreToolUseCommand() string {
+	return `python3 -c "
+import json
+import subprocess
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+tool_input = payload.get('tool_input')
+if not isinstance(tool_input, dict):
+    raise SystemExit(0)
+
+command = tool_input.get('command', '')
+if not isinstance(command, str) or not command.strip():
+    raise SystemExit(0)
+if 'build-brief' in command:
+    raise SystemExit(0)
+
+try:
+    result = subprocess.run(
+        ['build-brief', 'rewrite', command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+except FileNotFoundError:
+    raise SystemExit(0)
+
+rewritten = result.stdout.strip()
+if result.returncode != 0 or not rewritten or rewritten == command.strip():
+    raise SystemExit(0)
+
+sys.stderr.write(
+    '[build-brief] Codex blocked a routine Gradle command or chain.\n'
+    '[build-brief] Use this instead:\n\n'
+    '  ' + rewritten + '\n\n'
+    'This Codex PreToolUse hook can block and suggest a safer replacement,\n'
+    'but it cannot transparently rewrite and continue in place.\n'
+)
+raise SystemExit(2)
+"`
+}
+
+func upsertCodexMarketplace(path, sourcePath string) error {
+	marketplace := map[string]any{}
+	if fileExists(path) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(data, &marketplace); err != nil {
+			return err
+		}
+	}
+
+	if name, _ := marketplace["name"].(string); strings.TrimSpace(name) == "" {
+		marketplace["name"] = codexMarketplaceName
+	}
+
+	iface, ok := marketplace["interface"].(map[string]any)
+	if !ok || iface == nil {
+		iface = map[string]any{}
+	}
+	if displayName, _ := iface["displayName"].(string); strings.TrimSpace(displayName) == "" {
+		iface["displayName"] = codexMarketplaceDisplayName
+	}
+	marketplace["interface"] = iface
+
+	plugins, ok := marketplace["plugins"].([]any)
+	if !ok || plugins == nil {
+		plugins = []any{}
+	}
+
+	entry := map[string]any{
+		"name": codexPluginName,
+		"source": map[string]any{
+			"source": "local",
+			"path":   sourcePath,
+		},
+		"policy": map[string]any{
+			"installation":   "AVAILABLE",
+			"authentication": "ON_INSTALL",
+		},
+		"category": "Productivity",
+	}
+
+	replaced := false
+	for i, raw := range plugins {
+		plugin, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := plugin["name"].(string); name == codexPluginName {
+			plugins[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		plugins = append(plugins, entry)
+	}
+	marketplace["plugins"] = plugins
+
+	return writeJSONFile(path, marketplace)
+}
+
+func upsertTOMLBool(path, section, key string, value bool) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	content := ""
+	if fileExists(path) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		content = string(data)
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = []string{}
+	}
+
+	sectionStart := -1
+	sectionEnd := len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == section {
+			sectionStart = i
+			continue
+		}
+		if sectionStart >= 0 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			sectionEnd = i
+			break
+		}
+	}
+
+	entry := fmt.Sprintf("%s = %t", key, value)
+	if sectionStart >= 0 {
+		for i := sectionStart + 1; i < sectionEnd; i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=") {
+				lines[i] = entry
+				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+			}
+		}
+
+		insert := append([]string{}, lines[:sectionEnd]...)
+		insert = append(insert, entry)
+		insert = append(insert, lines[sectionEnd:]...)
+		return os.WriteFile(path, []byte(strings.Join(insert, "\n")), 0o644)
+	}
+
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+		lines = append(lines, "")
+	}
+	lines = append(lines, section, entry)
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func writeJSONFile(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 func upsertInstructionBlock(path, block string, force bool) error {

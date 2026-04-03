@@ -174,12 +174,20 @@ build-brief --global
 ```
 
 There is also a checked-in Claude Code hook example at `examples/hooks/claude-code/`.
+For Claude Code, `build-brief --global` now installs a managed local plugin plus
+the usual `CLAUDE.md` guidance when Claude is detected.
+For GitHub Copilot CLI, `build-brief --global` now installs a managed local plugin
+with a `preToolUse` guardrail when Copilot is detected.
+For Codex, `build-brief --global` now installs a managed local plugin, marketplace
+entry, and hook-backed guardrail alongside the AGENTS integration when Codex is
+detected.
 
 If your agent tool supports `AGENTS.md` or an instructions file, a simple default rule is:
 
 ```md
 Use `build-brief` for routine Gradle commands.
 Prefer `build-brief gradle ...` or `build-brief ./gradlew ...` over raw Gradle calls.
+For chained shell commands, rewrite each Gradle segment, for example `build-brief gradle test && build-brief gradle check`.
 Fall back to raw Gradle only when the reduced summary is not enough.
 ```
 

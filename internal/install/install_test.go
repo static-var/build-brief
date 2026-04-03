@@ -2,6 +2,7 @@ package install
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -138,6 +139,283 @@ func TestInstallGlobalCreatesOpenCodePluginWithoutAgentsFile(t *testing.T) {
 	}
 }
 
+func TestInstallGlobalCreatesCopilotPluginWithoutInstructionsFile(t *testing.T) {
+	originalRTK := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = originalRTK
+	})
+
+	var installedBinary string
+	var installedPluginDir string
+	originalInstall := runCopilotPluginInstall
+	runCopilotPluginInstall = func(binary, pluginDir string) error {
+		installedBinary = binary
+		installedPluginDir = pluginDir
+		return nil
+	}
+	t.Cleanup(func() {
+		runCopilotPluginInstall = originalInstall
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	target := filepath.Join(home, ".copilot", "copilot-instructions.md")
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "copilot-cli",
+				Name:           "GitHub Copilot CLI",
+				GlobalTargets:  []string{target},
+				SupportsPlugin: true,
+			},
+			DetectedBinary:  "/usr/local/bin/copilot",
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+
+	pluginRoot := filepath.Join(home, ".copilot", "plugins", "build-brief")
+	if !containsPath(installed, "GitHub Copilot CLI plugin -> "+pluginRoot) {
+		t.Fatalf("expected copilot plugin install entry, got %v", installed)
+	}
+	if installedBinary != "/usr/local/bin/copilot" {
+		t.Fatalf("expected detected copilot binary to be used, got %q", installedBinary)
+	}
+	if installedPluginDir != pluginRoot {
+		t.Fatalf("expected plugin install dir %q, got %q", pluginRoot, installedPluginDir)
+	}
+
+	manifestPath := filepath.Join(pluginRoot, "plugin.json")
+	manifestContent, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read copilot plugin manifest: %v", err)
+	}
+	if !strings.Contains(string(manifestContent), `"hooks": "hooks.json"`) {
+		t.Fatalf("expected hooks manifest entry, got %q", string(manifestContent))
+	}
+
+	hooksPath := filepath.Join(pluginRoot, "hooks.json")
+	hooksContent, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("read copilot hooks: %v", err)
+	}
+	if !strings.Contains(string(hooksContent), `"preToolUse"`) {
+		t.Fatalf("expected preToolUse hook, got %q", string(hooksContent))
+	}
+	if !strings.Contains(string(hooksContent), "permissionDecision") {
+		t.Fatalf("expected deny decision logic, got %q", string(hooksContent))
+	}
+	if !strings.Contains(string(hooksContent), "['build-brief', 'rewrite', command]") {
+		t.Fatalf("expected rewrite delegation, got %q", string(hooksContent))
+	}
+}
+
+func TestInstallGlobalCreatesClaudePluginWithoutInstructionsFile(t *testing.T) {
+	originalRTK := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = originalRTK
+	})
+
+	var installedBinary string
+	var installedMarketplaceDir string
+	var installedPluginRef string
+	var installedScope string
+	originalInstall := runClaudePluginInstall
+	runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope string) error {
+		installedBinary = binary
+		installedMarketplaceDir = marketplaceDir
+		installedPluginRef = pluginRef
+		installedScope = scope
+		return nil
+	}
+	t.Cleanup(func() {
+		runClaudePluginInstall = originalInstall
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	target := filepath.Join(home, ".claude", "CLAUDE.md")
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "claude-code",
+				Name:           "Claude Code",
+				GlobalTargets:  []string{target},
+				SupportsPlugin: true,
+			},
+			DetectedBinary:  "/usr/local/bin/claude",
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+
+	pluginRoot := filepath.Join(home, ".claude", "marketplaces", "build-brief", "plugins", "build-brief")
+	if !containsPath(installed, "Claude Code plugin -> "+pluginRoot) {
+		t.Fatalf("expected claude plugin install entry, got %v", installed)
+	}
+	if installedBinary != "/usr/local/bin/claude" {
+		t.Fatalf("expected detected claude binary to be used, got %q", installedBinary)
+	}
+	if installedMarketplaceDir != filepath.Join(home, ".claude", "marketplaces", "build-brief") {
+		t.Fatalf("unexpected marketplace dir %q", installedMarketplaceDir)
+	}
+	if installedPluginRef != "build-brief@build-brief-local" || installedScope != "user" {
+		t.Fatalf("unexpected install target %q scope %q", installedPluginRef, installedScope)
+	}
+
+	manifestPath := filepath.Join(pluginRoot, ".claude-plugin", "plugin.json")
+	manifestContent, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read claude plugin manifest: %v", err)
+	}
+	if !strings.Contains(string(manifestContent), `"name": "build-brief"`) {
+		t.Fatalf("expected plugin manifest name, got %q", string(manifestContent))
+	}
+
+	marketplacePath := filepath.Join(home, ".claude", "marketplaces", "build-brief", ".claude-plugin", "marketplace.json")
+	marketplaceContent, err := os.ReadFile(marketplacePath)
+	if err != nil {
+		t.Fatalf("read claude marketplace: %v", err)
+	}
+	if !strings.Contains(string(marketplaceContent), `"name": "build-brief-local"`) {
+		t.Fatalf("expected marketplace name, got %q", string(marketplaceContent))
+	}
+
+	hooksPath := filepath.Join(pluginRoot, "hooks", "hooks.json")
+	hooksContent, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("read claude hooks: %v", err)
+	}
+	if !strings.Contains(string(hooksContent), `"PreToolUse"`) {
+		t.Fatalf("expected PreToolUse hook, got %q", string(hooksContent))
+	}
+	if !strings.Contains(string(hooksContent), `${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-build-brief.sh`) {
+		t.Fatalf("expected plugin root hook command, got %q", string(hooksContent))
+	}
+
+	scriptPath := filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh")
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read claude pretooluse script: %v", err)
+	}
+	if !strings.Contains(string(scriptContent), `"hookSpecificOutput"`) {
+		t.Fatalf("expected deny decision output, got %q", string(scriptContent))
+	}
+	if !strings.Contains(string(scriptContent), "build-brief rewrite") {
+		t.Fatalf("expected rewrite delegation, got %q", string(scriptContent))
+	}
+}
+
+func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
+	originalRTK := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = originalRTK
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	target := filepath.Join(home, ".codex", "AGENTS.md")
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "codex-cli",
+				Name:           "Codex CLI",
+				GlobalTargets:  []string{target},
+				SupportsPlugin: true,
+			},
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+
+	pluginRoot := filepath.Join(home, ".codex", "plugins", "build-brief")
+	if !containsPath(installed, "Codex CLI plugin -> "+pluginRoot) {
+		t.Fatalf("expected codex plugin install entry, got %v", installed)
+	}
+
+	manifestPath := filepath.Join(pluginRoot, ".codex-plugin", "plugin.json")
+	manifestContent, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read codex plugin manifest: %v", err)
+	}
+	if !strings.Contains(string(manifestContent), `"hooks": "./hooks.json"`) {
+		t.Fatalf("expected hook manifest entry, got %q", string(manifestContent))
+	}
+
+	hooksPath := filepath.Join(pluginRoot, "hooks.json")
+	hooksContent, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("read codex hooks: %v", err)
+	}
+	if !strings.Contains(string(hooksContent), "['build-brief', 'rewrite', command]") {
+		t.Fatalf("expected rewrite delegation in hooks, got %q", string(hooksContent))
+	}
+	if !strings.Contains(string(hooksContent), "PreToolUse") {
+		t.Fatalf("expected PreToolUse hook in hooks.json, got %q", string(hooksContent))
+	}
+
+	marketplacePath := filepath.Join(home, ".agents", "plugins", "marketplace.json")
+	marketplaceContent, err := os.ReadFile(marketplacePath)
+	if err != nil {
+		t.Fatalf("read marketplace: %v", err)
+	}
+	var marketplace map[string]any
+	if err := json.Unmarshal(marketplaceContent, &marketplace); err != nil {
+		t.Fatalf("unmarshal marketplace: %v", err)
+	}
+	plugins, ok := marketplace["plugins"].([]any)
+	if !ok || len(plugins) != 1 {
+		t.Fatalf("expected one marketplace plugin entry, got %v", marketplace["plugins"])
+	}
+	plugin, ok := plugins[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected marketplace plugin object, got %T", plugins[0])
+	}
+	source, ok := plugin["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected marketplace source object, got %T", plugin["source"])
+	}
+	if source["path"] != "./.codex/plugins/build-brief" {
+		t.Fatalf("expected marketplace source path %q, got %v", "./.codex/plugins/build-brief", source["path"])
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	configContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	configText := string(configContent)
+	if !strings.Contains(configText, "[features]") || !strings.Contains(configText, "codex_hooks = true") {
+		t.Fatalf("expected codex_hooks feature flag, got %q", configText)
+	}
+	if !strings.Contains(configText, `[plugins."build-brief@local-user-plugins"]`) || !strings.Contains(configText, "enabled = true") {
+		t.Fatalf("expected enabled plugin entry, got %q", configText)
+	}
+
+	cacheManifestPath := filepath.Join(home, ".codex", "plugins", "cache", "local-user-plugins", "build-brief", "local", ".codex-plugin", "plugin.json")
+	if _, err := os.Stat(cacheManifestPath); err != nil {
+		t.Fatalf("expected cached codex plugin manifest, stat err=%v", err)
+	}
+}
+
 func TestInstallGlobalUpdatesExistingFiles(t *testing.T) {
 	original := runRTKHelp
 	runRTKHelp = func() error { return errors.New("missing") }
@@ -236,6 +514,171 @@ func TestInstallGlobalUpdatesOpenCodeAgentsAndPlugin(t *testing.T) {
 	}
 }
 
+func TestInstallGlobalUpdatesClaudeInstructionsAndPlugin(t *testing.T) {
+	originalRTK := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = originalRTK
+	})
+
+	originalInstall := runClaudePluginInstall
+	runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope string) error { return nil }
+	t.Cleanup(func() {
+		runClaudePluginInstall = originalInstall
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	target := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("Existing content\n"), 0o644); err != nil {
+		t.Fatalf("create CLAUDE.md: %v", err)
+	}
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:                 "claude-code",
+				Name:               "Claude Code",
+				GlobalTargets:      []string{target},
+				SupportsHookGuides: true,
+				SupportsPlugin:     true,
+			},
+			DetectedBinary:  "/usr/local/bin/claude",
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+	if len(installed) != 2 {
+		t.Fatalf("expected plugin + CLAUDE install entries, got %v", installed)
+	}
+
+	claudeContent, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	text := string(claudeContent)
+	if !strings.Contains(text, "managed Claude Code plugin") {
+		t.Fatalf("expected Claude plugin guidance in CLAUDE.md, got %q", text)
+	}
+	if !strings.Contains(text, "PreToolUse") {
+		t.Fatalf("expected PreToolUse guidance in CLAUDE.md, got %q", text)
+	}
+}
+
+func TestInstallGlobalUpdatesCopilotInstructionsAndPlugin(t *testing.T) {
+	originalRTK := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = originalRTK
+	})
+
+	originalInstall := runCopilotPluginInstall
+	runCopilotPluginInstall = func(binary, pluginDir string) error { return nil }
+	t.Cleanup(func() {
+		runCopilotPluginInstall = originalInstall
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	target := filepath.Join(home, ".copilot", "copilot-instructions.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("Existing content\n"), 0o644); err != nil {
+		t.Fatalf("create instructions: %v", err)
+	}
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "copilot-cli",
+				Name:           "GitHub Copilot CLI",
+				GlobalTargets:  []string{target},
+				SupportsPlugin: true,
+			},
+			DetectedBinary:  "/usr/local/bin/copilot",
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+	if len(installed) != 2 {
+		t.Fatalf("expected plugin + instructions install entries, got %v", installed)
+	}
+
+	instructionsContent, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read copilot instructions: %v", err)
+	}
+	text := string(instructionsContent)
+	if !strings.Contains(text, "managed GitHub Copilot CLI plugin") {
+		t.Fatalf("expected copilot plugin guidance in instructions, got %q", text)
+	}
+	if !strings.Contains(text, "preToolUse") {
+		t.Fatalf("expected hook guidance mention in instructions, got %q", text)
+	}
+}
+
+func TestInstallGlobalUpdatesCodexAgentsAndPlugin(t *testing.T) {
+	originalRTK := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = originalRTK
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	target := filepath.Join(home, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("Existing content\n"), 0o644); err != nil {
+		t.Fatalf("create AGENTS: %v", err)
+	}
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "codex-cli",
+				Name:           "Codex CLI",
+				GlobalTargets:  []string{target},
+				SupportsPlugin: true,
+			},
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+	if len(installed) != 2 {
+		t.Fatalf("expected plugin + AGENTS install entries, got %v", installed)
+	}
+
+	agentsContent, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read AGENTS: %v", err)
+	}
+	agentsText := string(agentsContent)
+	if !strings.Contains(agentsText, "managed Codex plugin") {
+		t.Fatalf("expected Codex plugin guidance in AGENTS.md, got %q", agentsText)
+	}
+	if !strings.Contains(agentsText, "PreToolUse") {
+		t.Fatalf("expected PreToolUse guidance in AGENTS.md, got %q", agentsText)
+	}
+}
+
 func TestRTKInstalled(t *testing.T) {
 	original := runRTKHelp
 	t.Cleanup(func() {
@@ -256,6 +699,8 @@ func TestRTKInstalled(t *testing.T) {
 func TestLocalInstructionsAddRTKGuidanceWhenDetected(t *testing.T) {
 	text := localInstructions(true)
 	for _, expected := range []string{
+		"build-brief gradle test && build-brief gradle check",
+		"including chained `&&`, `||`, and `;` segments",
 		"RTK is installed on this machine.",
 		"Prefer `build-brief` directly for Gradle commands",
 		"rather than sending Gradle through RTK first",
@@ -269,9 +714,23 @@ func TestLocalInstructionsAddRTKGuidanceWhenDetected(t *testing.T) {
 func TestGlobalInstructionsAddRTKGuidanceWhenDetected(t *testing.T) {
 	text := globalInstructions(Tool{Name: "GitHub Copilot CLI"}, true)
 	for _, expected := range []string{
+		"build-brief gradle test && build-brief gradle check",
+		"route chained `&&`, `||`, and `;` Gradle segments to `build-brief` too",
 		"RTK is installed on this machine.",
 		"Prefer `build-brief` directly for Gradle commands",
 		"instead of sending Gradle through RTK first",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected global instructions to contain %q, got %q", expected, text)
+		}
+	}
+}
+
+func TestGlobalInstructionsAddChainAwareHookAndPluginGuidance(t *testing.T) {
+	text := globalInstructions(Tool{ID: "copilot-cli", SupportsHookGuides: true, SupportsPlugin: true}, false)
+	for _, expected := range []string{
+		"including chained `&&`, `||`, and `;` shell segments",
+		"including chained `&&`, `||`, and `;` Gradle segments",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("expected global instructions to contain %q, got %q", expected, text)
@@ -340,6 +799,21 @@ func TestKnownToolsUseOpenCodeConfigTargets(t *testing.T) {
 	if !containsPath(opencode.GlobalTargets, filepath.Join(home, ".opencode", "AGENTS.md")) {
 		t.Fatalf("expected ~/.opencode target in %v", opencode.GlobalTargets)
 	}
+
+	codex := findTool(t, tools, "codex-cli")
+	if !codex.SupportsPlugin {
+		t.Fatalf("expected codex to support plugins, got %+v", codex)
+	}
+
+	copilot := findTool(t, tools, "copilot-cli")
+	if !copilot.SupportsPlugin {
+		t.Fatalf("expected copilot to support plugins, got %+v", copilot)
+	}
+
+	claude := findTool(t, tools, "claude-code")
+	if !claude.SupportsPlugin {
+		t.Fatalf("expected claude to support plugins, got %+v", claude)
+	}
 }
 
 func findTool(t *testing.T, tools []Tool, id string) Tool {
@@ -363,4 +837,17 @@ func containsPath(paths []string, want string) bool {
 	}
 
 	return false
+}
+
+func setFakeHome(t *testing.T, home string) {
+	t.Helper()
+
+	originalHome := userHomeDir
+	originalConfig := userConfigDir
+	userHomeDir = func() (string, error) { return home, nil }
+	userConfigDir = func() (string, error) { return filepath.Join(home, ".config"), nil }
+	t.Cleanup(func() {
+		userHomeDir = originalHome
+		userConfigDir = originalConfig
+	})
 }
