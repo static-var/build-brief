@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -226,13 +227,11 @@ func TestInstallGlobalCreatesClaudePluginWithoutInstructionsFile(t *testing.T) {
 	var installedBinary string
 	var installedMarketplaceDir string
 	var installedPluginRef string
-	var installedScope string
 	originalInstall := runClaudePluginInstall
-	runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope string) error {
+	runClaudePluginInstall = func(binary, marketplaceDir, pluginRef string) error {
 		installedBinary = binary
 		installedMarketplaceDir = marketplaceDir
 		installedPluginRef = pluginRef
-		installedScope = scope
 		return nil
 	}
 	t.Cleanup(func() {
@@ -271,8 +270,8 @@ func TestInstallGlobalCreatesClaudePluginWithoutInstructionsFile(t *testing.T) {
 	if installedMarketplaceDir != filepath.Join(home, ".claude", "marketplaces", "build-brief") {
 		t.Fatalf("unexpected marketplace dir %q", installedMarketplaceDir)
 	}
-	if installedPluginRef != "build-brief@build-brief-local" || installedScope != "user" {
-		t.Fatalf("unexpected install target %q scope %q", installedPluginRef, installedScope)
+	if installedPluginRef != "build-brief@build-brief-local" {
+		t.Fatalf("unexpected install target %q", installedPluginRef)
 	}
 
 	manifestPath := filepath.Join(pluginRoot, ".claude-plugin", "plugin.json")
@@ -522,7 +521,7 @@ func TestInstallGlobalUpdatesClaudeInstructionsAndPlugin(t *testing.T) {
 	})
 
 	originalInstall := runClaudePluginInstall
-	runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope string) error { return nil }
+	runClaudePluginInstall = func(binary, marketplaceDir, pluginRef string) error { return nil }
 	t.Cleanup(func() {
 		runClaudePluginInstall = originalInstall
 	})
@@ -778,6 +777,104 @@ func TestPromptForSelection(t *testing.T) {
 		if len(selected) != tt.expected {
 			t.Errorf("input %q: expected %d selected, got %d", tt.input, tt.expected, len(selected))
 		}
+	}
+}
+
+func TestSelectionMenuHandleKeys(t *testing.T) {
+	tools := []DetectedTool{
+		{Tool: Tool{Name: "Tool 1"}},
+		{Tool: Tool{Name: "Tool 2"}},
+		{Tool: Tool{Name: "Tool 3"}},
+	}
+
+	menu := newSelectionMenu(tools)
+
+	if done, cancel := menu.handleKey(selectionKeyToggle); done || cancel {
+		t.Fatalf("toggle should not finish or cancel")
+	}
+	if !menu.selected[0] {
+		t.Fatalf("expected first item to toggle on")
+	}
+
+	menu.handleKey(selectionKeyDown)
+	menu.handleKey(selectionKeyDown)
+	if menu.cursor != 2 {
+		t.Fatalf("expected cursor at 2, got %d", menu.cursor)
+	}
+
+	menu.handleKey(selectionKeyDown)
+	if menu.cursor != 0 {
+		t.Fatalf("expected cursor to wrap to 0, got %d", menu.cursor)
+	}
+
+	menu.handleKey(selectionKeyUp)
+	if menu.cursor != 2 {
+		t.Fatalf("expected cursor to wrap to last item, got %d", menu.cursor)
+	}
+
+	menu.handleKey(selectionKeyToggle)
+	selected := menu.selectedTools()
+	if len(selected) != 2 {
+		t.Fatalf("expected two selected tools, got %d", len(selected))
+	}
+
+	if done, cancel := menu.handleKey(selectionKeySubmit); !done || cancel {
+		t.Fatalf("submit should finish without cancelling")
+	}
+	if done, cancel := menu.handleKey(selectionKeyCancel); done || !cancel {
+		t.Fatalf("cancel should cancel without finishing")
+	}
+}
+
+func TestSelectionMenuRenderUsesRawSafeLineEndings(t *testing.T) {
+	menu := newSelectionMenu([]DetectedTool{
+		{Tool: Tool{Name: "Tool 1"}, PreferredTarget: "/tmp/tool-1"},
+	})
+	menu.selected[0] = true
+
+	var out bytes.Buffer
+	if err := menu.render(&out); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"Detected AI tools and global instruction targets:\r\n",
+		"> [x] Tool 1\r\n",
+		"    target: /tmp/tool-1\r\n",
+		"Selected: 1\r\n",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected rendered output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
+func TestReadSelectionKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected selectionKey
+	}{
+		{name: "up arrow", input: "\x1b[A", expected: selectionKeyUp},
+		{name: "down arrow", input: "\x1b[B", expected: selectionKeyDown},
+		{name: "vim up", input: "k", expected: selectionKeyUp},
+		{name: "vim down", input: "j", expected: selectionKeyDown},
+		{name: "toggle", input: " ", expected: selectionKeyToggle},
+		{name: "submit", input: "\n", expected: selectionKeySubmit},
+		{name: "cancel", input: "q", expected: selectionKeyCancel},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, err := readSelectionKey(bufio.NewReader(strings.NewReader(tt.input)))
+			if err != nil {
+				t.Fatalf("readSelectionKey: %v", err)
+			}
+			if key != tt.expected {
+				t.Fatalf("expected %v, got %v", tt.expected, key)
+			}
+		})
 	}
 }
 

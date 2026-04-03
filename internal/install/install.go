@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -29,7 +31,16 @@ var runRTKHelp = func() error {
 
 var userHomeDir = os.UserHomeDir
 var userConfigDir = os.UserConfigDir
-var runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope string) error {
+var termIsTerminal = func(fd int) bool {
+	return term.IsTerminal(fd)
+}
+var termMakeRaw = func(fd int) (*term.State, error) {
+	return term.MakeRaw(fd)
+}
+var termRestore = func(fd int, state *term.State) error {
+	return term.Restore(fd, state)
+}
+var runClaudePluginInstall = func(binary, marketplaceDir, pluginRef string) error {
 	addOutput, addErr := exec.Command(binary, "plugin", "marketplace", "add", marketplaceDir).CombinedOutput()
 	if addErr != nil {
 		message := strings.TrimSpace(string(addOutput))
@@ -41,7 +52,7 @@ var runClaudePluginInstall = func(binary, marketplaceDir, pluginRef, scope strin
 		}
 	}
 
-	installOutput, installErr := exec.Command(binary, "plugin", "install", pluginRef, "--scope", scope).CombinedOutput()
+	installOutput, installErr := exec.Command(binary, "plugin", "install", pluginRef).CombinedOutput()
 	if installErr == nil {
 		return nil
 	}
@@ -83,6 +94,23 @@ type DetectedTool struct {
 	ExistingTargets  []string
 	PreferredTarget  string
 	DetectionReasons []string
+}
+
+type selectionKey int
+
+const (
+	selectionKeyUnknown selectionKey = iota
+	selectionKeyUp
+	selectionKeyDown
+	selectionKeyToggle
+	selectionKeySubmit
+	selectionKeyCancel
+)
+
+type selectionMenu struct {
+	tools    []DetectedTool
+	cursor   int
+	selected []bool
 }
 
 func DetectGlobalTools() ([]DetectedTool, error) {
@@ -209,15 +237,16 @@ func PromptForSelection(in io.Reader, out io.Writer, tools []DetectedTool) ([]De
 		return nil, nil
 	}
 
-	for i, tool := range tools {
-		hookLabel := toolModeLabel(tool.Tool)
+	if inputFile, outputFile, ok := interactiveTerminalFiles(in, out); ok {
+		return promptForSelectionInteractive(inputFile, outputFile, tools)
+	}
 
-		status := "global file missing (build-brief will not create it)"
-		if fileExists(tool.PreferredTarget) {
-			status = "existing global file"
-		} else if tool.Tool.SupportsPlugin {
-			status = "plugin will be created; instruction file stays optional"
-		}
+	return promptForSelectionLineInput(in, out, tools)
+}
+
+func promptForSelectionLineInput(in io.Reader, out io.Writer, tools []DetectedTool) ([]DetectedTool, error) {
+	for i, tool := range tools {
+		hookLabel, status := selectionDisplay(tool)
 
 		fmt.Fprintf(out, "[%d] %s\n", i+1, tool.Tool.Name)
 		fmt.Fprintf(out, "    target: %s\n", tool.PreferredTarget)
@@ -256,6 +285,209 @@ func PromptForSelection(in io.Reader, out io.Writer, tools []DetectedTool) ([]De
 	}
 
 	return selected, nil
+}
+
+func promptForSelectionInteractive(in *os.File, out *os.File, tools []DetectedTool) ([]DetectedTool, error) {
+	fd := int(in.Fd())
+	state, err := termMakeRaw(fd)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = termRestore(fd, state)
+	}()
+
+	menu := newSelectionMenu(tools)
+	reader := bufio.NewReader(in)
+
+	fmt.Fprint(out, "\x1b[?1049h\x1b[?25l")
+	defer fmt.Fprint(out, "\x1b[?25h\x1b[?1049l")
+
+	for {
+		if err := menu.render(out); err != nil {
+			return nil, err
+		}
+
+		key, err := readSelectionKey(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return menu.selectedTools(), nil
+			}
+			return nil, err
+		}
+
+		done, cancel := menu.handleKey(key)
+		if cancel {
+			return nil, nil
+		}
+		if done {
+			return menu.selectedTools(), nil
+		}
+	}
+}
+
+func interactiveTerminalFiles(in io.Reader, out io.Writer) (*os.File, *os.File, bool) {
+	inputFile, inputOK := in.(*os.File)
+	outputFile, outputOK := out.(*os.File)
+	if !inputOK || !outputOK {
+		return nil, nil, false
+	}
+	if !termIsTerminal(int(inputFile.Fd())) || !termIsTerminal(int(outputFile.Fd())) {
+		return nil, nil, false
+	}
+	return inputFile, outputFile, true
+}
+
+func selectionDisplay(tool DetectedTool) (string, string) {
+	hookLabel := toolModeLabel(tool.Tool)
+	status := "global file missing (build-brief will not create it)"
+	if fileExists(tool.PreferredTarget) {
+		status = "existing global file"
+	} else if tool.Tool.SupportsPlugin {
+		status = "plugin will be created; instruction file stays optional"
+	}
+	return hookLabel, status
+}
+
+func newSelectionMenu(tools []DetectedTool) selectionMenu {
+	return selectionMenu{
+		tools:    tools,
+		selected: make([]bool, len(tools)),
+	}
+}
+
+func (m *selectionMenu) handleKey(key selectionKey) (bool, bool) {
+	switch key {
+	case selectionKeyUp:
+		if len(m.tools) == 0 {
+			return false, false
+		}
+		m.cursor--
+		if m.cursor < 0 {
+			m.cursor = len(m.tools) - 1
+		}
+	case selectionKeyDown:
+		if len(m.tools) == 0 {
+			return false, false
+		}
+		m.cursor++
+		if m.cursor >= len(m.tools) {
+			m.cursor = 0
+		}
+	case selectionKeyToggle:
+		if len(m.selected) == 0 {
+			return false, false
+		}
+		m.selected[m.cursor] = !m.selected[m.cursor]
+	case selectionKeySubmit:
+		return true, false
+	case selectionKeyCancel:
+		return false, true
+	}
+	return false, false
+}
+
+func (m selectionMenu) selectedTools() []DetectedTool {
+	selected := make([]DetectedTool, 0, len(m.tools))
+	for i, tool := range m.tools {
+		if !m.selected[i] {
+			continue
+		}
+		selected = append(selected, tool)
+	}
+	return selected
+}
+
+func (m selectionMenu) selectedCount() int {
+	count := 0
+	for _, selected := range m.selected {
+		if selected {
+			count++
+		}
+	}
+	return count
+}
+
+func (m selectionMenu) render(out io.Writer) error {
+	var buffer strings.Builder
+	buffer.WriteString("\x1b[H\x1b[2J")
+	buffer.WriteString("Detected AI tools and global instruction targets:\r\n")
+	buffer.WriteString("Use Up/Down to move, Space to toggle, Enter to install, q to cancel.\r\n")
+	buffer.WriteString("\r\n")
+
+	for i, tool := range m.tools {
+		cursor := " "
+		if i == m.cursor {
+			cursor = ">"
+		}
+
+		mark := " "
+		if m.selected[i] {
+			mark = "x"
+		}
+
+		hookLabel, status := selectionDisplay(tool)
+		target := tool.PreferredTarget
+		if strings.TrimSpace(target) == "" {
+			target = "(none)"
+		}
+
+		fmt.Fprintf(&buffer, "%s [%s] %s\r\n", cursor, mark, tool.Tool.Name)
+		fmt.Fprintf(&buffer, "    target: %s\r\n", target)
+		fmt.Fprintf(&buffer, "    mode: %s, %s\r\n\r\n", hookLabel, status)
+	}
+
+	fmt.Fprintf(&buffer, "Selected: %d\r\n", m.selectedCount())
+	_, err := io.WriteString(out, buffer.String())
+	return err
+}
+
+func readSelectionKey(reader *bufio.Reader) (selectionKey, error) {
+	key, err := reader.ReadByte()
+	if err != nil {
+		return selectionKeyUnknown, err
+	}
+
+	switch key {
+	case 'k':
+		return selectionKeyUp, nil
+	case 'j':
+		return selectionKeyDown, nil
+	case ' ':
+		return selectionKeyToggle, nil
+	case '\r', '\n':
+		return selectionKeySubmit, nil
+	case 'q', 3:
+		return selectionKeyCancel, nil
+	case 27:
+		next, err := reader.ReadByte()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return selectionKeyUnknown, nil
+			}
+			return selectionKeyUnknown, err
+		}
+		if next != '[' {
+			return selectionKeyUnknown, nil
+		}
+
+		direction, err := reader.ReadByte()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return selectionKeyUnknown, nil
+			}
+			return selectionKeyUnknown, err
+		}
+
+		switch direction {
+		case 'A':
+			return selectionKeyUp, nil
+		case 'B':
+			return selectionKeyDown, nil
+		}
+	}
+
+	return selectionKeyUnknown, nil
 }
 
 func MissingAgentsError(err error) bool {
@@ -499,7 +731,7 @@ func installClaudePlugin(tool DetectedTool) (string, error) {
 		return "", err
 	}
 
-	if err := runClaudePluginInstall(tool.DetectedBinary, marketplaceRoot, claudePluginRef(), "user"); err != nil {
+	if err := runClaudePluginInstall(tool.DetectedBinary, marketplaceRoot, claudePluginRef()); err != nil {
 		return "", err
 	}
 
