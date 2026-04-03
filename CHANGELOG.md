@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.6 - 2026-04-03
+
+- Add interactive global installer (b660a20)
+- Add chained Gradle rewrite examples and tests (882aa82)
+- Add managed plugin installs for supported CLIs (9f3cae8)
+- Update GitHub funding configuration (5e59189)
+- docs: add social card asset (b955713)
+- docs: add footer credit (1957c36)
+- docs: improve site metadata (13063f4)
+- docs: refresh gains examples (d5457f2)
+
 ## v0.0.5 - 2026-03-21
 
 - fix: clean up gains tracking labels (9a4f287)
