@@ -340,7 +340,7 @@ section{padding:var(--section-py) 0}
 /* --- Agent integration grid -------------------------------- */
 .agents-grid{
   display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  grid-template-columns:repeat(3,minmax(0,1fr));
   gap:1rem;
   margin-top:2rem;
 }
@@ -515,6 +515,12 @@ section{padding:var(--section-py) 0}
 }
 
 /* --- Responsive polish ------------------------------------- */
+@media(max-width:900px){
+  .agents-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:620px){
+  .agents-grid{grid-template-columns:1fr}
+}
 @media(max-width:480px){
   :root{--section-py:3rem}
   .step{grid-template-columns:2rem 1fr;gap:.75rem}
