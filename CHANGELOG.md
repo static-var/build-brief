@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.0.9 - 2026-05-10
+
+- Surface Develocity build scan URLs (c85b266)
+
 ## v0.0.8 - 2026-05-10
 
 - Support Pi extension across package scopes (288de15)
