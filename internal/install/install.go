@@ -796,7 +796,7 @@ func installCodexPlugin(tool DetectedTool) (string, error) {
 	}
 
 	configPath := filepath.Join(baseDir, "config.toml")
-	if err := upsertTOMLBool(configPath, "[features]", "codex_hooks", true); err != nil {
+	if err := upsertTOMLBool(configPath, "[features]", "hooks", true); err != nil {
 		return "", err
 	}
 	if err := upsertTOMLBool(configPath, fmt.Sprintf(`[plugins.%q]`, codexPluginID()), "enabled", true); err != nil {

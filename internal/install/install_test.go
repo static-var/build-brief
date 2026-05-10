@@ -402,8 +402,8 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 		t.Fatalf("read config.toml: %v", err)
 	}
 	configText := string(configContent)
-	if !strings.Contains(configText, "[features]") || !strings.Contains(configText, "codex_hooks = true") {
-		t.Fatalf("expected codex_hooks feature flag, got %q", configText)
+	if !strings.Contains(configText, "[features]") || !strings.Contains(configText, "hooks = true") {
+		t.Fatalf("expected hooks feature flag, got %q", configText)
 	}
 	if !strings.Contains(configText, `[plugins."build-brief@local-user-plugins"]`) || !strings.Contains(configText, "enabled = true") {
 		t.Fatalf("expected enabled plugin entry, got %q", configText)
