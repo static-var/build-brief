@@ -17,7 +17,7 @@ For full docs, real before/after examples, agent setup, hook guidance, limitatio
 - Wraps either `gradle` or `./gradlew`
 - Preserves the Gradle exit code
 - Keeps the full raw log on disk
-- Returns failed tasks, failed tests, warnings, artifacts, and final status
+- Returns failed tasks, failed tests, warnings, build scan URLs, artifacts, and final status
 - Normalizes output-shaping flags so reduction stays stable
 - Reuses or starts the Gradle daemon by default
 - Works across Spring Boot, Ktor, Android, Kotlin Multiplatform, plain JVM, and multi-project builds

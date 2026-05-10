@@ -34,6 +34,21 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if len(summary.BuildScanURLs) > 0 {
+		label := "Build scan:"
+		if len(summary.BuildScanURLs) > 1 {
+			label = "Build scans:"
+		}
+		if _, err := fmt.Fprintln(bw, label); err != nil {
+			return err
+		}
+		for _, url := range summary.BuildScanURLs {
+			if _, err := fmt.Fprintf(bw, "  - %s\n", url); err != nil {
+				return err
+			}
+		}
+	}
+
 	if len(summary.Artifacts) > 0 {
 		if _, err := fmt.Fprintln(bw, "Artifacts:"); err != nil {
 			return err
