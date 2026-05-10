@@ -136,7 +136,7 @@ func DetectGlobalTools() ([]DetectedTool, error) {
 		}
 
 		for _, path := range tool.DetectionPaths {
-			if fileExists(path) {
+			if pathExists(path) {
 				entry.DetectionReasons = append(entry.DetectionReasons, "path:"+path)
 			}
 		}
@@ -1616,6 +1616,11 @@ func upsertInstructionBlock(path, block string, force bool) error {
 	}
 
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func fileExists(path string) bool {
