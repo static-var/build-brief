@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.0.8 - 2026-05-10
+
+- Support Pi extension across package scopes (288de15)
+- Update OpenCode website integration copy (3017f92)
+- Fix agent card grid layout (4dfc91f)
+
 ## v0.0.7 - 2026-05-10
 
 - Fix Codex app directory detection (d235f13)
