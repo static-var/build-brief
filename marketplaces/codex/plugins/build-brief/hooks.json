@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Checking Bash command for build-brief",
+            "command": "python3 -c \"\nimport json\nimport subprocess\nimport sys\n\ntry:\n    payload = json.load(sys.stdin)\nexcept Exception:\n    raise SystemExit(0)\n\nif not isinstance(payload, dict):\n    raise SystemExit(0)\n\ntool_input = payload.get('tool_input')\nif not isinstance(tool_input, dict):\n    raise SystemExit(0)\n\ncommand = tool_input.get('command', '')\nif not isinstance(command, str) or not command.strip():\n    raise SystemExit(0)\nif 'build-brief' in command:\n    raise SystemExit(0)\n\ntry:\n    result = subprocess.run(\n        ['build-brief', 'rewrite', command],\n        check=False,\n        capture_output=True,\n        text=True,\n    )\nexcept FileNotFoundError:\n    raise SystemExit(0)\n\nrewritten = result.stdout.strip()\nif result.returncode != 0 or not rewritten or rewritten == command.strip():\n    raise SystemExit(0)\n\nsys.stderr.write(\n    '[build-brief] Codex blocked a routine Gradle command or chain.\\n'\n    '[build-brief] Use this instead:\\n\\n'\n    '  ' + rewritten + '\\n\\n'\n    'This Codex PreToolUse hook can block and suggest a safer replacement,\\n'\n    'but it cannot transparently rewrite and continue in place.\\n'\n)\nraise SystemExit(2)\n\""
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -178,9 +178,10 @@ For Claude Code, `build-brief --global` now installs a managed local plugin plus
 the usual `CLAUDE.md` guidance when Claude is detected.
 For GitHub Copilot CLI, `build-brief --global` now installs a managed local plugin
 with a `preToolUse` guardrail when Copilot is detected.
-For Codex, `build-brief --global` now installs a managed local plugin, marketplace
-entry, and hook-backed guardrail alongside the AGENTS integration when Codex is
-detected.
+For Codex App & CLI, `build-brief --global` installs a managed local plugin,
+marketplace entry, and hook-backed guardrail in the shared `~/.codex` config area
+alongside the AGENTS integration when Codex is detected. The repo also includes
+an OpenAI Codex marketplace-ready bundle under `marketplaces/codex/plugins/build-brief`.
 
 If your agent tool supports `AGENTS.md` or an instructions file, a simple default rule is:
 

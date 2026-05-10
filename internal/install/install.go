@@ -82,6 +82,7 @@ type Tool struct {
 	ID                 string
 	Name               string
 	Binaries           []string
+	DetectionPaths     []string
 	GlobalTargets      []string
 	LocalInstruction   []string
 	SupportsHookGuides bool
@@ -132,6 +133,12 @@ func DetectGlobalTools() ([]DetectedTool, error) {
 			}
 		}
 
+		for _, path := range tool.DetectionPaths {
+			if fileExists(path) {
+				entry.DetectionReasons = append(entry.DetectionReasons, "path:"+path)
+			}
+		}
+
 		for _, target := range tool.GlobalTargets {
 			if fileExists(target) {
 				entry.ExistingTargets = append(entry.ExistingTargets, target)
@@ -145,7 +152,7 @@ func DetectGlobalTools() ([]DetectedTool, error) {
 			entry.PreferredTarget = tool.GlobalTargets[0]
 		}
 
-		if entry.DetectedBinary != "" || len(entry.ExistingTargets) > 0 {
+		if entry.DetectedBinary != "" || len(entry.ExistingTargets) > 0 || len(entry.DetectionReasons) > 0 {
 			detected = append(detected, entry)
 		}
 	}
@@ -197,6 +204,14 @@ func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 				}
 			case "codex-cli":
 				target, err := installCodexPlugin(tool)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
+				} else {
+					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
+					pluginInstalled = true
+				}
+			case "pi-coding-agent":
+				target, err := installPiExtension(tool)
 				if err != nil {
 					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
 				} else {
@@ -467,23 +482,54 @@ func readSelectionKey(reader *bufio.Reader) (selectionKey, error) {
 			}
 			return selectionKeyUnknown, err
 		}
+
+		// Some terminals send SS3 cursor sequences (ESC O A/B), while
+		// others send CSI sequences (ESC [ A/B or ESC [ 1 ; 5 A/B for
+		// modified arrows). Accept both forms.
+		if next == 'O' {
+			direction, err := reader.ReadByte()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return selectionKeyUnknown, nil
+				}
+				return selectionKeyUnknown, err
+			}
+			switch direction {
+			case 'A':
+				return selectionKeyUp, nil
+			case 'B':
+				return selectionKeyDown, nil
+			}
+			return selectionKeyUnknown, nil
+		}
+
 		if next != '[' {
 			return selectionKeyUnknown, nil
 		}
 
-		direction, err := reader.ReadByte()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		for {
+			direction, err := reader.ReadByte()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return selectionKeyUnknown, nil
+				}
+				return selectionKeyUnknown, err
+			}
+
+			// CSI final bytes are in the 0x40-0x7e range. Parameters such as
+			// "1;5" can precede the final A/B byte.
+			if direction < 0x40 || direction > 0x7e {
+				continue
+			}
+
+			switch direction {
+			case 'A':
+				return selectionKeyUp, nil
+			case 'B':
+				return selectionKeyDown, nil
+			default:
 				return selectionKeyUnknown, nil
 			}
-			return selectionKeyUnknown, err
-		}
-
-		switch direction {
-		case 'A':
-			return selectionKeyUp, nil
-		case 'B':
-			return selectionKeyDown, nil
 		}
 	}
 
@@ -529,9 +575,10 @@ func knownTools() ([]Tool, error) {
 			SupportsPlugin:     true,
 		},
 		{
-			ID:       "codex-cli",
-			Name:     "Codex CLI",
-			Binaries: []string{"codex"},
+			ID:             "codex-cli",
+			Name:           "Codex App & CLI",
+			Binaries:       []string{"codex"},
+			DetectionPaths: []string{filepath.Join(home, ".codex"), filepath.Join(home, "Library", "Application Support", "Codex")},
 			GlobalTargets: appendConfigTargets(
 				[]string{filepath.Join(home, ".codex", "AGENTS.md")},
 				configDir,
@@ -550,6 +597,14 @@ func knownTools() ([]Tool, error) {
 			LocalInstruction:   []string{"AGENTS.md"},
 			SupportsHookGuides: true,
 			SupportsPlugin:     true,
+		},
+		{
+			ID:               "pi-coding-agent",
+			Name:             "Pi Coding Agent",
+			Binaries:         []string{"pi"},
+			GlobalTargets:    []string{filepath.Join(home, ".pi", "agent", "AGENTS.md")},
+			LocalInstruction: []string{"AGENTS.md"},
+			SupportsPlugin:   true,
 		},
 		{
 			ID:               "gemini-cli",
@@ -669,9 +724,14 @@ func pluginGuidance(tool Tool) []string {
 		}
 	case "codex-cli":
 		return []string{
-			"- The managed Codex plugin installs a local plugin bundle and enables Codex `PreToolUse` hooks for `build-brief`.",
+			"- The managed Codex App & CLI plugin installs a local plugin bundle under the shared `~/.codex` configuration area and enables Codex `PreToolUse` hooks for `build-brief`.",
 			"- Its Bash hook blocks routine raw `gradle` and `./gradlew` commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
 			"- Codex hooks cannot transparently rewrite and continue in place today, so keep raw Gradle available when you intentionally want to bypass that guardrail.",
+		}
+	case "pi-coding-agent":
+		return []string{
+			"- The managed Pi extension rewrites routine `gradle` and `./gradlew` Bash tool commands — including chained `&&`, `||`, and `;` Gradle segments — to explicit `build-brief gradle ...` or `build-brief ./gradlew ...` commands before execution.",
+			"- Keep using raw Gradle intentionally only when you want to bypass that reduction layer.",
 		}
 	default:
 		return []string{
@@ -679,6 +739,26 @@ func pluginGuidance(tool Tool) []string {
 			"- Keep using raw Gradle intentionally only when you want to bypass that reduction layer.",
 		}
 	}
+}
+
+func installPiExtension(tool DetectedTool) (string, error) {
+	baseDir := filepath.Dir(tool.PreferredTarget)
+	if baseDir == "." || baseDir == "" {
+		home, err := userHomeDir()
+		if err != nil {
+			return "", err
+		}
+		baseDir = filepath.Join(home, ".pi", "agent")
+	}
+
+	target := filepath.Join(baseDir, "extensions", "build-brief", "index.ts")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(target, []byte(piExtensionSource()), 0o644); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 func installOpenCodePlugin(tool DetectedTool) (string, error) {
@@ -804,6 +884,45 @@ func installCodexPlugin(tool DetectedTool) (string, error) {
 	}
 
 	return sourceDir, nil
+}
+
+func piExtensionSource() string {
+	lines := []string{
+		`import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";`,
+		`import { isToolCallEventType } from "@earendil-works/pi-coding-agent";`,
+		``,
+		`// build-brief Pi extension — rewrites routine Gradle Bash tool commands`,
+		`// to build-brief before execution.`,
+		`//`,
+		`// All rewrite logic lives in "build-brief rewrite" so other CLIs can`,
+		`// reuse the same behavior without duplicating parsing rules here.`,
+		``,
+		`export default function (pi: ExtensionAPI) {`,
+		`  pi.on("tool_call", async (event, ctx) => {`,
+		`    if (!isToolCallEventType("bash", event)) return;`,
+		``,
+		`    const command = event.input.command;`,
+		`    if (typeof command !== "string" || command.trim() === "") return;`,
+		``,
+		`    const result = await pi.exec("build-brief", ["rewrite", command], {`,
+		`      signal: ctx.signal,`,
+		`      timeout: 5000,`,
+		`    });`,
+		``,
+		`    if (result.code !== 0) return;`,
+		``,
+		`    const rewritten = result.stdout.trim();`,
+		`    if (rewritten === "" || rewritten === command) return;`,
+		``,
+		`    event.input.command = rewritten;`,
+		``,
+		`    if (ctx.hasUI) {`,
+		`      ctx.ui.notify("[build-brief] Rewrote Gradle command to: " + rewritten, "info");`,
+		`    }`,
+		`  });`,
+		`}`,
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func openCodePluginSource() string {

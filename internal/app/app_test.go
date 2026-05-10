@@ -174,7 +174,7 @@ func TestRunPrintsHelp(t *testing.T) {
 		"[gradle|./gradlew|PATH-TO-GRADLE]",
 		"In interactive terminals, use Up/Down to move, Space to toggle, and Enter to install.",
 		"Non-interactive stdin falls back to comma-separated numbers, '*' or 'all', or blank to cancel.",
-		"Only existing global instruction files are updated; OpenCode also installs a managed plugin file.",
+		"Only existing global instruction files are updated; supported tools may also install managed plugin/extension files.",
 		"Must be used by itself; do not combine it with --install or --install-force.",
 		"including chained `&&`, `||`, and `;` segments.",
 		"Intended for hooks/plugins such as the OpenCode tool.execute.before hook.",

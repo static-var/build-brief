@@ -97,6 +97,50 @@ func TestInstallGlobalDoesNotCreateMissingFiles(t *testing.T) {
 	}
 }
 
+func TestInstallGlobalCreatesPiExtensionWithoutAgentsFile(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
+	home := t.TempDir()
+	target := filepath.Join(home, ".pi", "agent", "AGENTS.md")
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "pi-coding-agent",
+				Name:           "Pi Coding Agent",
+				GlobalTargets:  []string{target},
+				SupportsPlugin: true,
+			},
+			PreferredTarget: target,
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+
+	extensionTarget := filepath.Join(home, ".pi", "agent", "extensions", "build-brief", "index.ts")
+	if !containsPath(installed, "Pi Coding Agent plugin -> "+extensionTarget) {
+		t.Fatalf("expected extension install entry, got %v", installed)
+	}
+
+	content, err := os.ReadFile(extensionTarget)
+	if err != nil {
+		t.Fatalf("read extension: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "build-brief") || !strings.Contains(text, "tool_call") || !strings.Contains(text, "event.input.command = rewritten") {
+		t.Fatalf("expected Pi extension to rewrite bash commands via build-brief, got %q", text)
+	}
+	if strings.Contains(text, "RTK") {
+		t.Fatalf("expected extension source to stay RTK-free, got %q", text)
+	}
+}
+
 func TestInstallGlobalCreatesOpenCodePluginWithoutAgentsFile(t *testing.T) {
 	original := runRTKHelp
 	runRTKHelp = func() error { return errors.New("missing") }
@@ -333,7 +377,7 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 		{
 			Tool: Tool{
 				ID:             "codex-cli",
-				Name:           "Codex CLI",
+				Name:           "Codex App & CLI",
 				GlobalTargets:  []string{target},
 				SupportsPlugin: true,
 			},
@@ -346,7 +390,7 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 	}
 
 	pluginRoot := filepath.Join(home, ".codex", "plugins", "build-brief")
-	if !containsPath(installed, "Codex CLI plugin -> "+pluginRoot) {
+	if !containsPath(installed, "Codex App & CLI plugin -> "+pluginRoot) {
 		t.Fatalf("expected codex plugin install entry, got %v", installed)
 	}
 
@@ -650,7 +694,7 @@ func TestInstallGlobalUpdatesCodexAgentsAndPlugin(t *testing.T) {
 		{
 			Tool: Tool{
 				ID:             "codex-cli",
-				Name:           "Codex CLI",
+				Name:           "Codex App & CLI",
 				GlobalTargets:  []string{target},
 				SupportsPlugin: true,
 			},
@@ -670,8 +714,8 @@ func TestInstallGlobalUpdatesCodexAgentsAndPlugin(t *testing.T) {
 		t.Fatalf("read AGENTS: %v", err)
 	}
 	agentsText := string(agentsContent)
-	if !strings.Contains(agentsText, "managed Codex plugin") {
-		t.Fatalf("expected Codex plugin guidance in AGENTS.md, got %q", agentsText)
+	if !strings.Contains(agentsText, "managed Codex App & CLI plugin") {
+		t.Fatalf("expected Codex App & CLI plugin guidance in AGENTS.md, got %q", agentsText)
 	}
 	if !strings.Contains(agentsText, "PreToolUse") {
 		t.Fatalf("expected PreToolUse guidance in AGENTS.md, got %q", agentsText)
@@ -858,6 +902,10 @@ func TestReadSelectionKey(t *testing.T) {
 	}{
 		{name: "up arrow", input: "\x1b[A", expected: selectionKeyUp},
 		{name: "down arrow", input: "\x1b[B", expected: selectionKeyDown},
+		{name: "application cursor up arrow", input: "\x1bOA", expected: selectionKeyUp},
+		{name: "application cursor down arrow", input: "\x1bOB", expected: selectionKeyDown},
+		{name: "modified up arrow", input: "\x1b[1;5A", expected: selectionKeyUp},
+		{name: "modified down arrow", input: "\x1b[1;5B", expected: selectionKeyDown},
 		{name: "vim up", input: "k", expected: selectionKeyUp},
 		{name: "vim down", input: "j", expected: selectionKeyDown},
 		{name: "toggle", input: " ", expected: selectionKeyToggle},
@@ -875,6 +923,38 @@ func TestReadSelectionKey(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.expected, key)
 			}
 		})
+	}
+}
+
+func TestDetectGlobalToolsDetectsCodexAppDirectory(t *testing.T) {
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	appDir := filepath.Join(home, "Library", "Application Support", "Codex")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatalf("create app dir: %v", err)
+	}
+
+	tools, err := DetectGlobalTools()
+	if err != nil {
+		t.Fatalf("DetectGlobalTools: %v", err)
+	}
+
+	var codex *DetectedTool
+	for i := range tools {
+		if tools[i].Tool.ID == "codex-cli" {
+			codex = &tools[i]
+			break
+		}
+	}
+	if codex == nil {
+		t.Fatalf("expected Codex App & CLI to be detected from app directory, got %v", tools)
+	}
+	if codex.Tool.Name != "Codex App & CLI" {
+		t.Fatalf("unexpected codex name %q", codex.Tool.Name)
+	}
+	if codex.PreferredTarget != filepath.Join(home, ".codex", "AGENTS.md") {
+		t.Fatalf("expected shared ~/.codex AGENTS target, got %q", codex.PreferredTarget)
 	}
 }
 
@@ -898,8 +978,17 @@ func TestKnownToolsUseOpenCodeConfigTargets(t *testing.T) {
 	}
 
 	codex := findTool(t, tools, "codex-cli")
+	if codex.Name != "Codex App & CLI" {
+		t.Fatalf("expected Codex App & CLI name, got %q", codex.Name)
+	}
 	if !codex.SupportsPlugin {
 		t.Fatalf("expected codex to support plugins, got %+v", codex)
+	}
+	if !containsPath(codex.DetectionPaths, filepath.Join(home, ".codex")) {
+		t.Fatalf("expected ~/.codex detection path in %v", codex.DetectionPaths)
+	}
+	if !containsPath(codex.DetectionPaths, filepath.Join(home, "Library", "Application Support", "Codex")) {
+		t.Fatalf("expected Codex app detection path in %v", codex.DetectionPaths)
 	}
 
 	copilot := findTool(t, tools, "copilot-cli")

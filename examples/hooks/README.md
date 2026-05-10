@@ -73,16 +73,16 @@ The example hook and the managed Claude plugin both block routine raw Gradle
 commands, including chained segments such as `gradle test && gradle check`, and
 suggest the `build-brief rewrite ...` result instead.
 
-## Codex
+## Codex App & CLI
 
-Codex now has official hooks and plugin packaging, but the runtime constraint is
+Codex App and Codex CLI share the `~/.codex` configuration/plugin area. Codex now has official hooks and plugin packaging, but the runtime constraint is
 similar to Claude Code for this use case: `PreToolUse` can block a Bash command
 and explain the replacement, but it cannot rewrite the command in place and
 continue automatically.
 
-The managed `build-brief --global` Codex integration therefore installs:
+The managed `build-brief --global` Codex App & CLI integration therefore installs:
 
-- a local Codex plugin bundle with `hooks.json`
+- a local Codex plugin bundle under `~/.codex/plugins/build-brief` with `hooks.json`
 - a local marketplace entry under `~/.agents/plugins/marketplace.json`
 - a cached installed copy under the Codex plugin cache
 - `config.toml` updates that enable `hooks` and turn the plugin on
@@ -90,3 +90,18 @@ The managed `build-brief --global` Codex integration therefore installs:
 That managed hook blocks routine raw Gradle commands, including chained segments
 such as `gradle test && gradle check`, and suggests the `build-brief rewrite ...`
 result instead.
+
+## Pi Coding Agent
+
+Pi extensions can mutate Bash tool input before execution, so the managed
+`build-brief --global` Pi integration installs a local extension at:
+
+```text
+~/.pi/agent/extensions/build-brief/index.ts
+```
+
+The extension listens for `tool_call` events on the Bash tool, delegates command
+analysis to `build-brief rewrite`, and replaces routine raw Gradle commands —
+including chained `&&`, `||`, and `;` Gradle segments — with the equivalent
+`build-brief gradle ...` or `build-brief ./gradlew ...` command before Pi runs
+Bash.
