@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.0.7 - 2026-05-10
+
+- Fix Codex app directory detection (d235f13)
+- Refine Codex plugin installation (22de30d)
+- Add Pi integration and Codex marketplace bundle (5c724b9)
+- Update Codex hooks feature flag (ec6d93c)
+
 ## v0.0.6 - 2026-04-03
 
 - Add interactive global installer (b660a20)
