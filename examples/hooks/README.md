@@ -85,7 +85,7 @@ The managed `build-brief --global` Codex App & CLI integration therefore install
 - a local Codex plugin bundle under `~/.codex/plugins/build-brief` with `hooks.json`
 - a local marketplace entry under `~/.agents/plugins/marketplace.json`
 - a cached installed copy under the Codex plugin cache
-- `config.toml` updates that enable `hooks` and turn the plugin on
+- `config.toml` updates that enable `hooks`, enable plugin-bundled hooks with `plugin_hooks`, pre-trust the installed build-brief hook, remove deprecated `codex_hooks`, and turn the plugin on
 
 That managed hook blocks routine raw Gradle commands, including chained segments
 such as `gradle test && gradle check`, and suggests the `build-brief rewrite ...`

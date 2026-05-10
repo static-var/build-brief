@@ -372,6 +372,13 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 	setFakeHome(t, home)
 
 	target := filepath.Join(home, ".codex", "AGENTS.md")
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create codex config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("[features]\ncodex_hooks = true\n\n[model]\nname = \"test\"\n"), 0o644); err != nil {
+		t.Fatalf("write existing codex config: %v", err)
+	}
 
 	installed, failures := InstallGlobal([]DetectedTool{
 		{
@@ -440,7 +447,6 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 		t.Fatalf("expected marketplace source path %q, got %v", "./.codex/plugins/build-brief", source["path"])
 	}
 
-	configPath := filepath.Join(home, ".codex", "config.toml")
 	configContent, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config.toml: %v", err)
@@ -448,6 +454,21 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 	configText := string(configContent)
 	if !strings.Contains(configText, "[features]") || !strings.Contains(configText, "hooks = true") {
 		t.Fatalf("expected hooks feature flag, got %q", configText)
+	}
+	if !strings.Contains(configText, "plugin_hooks = true") {
+		t.Fatalf("expected plugin_hooks feature flag, got %q", configText)
+	}
+	if strings.Contains(configText, "codex_hooks") {
+		t.Fatalf("expected deprecated codex_hooks flag to be removed, got %q", configText)
+	}
+	if strings.Contains(configText, "suppress_unstable_features_warning") {
+		t.Fatalf("expected installer not to suppress unstable feature warnings, got %q", configText)
+	}
+	if !strings.Contains(configText, `[hooks.state."build-brief@local-user-plugins:hooks.json:pre_tool_use:0:0"]`) {
+		t.Fatalf("expected trusted hook state entry, got %q", configText)
+	}
+	if !strings.Contains(configText, "trusted_hash = \"sha256:") {
+		t.Fatalf("expected trusted hook hash, got %q", configText)
 	}
 	if !strings.Contains(configText, `[plugins."build-brief@local-user-plugins"]`) || !strings.Contains(configText, "enabled = true") {
 		t.Fatalf("expected enabled plugin entry, got %q", configText)

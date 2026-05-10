@@ -180,8 +180,9 @@ For GitHub Copilot CLI, `build-brief --global` now installs a managed local plug
 with a `preToolUse` guardrail when Copilot is detected.
 For Codex App & CLI, `build-brief --global` installs a managed local plugin,
 marketplace entry, and hook-backed guardrail in the shared `~/.codex` config area
-alongside the AGENTS integration when Codex is detected. The repo also includes
-an OpenAI Codex marketplace-ready bundle under `marketplaces/codex/plugins/build-brief`.
+alongside the AGENTS integration when Codex is detected. It uses `hooks` plus
+plugin-bundled hooks, pre-trusts the installed build-brief hook, and removes the
+deprecated `codex_hooks` flag if present.
 
 If your agent tool supports `AGENTS.md` or an instructions file, a simple default rule is:
 

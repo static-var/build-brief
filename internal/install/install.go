@@ -2,6 +2,8 @@ package install
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -879,6 +881,15 @@ func installCodexPlugin(tool DetectedTool) (string, error) {
 	if err := upsertTOMLBool(configPath, "[features]", "hooks", true); err != nil {
 		return "", err
 	}
+	if err := upsertTOMLBool(configPath, "[features]", "plugin_hooks", true); err != nil {
+		return "", err
+	}
+	if err := removeTOMLKey(configPath, "[features]", "codex_hooks"); err != nil {
+		return "", err
+	}
+	if err := upsertTOMLString(configPath, fmt.Sprintf(`[hooks.state.%q]`, codexPreToolUseHookKey()), "trusted_hash", codexPreToolUseHookHash()); err != nil {
+		return "", err
+	}
 	if err := upsertTOMLBool(configPath, fmt.Sprintf(`[plugins.%q]`, codexPluginID()), "enabled", true); err != nil {
 		return "", err
 	}
@@ -986,6 +997,32 @@ func codexPluginID() string {
 
 func codexMarketplaceSourcePath() string {
 	return "./" + filepath.ToSlash(filepath.Join(".codex", "plugins", codexPluginName))
+}
+
+func codexPreToolUseHookKey() string {
+	return codexPluginID() + ":hooks.json:pre_tool_use:0:0"
+}
+
+func codexPreToolUseHookHash() string {
+	identity := map[string]any{
+		"event_name": "pre_tool_use",
+		"hooks": []any{
+			map[string]any{
+				"async":         false,
+				"command":       codexPreToolUseCommand(),
+				"statusMessage": "Checking Bash command for build-brief",
+				"timeout":       600,
+				"type":          "command",
+			},
+		},
+		"matcher": "Bash",
+	}
+	serialized, err := json.Marshal(identity)
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(serialized)
+	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
 func copilotPluginManifest() map[string]any {
@@ -1375,6 +1412,14 @@ func upsertCodexMarketplace(path, sourcePath string) error {
 }
 
 func upsertTOMLBool(path, section, key string, value bool) error {
+	return upsertTOMLEntry(path, section, key, fmt.Sprintf("%s = %t", key, value))
+}
+
+func upsertTOMLString(path, section, key, value string) error {
+	return upsertTOMLEntry(path, section, key, fmt.Sprintf("%s = %s", key, strconv.Quote(value)))
+}
+
+func upsertTOMLEntry(path, section, key, entry string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -1393,6 +1438,26 @@ func upsertTOMLBool(path, section, key string, value bool) error {
 		lines = []string{}
 	}
 
+	if section == "" {
+		sectionEnd := len(lines)
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				sectionEnd = i
+				break
+			}
+			if tomlLineHasKey(trimmed, key) {
+				lines[i] = entry
+				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+			}
+		}
+
+		insert := append([]string{}, lines[:sectionEnd]...)
+		insert = append(insert, entry)
+		insert = append(insert, lines[sectionEnd:]...)
+		return os.WriteFile(path, []byte(strings.Join(insert, "\n")), 0o644)
+	}
+
 	sectionStart := -1
 	sectionEnd := len(lines)
 	for i, line := range lines {
@@ -1407,11 +1472,10 @@ func upsertTOMLBool(path, section, key string, value bool) error {
 		}
 	}
 
-	entry := fmt.Sprintf("%s = %t", key, value)
 	if sectionStart >= 0 {
 		for i := sectionStart + 1; i < sectionEnd; i++ {
 			trimmed := strings.TrimSpace(lines[i])
-			if strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=") {
+			if tomlLineHasKey(trimmed, key) {
 				lines[i] = entry
 				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 			}
@@ -1428,6 +1492,49 @@ func upsertTOMLBool(path, section, key string, value bool) error {
 	}
 	lines = append(lines, section, entry)
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+func removeTOMLKey(path, section, key string) error {
+	if !fileExists(path) {
+		return nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	sectionStart := -1
+	sectionEnd := len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == section {
+			sectionStart = i
+			continue
+		}
+		if sectionStart >= 0 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			sectionEnd = i
+			break
+		}
+	}
+	if sectionStart < 0 {
+		return nil
+	}
+
+	filtered := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if i > sectionStart && i < sectionEnd && tomlLineHasKey(strings.TrimSpace(line), key) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(filtered, "\n")), 0o644)
+}
+
+func tomlLineHasKey(trimmed, key string) bool {
+	return strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=")
 }
 
 func copyDir(src, dst string) error {
