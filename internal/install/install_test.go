@@ -136,8 +136,41 @@ func TestInstallGlobalCreatesPiExtensionWithoutAgentsFile(t *testing.T) {
 	if !strings.Contains(text, "build-brief") || !strings.Contains(text, "tool_call") || !strings.Contains(text, "event.input.command = rewritten") {
 		t.Fatalf("expected Pi extension to rewrite bash commands via build-brief, got %q", text)
 	}
+	if strings.Contains(text, "@earendil-works") || strings.Contains(text, "@mariozechner") || strings.Contains(text, "isToolCallEventType") {
+		t.Fatalf("expected Pi extension to stay import-free for Pi 0.73/0.74 compatibility, got %q", text)
+	}
 	if strings.Contains(text, "RTK") {
 		t.Fatalf("expected extension source to stay RTK-free, got %q", text)
+	}
+}
+
+func TestPiExtensionSourceUsesStructuralTypesForPiVersionCompatibility(t *testing.T) {
+	text := piExtensionSource()
+
+	for _, disallowed := range []string{
+		"import ",
+		"@earendil-works/pi-coding-agent",
+		"@mariozechner/pi-coding-agent",
+		"isToolCallEventType",
+	} {
+		if strings.Contains(text, disallowed) {
+			t.Fatalf("expected Pi extension source not to contain %q, got %q", disallowed, text)
+		}
+	}
+
+	for _, required := range []string{
+		"type BuildBriefPi =",
+		`on(eventName: "tool_call"`,
+		`exec(command: string, args: string[]`,
+		"type BuildBriefToolCallEvent =",
+		`toolName?: string`,
+		`input?: { command?: unknown }`,
+		`if (event.toolName !== "bash") return;`,
+		`event.input.command = rewritten;`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("expected Pi extension source to contain %q, got %q", required, text)
+		}
 	}
 }
 
