@@ -63,6 +63,30 @@ func TestRenderHumanKeepsFailureDetails(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsBuildScanURLOnSuccess(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 5s",
+		BuildScanURLs:   []string{"https://develocity.internal.example/s/abc123"},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render success output with build scan: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"BUILD SUCCESSFUL in 5s",
+		"Build scan:",
+		"https://develocity.internal.example/s/abc123",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected success output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,

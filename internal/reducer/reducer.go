@@ -21,6 +21,7 @@ var (
 	taskExecutionPattern = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
 	testFailurePattern   = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
 	javacErrorPattern    = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
+	urlPattern           = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	maxWarnings          = 8
 	maxImportantLines    = 12
@@ -57,6 +58,7 @@ type Summary struct {
 	WarningCount              int        `json:"warning_count"`
 	Warnings                  []string   `json:"warnings"`
 	ImportantLines            []string   `json:"important_lines"`
+	BuildScanURLs             []string   `json:"build_scan_urls,omitempty"`
 	Artifacts                 []Artifact `json:"artifacts,omitempty"`
 	GeneratedClassFileCount   int        `json:"generated_class_file_count,omitempty"`
 	GeneratedCodegenFileCount int        `json:"generated_codegen_file_count,omitempty"`
@@ -102,6 +104,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		FailedTests:    []string{},
 		Warnings:       []string{},
 		ImportantLines: []string{},
+		BuildScanURLs:  []string{},
 		Artifacts:      []Artifact{},
 	}
 
@@ -109,6 +112,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	failedTests := make(map[string]struct{})
 	warnings := make(map[string]struct{})
 	important := make(map[string]struct{})
+	buildScanURLs := make(map[string]struct{})
 	artifactHints := make([]string, 0)
 	artifactHintSeen := make(map[string]struct{})
 
@@ -121,6 +125,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	reader := bufio.NewReaderSize(file, 64*1024)
 	captureContextRemaining := 0
 	captureCompilerRemaining := 0
+	captureBuildScanURLRemaining := 0
 	for {
 		rawLine, err := reader.ReadString('\n')
 		if len(rawLine) == 0 && err != nil {
@@ -162,6 +167,24 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		if isImportantLine(text) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 		}
+
+		lineURLs := extractURLs(text)
+		if isBuildScanMarkerLine(text) {
+			if len(lineURLs) > 0 {
+				addUniqueURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
+				captureBuildScanURLRemaining = 0
+			} else {
+				captureBuildScanURLRemaining = 3
+			}
+		} else if captureBuildScanURLRemaining > 0 {
+			if len(lineURLs) > 0 {
+				addUniqueURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
+				captureBuildScanURLRemaining = 0
+			} else {
+				captureBuildScanURLRemaining--
+			}
+		}
+
 		for _, hint := range artifacts.ExtractHints(text) {
 			if _, ok := artifactHintSeen[hint]; ok {
 				continue
@@ -417,6 +440,46 @@ func addUnique(items *[]string, seen map[string]struct{}, value string, limit in
 	if limit == 0 || len(*items) < limit {
 		*items = append(*items, value)
 	}
+}
+
+func addUniqueURLs(items *[]string, seen map[string]struct{}, values []string) {
+	for _, value := range values {
+		addUnique(items, seen, value, 0)
+	}
+}
+
+func extractURLs(text string) []string {
+	matches := urlPattern.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	urls := make([]string, 0, len(matches))
+	for _, match := range matches {
+		url := strings.TrimRight(match, ".,;:")
+		if url != "" {
+			urls = append(urls, url)
+		}
+	}
+	return urls
+}
+
+func isBuildScanMarkerLine(text string) bool {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "build scan") {
+		switch {
+		case strings.Contains(lower, "publishing"),
+			strings.Contains(lower, "published"),
+			strings.Contains(lower, "available"),
+			strings.Contains(lower, "view"),
+			strings.Contains(lower, "url"),
+			strings.Contains(lower, "develocity"):
+			return true
+		}
+	}
+
+	return strings.Contains(lower, "develocity") &&
+		(strings.Contains(lower, "publishing") || strings.Contains(lower, "published"))
 }
 
 func isWarningLine(text string) bool {

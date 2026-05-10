@@ -122,6 +122,87 @@ func TestReduceSuccessSummary(t *testing.T) {
 	}
 }
 
+func TestReduceCapturesDevelocityBuildScanURL(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :build",
+			"Publishing Build Scan to Develocity...",
+			"https://develocity.internal.example/s/abc123",
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce build scan log: %v", err)
+	}
+
+	if len(summary.BuildScanURLs) != 1 || summary.BuildScanURLs[0] != "https://develocity.internal.example/s/abc123" {
+		t.Fatalf("expected Develocity build scan URL, got %v", summary.BuildScanURLs)
+	}
+}
+
+func TestReduceCapturesSameLineBuildScanURL(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"Build scan: https://develocity.internal.example/s/same-line.",
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce same-line build scan log: %v", err)
+	}
+
+	if len(summary.BuildScanURLs) != 1 || summary.BuildScanURLs[0] != "https://develocity.internal.example/s/same-line" {
+		t.Fatalf("expected same-line build scan URL without trailing punctuation, got %v", summary.BuildScanURLs)
+	}
+}
+
+func TestReduceDoesNotTreatUnrelatedURLsAsBuildScans(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"Download https://repo.maven.apache.org/maven2/com/example/library.jar",
+			"> Android Gradle plugin requires a newer compileSdk. See https://developer.android.com/build/releases/gradle-plugin for details.",
+			"BUILD FAILED in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce unrelated URL log: %v", err)
+	}
+
+	if len(summary.BuildScanURLs) != 0 {
+		t.Fatalf("did not expect unrelated URLs as build scans, got %v", summary.BuildScanURLs)
+	}
+}
+
 func TestReduceFallsBackToAvailableArtifactsForWarmAssemble(t *testing.T) {
 	projectDir := t.TempDir()
 	writeGeneratedFile(t, filepath.Join(projectDir, "androidApp", "build", "outputs", "apk", "debug", "androidApp-debug.apk"), "apk")
