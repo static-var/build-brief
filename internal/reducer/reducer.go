@@ -25,6 +25,7 @@ var (
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	maxWarnings          = 8
 	maxImportantLines    = 12
+	maxCustomMatchLines  = 8
 	contextCaptureLines  = 2
 	compilerCaptureLines = 3
 	maxJUnitReportFiles  = 100
@@ -33,36 +34,51 @@ var (
 
 type Artifact = artifacts.Artifact
 
+type Options struct {
+	CustomMatches []CustomMatchRule
+}
+
+type CustomMatchRule struct {
+	Name    string
+	Pattern *regexp.Regexp
+}
+
+type CustomMatchResult struct {
+	Name    string   `json:"name"`
+	Matches []string `json:"matches"`
+}
+
 type Summary struct {
-	SchemaVersion             string     `json:"schema_version"`
-	Tool                      string     `json:"tool"`
-	Success                   bool       `json:"success"`
-	ExitCode                  int        `json:"exit_code"`
-	Duration                  string     `json:"duration"`
-	DurationMs                int64      `json:"duration_ms"`
-	ProjectDir                string     `json:"project_dir"`
-	Executable                string     `json:"executable"`
-	Command                   []string   `json:"command"`
-	CommandLine               string     `json:"command_line"`
-	Source                    string     `json:"source"`
-	RawLogPath                string     `json:"raw_log_path"`
-	RawOutputTokens           int        `json:"raw_output_tokens"`
-	EmittedTokens             int        `json:"emitted_output_tokens"`
-	SavedTokens               int        `json:"saved_output_tokens"`
-	SavingsPct                float64    `json:"savings_pct"`
-	BuildStatusLine           string     `json:"build_status_line"`
-	FailedTasks               []string   `json:"failed_tasks"`
-	FailedTests               []string   `json:"failed_tests"`
-	PassedTestCount           int        `json:"passed_test_count,omitempty"`
-	FailedTestCount           int        `json:"failed_test_count,omitempty"`
-	WarningCount              int        `json:"warning_count"`
-	Warnings                  []string   `json:"warnings"`
-	ImportantLines            []string   `json:"important_lines"`
-	BuildScanURLs             []string   `json:"build_scan_urls,omitempty"`
-	Artifacts                 []Artifact `json:"artifacts,omitempty"`
-	GeneratedClassFileCount   int        `json:"generated_class_file_count,omitempty"`
-	GeneratedCodegenFileCount int        `json:"generated_codegen_file_count,omitempty"`
-	TotalLines                int        `json:"total_lines"`
+	SchemaVersion             string              `json:"schema_version"`
+	Tool                      string              `json:"tool"`
+	Success                   bool                `json:"success"`
+	ExitCode                  int                 `json:"exit_code"`
+	Duration                  string              `json:"duration"`
+	DurationMs                int64               `json:"duration_ms"`
+	ProjectDir                string              `json:"project_dir"`
+	Executable                string              `json:"executable"`
+	Command                   []string            `json:"command"`
+	CommandLine               string              `json:"command_line"`
+	Source                    string              `json:"source"`
+	RawLogPath                string              `json:"raw_log_path"`
+	RawOutputTokens           int                 `json:"raw_output_tokens"`
+	EmittedTokens             int                 `json:"emitted_output_tokens"`
+	SavedTokens               int                 `json:"saved_output_tokens"`
+	SavingsPct                float64             `json:"savings_pct"`
+	BuildStatusLine           string              `json:"build_status_line"`
+	FailedTasks               []string            `json:"failed_tasks"`
+	FailedTests               []string            `json:"failed_tests"`
+	PassedTestCount           int                 `json:"passed_test_count,omitempty"`
+	FailedTestCount           int                 `json:"failed_test_count,omitempty"`
+	WarningCount              int                 `json:"warning_count"`
+	Warnings                  []string            `json:"warnings"`
+	ImportantLines            []string            `json:"important_lines"`
+	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
+	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
+	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
+	GeneratedClassFileCount   int                 `json:"generated_class_file_count,omitempty"`
+	GeneratedCodegenFileCount int                 `json:"generated_codegen_file_count,omitempty"`
+	TotalLines                int                 `json:"total_lines"`
 }
 
 type junitTestSuite struct {
@@ -84,6 +100,10 @@ type junitFailure struct {
 }
 
 func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
+	return ReduceWithOptions(command, result, Options{})
+}
+
+func ReduceWithOptions(command gradle.Command, result runner.Result, opts Options) (Summary, error) {
 	summary := Summary{
 		SchemaVersion: "v1",
 		Tool:          "build-brief",
@@ -105,6 +125,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 		Warnings:       []string{},
 		ImportantLines: []string{},
 		BuildScanURLs:  []string{},
+		CustomMatches:  customMatchResults(opts.CustomMatches),
 		Artifacts:      []Artifact{},
 	}
 
@@ -113,6 +134,10 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	warnings := make(map[string]struct{})
 	important := make(map[string]struct{})
 	buildScanURLs := make(map[string]struct{})
+	customMatchSeen := make([]map[string]struct{}, len(opts.CustomMatches))
+	for i := range customMatchSeen {
+		customMatchSeen[i] = make(map[string]struct{})
+	}
 	artifactHints := make([]string, 0)
 	artifactHintSeen := make(map[string]struct{})
 
@@ -185,6 +210,16 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 			}
 		}
 
+		for i, rule := range opts.CustomMatches {
+			if rule.Pattern == nil {
+				continue
+			}
+			matches := rule.Pattern.FindAllString(text, -1)
+			for _, match := range matches {
+				addUnique(&summary.CustomMatches[i].Matches, customMatchSeen[i], strings.TrimRight(match, ".,;:"), maxCustomMatchLines)
+			}
+		}
+
 		for _, hint := range artifacts.ExtractHints(text) {
 			if _, ok := artifactHintSeen[hint]; ok {
 				continue
@@ -227,6 +262,20 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints)
 
 	return summary, nil
+}
+
+func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
+	if len(rules) == 0 {
+		return nil
+	}
+	results := make([]CustomMatchResult, 0, len(rules))
+	for _, rule := range rules {
+		results = append(results, CustomMatchResult{
+			Name:    strings.TrimSpace(rule.Name),
+			Matches: []string{},
+		})
+	}
+	return results
 }
 
 func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summary, hints []string) {

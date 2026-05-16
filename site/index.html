@@ -641,6 +641,11 @@
       </details>
 
       <details class="faq__item">
+        <summary class="faq__q">Can I surface my own log links?</summary>
+        <p class="faq__a">Yes. Add a project-level <code>.build-brief.json</code> with named regex entries under <code>matches</code>, or pass a file with <code>--config PATH</code> / <code>BUILD_BRIEF_CONFIG</code>. Matching text is shown under <code>Custom matches</code> in the brief.</p>
+      </details>
+
+      <details class="faq__item">
         <summary class="faq__q">Can I use it with ./gradlew and plain gradle?</summary>
         <p class="faq__a">Yes. <code>build-brief build</code> auto-detects the wrapper. You can also pass an explicit path: <code>build-brief --gradle ./gradlew build</code> or <code>build-brief --gradle gradle build</code>.</p>
       </details>

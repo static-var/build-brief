@@ -54,6 +54,38 @@ func TestParseArgsReadsGradleUserHome(t *testing.T) {
 	}
 }
 
+func TestParseArgsReadsConfigPath(t *testing.T) {
+	opts, gradleArgs, err := parseArgs([]string{"--config", "/tmp/build-brief.json", "test"})
+	if err != nil {
+		t.Fatalf("parse config path args: %v", err)
+	}
+
+	if opts.ConfigPath != "/tmp/build-brief.json" {
+		t.Fatalf("expected config path to be parsed, got %s", opts.ConfigPath)
+	}
+
+	if len(gradleArgs) != 1 || gradleArgs[0] != "test" {
+		t.Fatalf("unexpected gradle args: %v", gradleArgs)
+	}
+}
+
+func TestParseArgsReadsConfigPathFromEnv(t *testing.T) {
+	t.Setenv("BUILD_BRIEF_CONFIG", "/tmp/env-build-brief.json")
+
+	opts, gradleArgs, err := parseArgs([]string{"test"})
+	if err != nil {
+		t.Fatalf("parse config env args: %v", err)
+	}
+
+	if opts.ConfigPath != "/tmp/env-build-brief.json" {
+		t.Fatalf("expected env config path to be parsed, got %s", opts.ConfigPath)
+	}
+
+	if len(gradleArgs) != 1 || gradleArgs[0] != "test" {
+		t.Fatalf("unexpected gradle args: %v", gradleArgs)
+	}
+}
+
 func TestParseArgsRejectsUnknownBuildBriefFlag(t *testing.T) {
 	_, _, err := parseArgs([]string{"--daemon-mode", "on", "test"})
 	if err == nil {
@@ -302,5 +334,40 @@ func TestRunRawModeStreamsOutput(t *testing.T) {
 
 	if stdout.String() != "raw-line-1\nraw-line-2\n" {
 		t.Fatalf("unexpected raw mode output %q", stdout.String())
+	}
+}
+
+func TestRunHumanModeUsesDefaultProjectConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	configPath := filepath.Join(projectDir, ".build-brief.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"matches": [
+			{"name": "Firebase Test Lab", "pattern": "https://console\\.firebase\\.google\\.com/[^\\s.]+"}
+		]
+	}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'Firebase result https://console.firebase.google.com/testlab'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+
+	rendered := stdout.String()
+	if !strings.Contains(rendered, "Custom matches:") ||
+		!strings.Contains(rendered, "Firebase Test Lab:") ||
+		!strings.Contains(rendered, "https://console.firebase.google.com/testlab") {
+		t.Fatalf("expected custom match output, got %q", rendered)
 	}
 }

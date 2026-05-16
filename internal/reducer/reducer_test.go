@@ -3,6 +3,7 @@ package reducer
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -200,6 +201,49 @@ func TestReduceDoesNotTreatUnrelatedURLsAsBuildScans(t *testing.T) {
 
 	if len(summary.BuildScanURLs) != 0 {
 		t.Fatalf("did not expect unrelated URLs as build scans, got %v", summary.BuildScanURLs)
+	}
+}
+
+func TestReduceCapturesCustomRegexMatches(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "connectedCheck"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"Firebase Test Lab results: https://console.firebase.google.com/project/sample/testlab/histories/bh.123",
+			"emulator.wtf run: https://app.emulator.wtf/runs/abc123.",
+			"Duplicate emulator.wtf run: https://app.emulator.wtf/runs/abc123.",
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := ReduceWithOptions(command, result, Options{
+		CustomMatches: []CustomMatchRule{
+			{Name: "Firebase Test Lab", Pattern: regexp.MustCompile(`https://console\.firebase\.google\.com/[^\s.]+(?:\.[^\s.]+)*`)},
+			{Name: "emulator.wtf", Pattern: regexp.MustCompile(`https://app\.emulator\.wtf/[^\s.]+(?:\.[^\s.]+)*`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reduce custom matches: %v", err)
+	}
+
+	if len(summary.CustomMatches) != 2 {
+		t.Fatalf("expected two custom match groups, got %+v", summary.CustomMatches)
+	}
+	if summary.CustomMatches[0].Name != "Firebase Test Lab" ||
+		len(summary.CustomMatches[0].Matches) != 1 ||
+		summary.CustomMatches[0].Matches[0] != "https://console.firebase.google.com/project/sample/testlab/histories/bh.123" {
+		t.Fatalf("unexpected Firebase matches: %+v", summary.CustomMatches[0])
+	}
+	if summary.CustomMatches[1].Name != "emulator.wtf" ||
+		len(summary.CustomMatches[1].Matches) != 1 ||
+		summary.CustomMatches[1].Matches[0] != "https://app.emulator.wtf/runs/abc123" {
+		t.Fatalf("unexpected emulator.wtf matches: %+v", summary.CustomMatches[1])
 	}
 }
 

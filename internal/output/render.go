@@ -49,6 +49,22 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if customMatches := nonEmptyCustomMatches(summary.CustomMatches); len(customMatches) > 0 {
+		if _, err := fmt.Fprintln(bw, "Custom matches:"); err != nil {
+			return err
+		}
+		for _, group := range customMatches {
+			if _, err := fmt.Fprintf(bw, "  %s:\n", group.Name); err != nil {
+				return err
+			}
+			for _, match := range group.Matches {
+				if _, err := fmt.Fprintf(bw, "    - %s\n", match); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	if len(summary.Artifacts) > 0 {
 		if _, err := fmt.Fprintln(bw, "Artifacts:"); err != nil {
 			return err
@@ -122,6 +138,16 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	}
 
 	return bw.Flush()
+}
+
+func nonEmptyCustomMatches(groups []reducer.CustomMatchResult) []reducer.CustomMatchResult {
+	nonEmpty := make([]reducer.CustomMatchResult, 0, len(groups))
+	for _, group := range groups {
+		if len(group.Matches) > 0 {
+			nonEmpty = append(nonEmpty, group)
+		}
+	}
+	return nonEmpty
 }
 
 func RenderRaw(w io.Writer, rawLogPath string) error {
