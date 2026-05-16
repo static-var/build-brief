@@ -87,6 +87,42 @@ func TestRenderHumanShowsBuildScanURLOnSuccess(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsCustomMatchesOnSuccess(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 5s",
+		CustomMatches: []reducer.CustomMatchResult{
+			{
+				Name:    "Firebase Test Lab",
+				Matches: []string{"https://console.firebase.google.com/project/sample/testlab/histories/bh.123"},
+			},
+			{
+				Name:    "emulator.wtf",
+				Matches: []string{"https://app.emulator.wtf/runs/abc123"},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render success output with custom matches: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"BUILD SUCCESSFUL in 5s",
+		"Custom matches:",
+		"Firebase Test Lab:",
+		"https://console.firebase.google.com/project/sample/testlab/histories/bh.123",
+		"emulator.wtf:",
+		"https://app.emulator.wtf/runs/abc123",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected success output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,

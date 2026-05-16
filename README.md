@@ -17,7 +17,7 @@ For full docs, real before/after examples, agent setup, hook guidance, limitatio
 - Wraps either `gradle` or `./gradlew`
 - Preserves the Gradle exit code
 - Keeps the full raw log on disk
-- Returns failed tasks, failed tests, warnings, build scan URLs, artifacts, and final status
+- Returns failed tasks, failed tests, warnings, build scan URLs, configured custom regex matches, artifacts, and final status
 - Normalizes output-shaping flags so reduction stays stable
 - Reuses or starts the Gradle daemon by default
 - Works across Spring Boot, Ktor, Android, Kotlin Multiplatform, plain JVM, and multi-project builds
@@ -54,6 +54,7 @@ build-brief build
 build-brief gradle test
 build-brief ./gradlew test
 build-brief --gradle-user-home /tmp/build-brief-gradle-home ./gradlew test
+build-brief --config .build-brief.json connectedCheck
 build-brief gains --history
 build-brief --help
 ```
@@ -85,6 +86,31 @@ Highlights:
   - GreetingServiceTest > returns fallback message: expected:<Hello> but was:<null>
 Raw log: /tmp/build-brief/build-brief-abcd1234.latest.log
 ```
+
+## Custom regex matches
+
+Project-specific logs often contain useful links that build-brief cannot know
+about ahead of time, such as Firebase Test Lab or emulator.wtf result URLs. Add
+an optional `.build-brief.json` file in the project root to surface those
+matches in the brief:
+
+```json
+{
+  "matches": [
+    {
+      "name": "Firebase Test Lab",
+      "pattern": "https://console\\.firebase\\.google\\.com/[^\\s]+"
+    },
+    {
+      "name": "emulator.wtf",
+      "pattern": "https://app\\.emulator\\.wtf/[^\\s]+"
+    }
+  ]
+}
+```
+
+You can also point to a config file with `--config PATH` or
+`BUILD_BRIEF_CONFIG`. Invalid regex patterns fail fast before Gradle starts.
 
 ## Check your gains
 

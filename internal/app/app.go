@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
+	"build-brief/internal/config"
 	"build-brief/internal/gradle"
 	"build-brief/internal/install"
 	"build-brief/internal/output"
@@ -24,6 +26,7 @@ type Options struct {
 	GradlePath     string
 	LogDir         string
 	GradleUserHome string
+	ConfigPath     string
 	Help           bool
 	Version        bool
 	Install        bool
@@ -86,6 +89,17 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		opts.ProjectDir = wd
 	}
 
+	cfg, _, err := config.Load(opts.ProjectDir, opts.ConfigPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "build-brief: load config: %v\n", err)
+		return 2
+	}
+	customMatches, err := compileCustomMatches(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "build-brief: load config: %v\n", err)
+		return 2
+	}
+
 	invocation, gradleArgs := gradle.SplitInvocation(gradleArgs)
 	if opts.GradlePath != "" && invocation != "" {
 		fmt.Fprintln(stderr, "build-brief: cannot combine --gradle with an explicit Gradle command token; use one or the other")
@@ -146,7 +160,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			RawLogPath:    runResult.RawLogPath,
 		}, stderr)
 	default:
-		summary, err := reducer.Reduce(command, runResult)
+		summary, err := reducer.ReduceWithOptions(command, runResult, reducer.Options{
+			CustomMatches: customMatches,
+		})
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: reduce log output: %v\n", err)
 			return 1
@@ -190,6 +206,7 @@ func parseArgs(args []string) (Options, []string, error) {
 		GradlePath:     os.Getenv("BUILD_BRIEF_GRADLE_PATH"),
 		LogDir:         os.Getenv("BUILD_BRIEF_LOG_DIR"),
 		GradleUserHome: os.Getenv("BUILD_BRIEF_GRADLE_USER_HOME"),
+		ConfigPath:     os.Getenv("BUILD_BRIEF_CONFIG"),
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -253,6 +270,15 @@ func parseArgs(args []string) (Options, []string, error) {
 				return Options{}, nil, err
 			}
 			opts.GradleUserHome = value
+			i = next
+		case strings.HasPrefix(arg, "--config="):
+			opts.ConfigPath = strings.TrimPrefix(arg, "--config=")
+		case arg == "--config":
+			value, next, err := nextArg(args, i, "--config")
+			if err != nil {
+				return Options{}, nil, err
+			}
+			opts.ConfigPath = value
 			i = next
 		default:
 			if strings.HasPrefix(arg, "-") {
@@ -325,6 +351,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --gradle PATH             Explicit gradle/gradlew path")
 	fmt.Fprintln(w, "  --gradle-user-home PATH   Shared Gradle user home for Gradle caches")
 	fmt.Fprintln(w, "  --log-dir PATH            Directory for retained raw logs")
+	fmt.Fprintln(w, "  --config PATH             Optional custom match config file")
 	fmt.Fprintln(w, "  --version                 Show build-brief version")
 	fmt.Fprintln(w, "  --help, -h                Show this help")
 	fmt.Fprintln(w, "  --install                 Local-only: append build-brief instructions to AGENTS.md in the current directory")
@@ -388,6 +415,25 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  BUILD_BRIEF_GRADLE_PATH")
 	fmt.Fprintln(w, "  BUILD_BRIEF_GRADLE_USER_HOME")
 	fmt.Fprintln(w, "  BUILD_BRIEF_LOG_DIR")
+	fmt.Fprintln(w, "  BUILD_BRIEF_CONFIG")
+}
+
+func compileCustomMatches(cfg config.Config) ([]reducer.CustomMatchRule, error) {
+	if len(cfg.Matches) == 0 {
+		return nil, nil
+	}
+	rules := make([]reducer.CustomMatchRule, 0, len(cfg.Matches))
+	for _, match := range cfg.Matches {
+		pattern, err := regexp.Compile(strings.TrimSpace(match.Pattern))
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, reducer.CustomMatchRule{
+			Name:    strings.TrimSpace(match.Name),
+			Pattern: pattern,
+		})
+	}
+	return rules, nil
 }
 
 type gainsOptions struct {
