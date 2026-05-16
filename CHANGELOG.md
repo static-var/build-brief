@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.0.10 - 2026-05-16
+
+- Support custom regex matches (5577a7d)
+
 ## v0.0.9 - 2026-05-10
 
 - Surface Develocity build scan URLs (c85b266)
