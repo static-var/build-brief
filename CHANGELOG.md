@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.0.11 - 2026-05-20
+
+- Fix Claude hook stdin payload (996b73f)
+
 ## v0.0.10 - 2026-05-16
 
 - Support custom regex matches (5577a7d)
