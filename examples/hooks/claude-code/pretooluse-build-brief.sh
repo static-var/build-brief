@@ -2,20 +2,16 @@
 
 set -euo pipefail
 
-if [[ "${CLAUDE_TOOL_NAME:-}" != "Bash" ]]; then
-  exit 0
-fi
-
 if ! command -v build-brief >/dev/null 2>&1; then
   exit 0
 fi
 
-tool_input="${CLAUDE_TOOL_INPUT:-}"
-if [[ -z "$tool_input" ]]; then
+payload="$(cat)"
+if [[ -z "$payload" ]]; then
   exit 0
 fi
 
-original_command="$(python3 - "$tool_input" <<'PY'
+original_command="$(python3 - "$payload" <<'PY'
 import json
 import sys
 
@@ -25,12 +21,26 @@ except Exception:
     print("")
     raise SystemExit(0)
 
-command = payload.get("command", "")
+if not isinstance(payload, dict):
+    print("")
+    raise SystemExit(0)
+
+tool_name = payload.get("tool_name", "")
+if tool_name != "Bash":
+    print("")
+    raise SystemExit(0)
+
+tool_input = payload.get("tool_input", {})
+if not isinstance(tool_input, dict):
+    print("")
+    raise SystemExit(0)
+
+command = tool_input.get("command", "")
 print(command if isinstance(command, str) else "")
 PY
 )"
 
-if [[ -z "$original_command" ]]; then
+if [[ -z "$original_command" || "$original_command" == *"build-brief"* ]]; then
   exit 0
 fi
 
