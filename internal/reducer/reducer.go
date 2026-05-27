@@ -17,19 +17,25 @@ import (
 )
 
 var (
-	taskFailurePattern   = regexp.MustCompile(`^> Task (.+) FAILED$`)
-	taskExecutionPattern = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
-	testFailurePattern   = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
-	javacErrorPattern    = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
-	urlPattern           = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
-	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-	maxWarnings          = 8
-	maxImportantLines    = 12
-	maxCustomMatchLines  = 8
-	contextCaptureLines  = 2
-	compilerCaptureLines = 3
-	maxJUnitReportFiles  = 100
-	junitTimeSkew        = time.Second
+	taskFailurePattern              = regexp.MustCompile(`^> Task (.+) FAILED$`)
+	taskExecutionPattern            = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
+	testFailurePattern              = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
+	javacErrorPattern               = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
+	urlPattern                      = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
+	ansiPattern                     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	configCacheReusedPattern         = regexp.MustCompile(`^Configuration cache entry reused\.$`)
+	configCacheStoredPattern         = regexp.MustCompile(`^Configuration cache entry stored\.$`)
+	configCacheProblemSummaryPattern = regexp.MustCompile(`\d+ problems? (?:were found|found) storing the configuration cache`)
+	configCacheProblemDetailPattern  = regexp.MustCompile(`^- Script '[^']+': line \d+: .+`)
+	configCacheReportPattern         = regexp.MustCompile(`^See the complete report at (file://\S+)`)
+	maxWarnings                     = 8
+	maxImportantLines               = 12
+	maxCustomMatchLines             = 8
+	maxConfigCacheLines             = 8
+	contextCaptureLines             = 2
+	compilerCaptureLines            = 3
+	maxJUnitReportFiles             = 100
+	junitTimeSkew                   = time.Second
 )
 
 type Artifact = artifacts.Artifact
@@ -74,6 +80,9 @@ type Summary struct {
 	Warnings                  []string            `json:"warnings"`
 	ImportantLines            []string            `json:"important_lines"`
 	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
+	ConfigCacheStatus         string              `json:"config_cache_status,omitempty"`
+	ConfigCacheProblems       []string            `json:"config_cache_problems,omitempty"`
+	ConfigCacheReportURL      string              `json:"config_cache_report_url,omitempty"`
 	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
 	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
 	GeneratedClassFileCount   int                 `json:"generated_class_file_count,omitempty"`
@@ -124,9 +133,10 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		FailedTests:    []string{},
 		Warnings:       []string{},
 		ImportantLines: []string{},
-		BuildScanURLs:  []string{},
-		CustomMatches:  customMatchResults(opts.CustomMatches),
-		Artifacts:      []Artifact{},
+		BuildScanURLs:       []string{},
+		ConfigCacheProblems: []string{},
+		CustomMatches:       customMatchResults(opts.CustomMatches),
+		Artifacts:           []Artifact{},
 	}
 
 	failedTasks := make(map[string]struct{})
@@ -134,6 +144,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	warnings := make(map[string]struct{})
 	important := make(map[string]struct{})
 	buildScanURLs := make(map[string]struct{})
+	configCacheProblemSeen := make(map[string]struct{})
 	customMatchSeen := make([]map[string]struct{}, len(opts.CustomMatches))
 	for i := range customMatchSeen {
 		customMatchSeen[i] = make(map[string]struct{})
@@ -208,6 +219,18 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			} else {
 				captureBuildScanURLRemaining--
 			}
+		}
+
+		if configCacheReusedPattern.MatchString(text) {
+			summary.ConfigCacheStatus = "reused"
+		} else if configCacheStoredPattern.MatchString(text) {
+			summary.ConfigCacheStatus = "stored"
+		} else if configCacheProblemDetailPattern.MatchString(text) {
+			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, strings.TrimPrefix(text, "- "), maxConfigCacheLines)
+		} else if configCacheProblemSummaryPattern.MatchString(text) {
+			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, text, maxConfigCacheLines)
+		} else if m := configCacheReportPattern.FindStringSubmatch(text); m != nil {
+			summary.ConfigCacheReportURL = m[1]
 		}
 
 		for i, rule := range opts.CustomMatches {

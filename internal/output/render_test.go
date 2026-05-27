@@ -123,6 +123,66 @@ func TestRenderHumanShowsCustomMatchesOnSuccess(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsConfigCacheStatusAsPlainLine(t *testing.T) {
+	for _, tc := range []struct {
+		status   string
+		expected string
+	}{
+		{"reused", "Configuration cache entry reused."},
+		{"stored", "Configuration cache entry stored."},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			summary := reducer.Summary{
+				Success:           true,
+				BuildStatusLine:   "BUILD SUCCESSFUL in 3s",
+				ConfigCacheStatus: tc.status,
+			}
+
+			var out bytes.Buffer
+			if err := RenderHuman(&out, summary); err != nil {
+				t.Fatalf("render: %v", err)
+			}
+
+			rendered := out.String()
+			if !strings.Contains(rendered, tc.expected) {
+				t.Fatalf("expected output to contain %q, got %q", tc.expected, rendered)
+			}
+			if strings.Contains(rendered, "Configuration cache:") {
+				t.Fatalf("expected no section header, got %q", rendered)
+			}
+		})
+	}
+}
+
+func TestRenderHumanShowsConfigCacheSection(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 3s",
+		ConfigCacheProblems: []string{
+			"2 problems were found storing the configuration cache.",
+			"Script 'build.gradle': line 12: external process started 'git --version'",
+		},
+		ConfigCacheReportURL: "file:///tmp/build/reports/configuration-cache/abc/configuration-cache-report.html",
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"Configuration cache:",
+		"2 problems were found storing the configuration cache.",
+		"Script 'build.gradle': line 12: external process started 'git --version'",
+		"Report: file:///tmp/build/reports/configuration-cache/abc/configuration-cache-report.html",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,

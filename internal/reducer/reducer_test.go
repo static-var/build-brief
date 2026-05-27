@@ -804,3 +804,79 @@ func containsArtifact(artifacts []Artifact, kind, path string) bool {
 	}
 	return false
 }
+
+func TestReduceConfigCacheStatus(t *testing.T) {
+	for _, tc := range []struct {
+		line   string
+		status string
+	}{
+		{"Configuration cache entry reused.", "reused"},
+		{"Configuration cache entry stored.", "stored"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			command := gradle.Command{
+				Executable: "/tmp/gradlew",
+				Args:       []string{"assemble"},
+				ProjectDir: "/tmp/project",
+				Source:     gradle.SourceWrapper,
+			}
+			result := runner.Result{
+				ExitCode: 0,
+				Duration: 2 * time.Second,
+				RawLogPath: writeTestLog(t, []string{
+					tc.line,
+					"BUILD SUCCESSFUL in 2s",
+				}),
+			}
+			summary, err := Reduce(command, result)
+			if err != nil {
+				t.Fatalf("reduce: %v", err)
+			}
+			if summary.ConfigCacheStatus != tc.status {
+				t.Fatalf("expected status %q, got %q", tc.status, summary.ConfigCacheStatus)
+			}
+		})
+	}
+}
+
+func TestReduceConfigCacheProblems(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"assemble"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: 4 * time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :app:compileDebugKotlin",
+			"2 problems were found storing the configuration cache entry.",
+			"- Script 'build.gradle': line 12: external process started 'git --version'",
+			"- Script 'settings.gradle': line 5: external process started 'uname -a'",
+			"See the complete report at file:///tmp/project/build/reports/configuration-cache/abc123/configuration-cache-report.html",
+			"BUILD SUCCESSFUL in 4s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce config cache log: %v", err)
+	}
+
+	if len(summary.ConfigCacheProblems) != 3 {
+		t.Fatalf("expected 3 config cache problems, got %d: %v", len(summary.ConfigCacheProblems), summary.ConfigCacheProblems)
+	}
+	if summary.ConfigCacheProblems[0] != "2 problems were found storing the configuration cache entry." {
+		t.Fatalf("unexpected summary line: %q", summary.ConfigCacheProblems[0])
+	}
+	if summary.ConfigCacheProblems[1] != "Script 'build.gradle': line 12: external process started 'git --version'" {
+		t.Fatalf("unexpected first problem: %q", summary.ConfigCacheProblems[1])
+	}
+	if summary.ConfigCacheProblems[2] != "Script 'settings.gradle': line 5: external process started 'uname -a'" {
+		t.Fatalf("unexpected second problem: %q", summary.ConfigCacheProblems[2])
+	}
+	if summary.ConfigCacheReportURL != "file:///tmp/project/build/reports/configuration-cache/abc123/configuration-cache-report.html" {
+		t.Fatalf("unexpected report URL: %q", summary.ConfigCacheReportURL)
+	}
+}

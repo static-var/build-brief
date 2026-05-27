@@ -49,6 +49,28 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if summary.ConfigCacheStatus != "" && len(summary.ConfigCacheProblems) == 0 && summary.ConfigCacheReportURL == "" {
+		if _, err := fmt.Fprintf(bw, "Configuration cache entry %s.\n", summary.ConfigCacheStatus); err != nil {
+			return err
+		}
+	}
+
+	if len(summary.ConfigCacheProblems) > 0 || summary.ConfigCacheReportURL != "" {
+		if _, err := fmt.Fprintln(bw, "Configuration cache:"); err != nil {
+			return err
+		}
+		for _, p := range summary.ConfigCacheProblems {
+			if _, err := fmt.Fprintf(bw, "  - %s\n", p); err != nil {
+				return err
+			}
+		}
+		if summary.ConfigCacheReportURL != "" {
+			if _, err := fmt.Fprintf(bw, "  Report: %s\n", summary.ConfigCacheReportURL); err != nil {
+				return err
+			}
+		}
+	}
+
 	if customMatches := nonEmptyCustomMatches(summary.CustomMatches); len(customMatches) > 0 {
 		if _, err := fmt.Fprintln(bw, "Custom matches:"); err != nil {
 			return err
