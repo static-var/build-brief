@@ -337,6 +337,70 @@ func TestRunRawModeStreamsOutput(t *testing.T) {
 	}
 }
 
+func TestRunHumanModePreservesInformationalTaskOutput(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '> Task :tasks'\necho \"Tasks runnable from root project 'sample'\"\necho 'assemble - Assembles the outputs of this project.'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		":tasks",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+
+	rendered := stdout.String()
+	for _, expected := range []string{
+		"> Task :tasks",
+		"Tasks runnable from root project 'sample'",
+		"assemble - Assembles the outputs of this project.",
+		"BUILD SUCCESSFUL in 1s",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected human output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
+func TestRunHumanModeHighlightsGeneratedOutputLocations(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots'\necho 'AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"captureComposePreviews",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+
+	rendered := stdout.String()
+	for _, expected := range []string{
+		"BUILD SUCCESSFUL in 1s",
+		"Highlights:",
+		"AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots",
+		"AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected human output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
 func TestRunHumanModeUsesDefaultProjectConfig(t *testing.T) {
 	projectDir := t.TempDir()
 	configPath := filepath.Join(projectDir, ".build-brief.json")

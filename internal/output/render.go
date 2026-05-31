@@ -13,8 +13,22 @@ import (
 func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	bw := bufio.NewWriter(w)
 	statusLine := renderStatusLine(summary)
-	if _, err := fmt.Fprintln(bw, statusLine); err != nil {
-		return err
+	if len(summary.ReportLines) > 0 {
+		for _, line := range summary.ReportLines {
+			if _, err := fmt.Fprintln(bw, line); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(bw); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(bw, statusLine); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintln(bw, statusLine); err != nil {
+			return err
+		}
 	}
 
 	if summary.PassedTestCount > 0 || summary.FailedTestCount > 0 {
@@ -93,6 +107,16 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	}
 
 	if summary.Success {
+		if importantLines := filteredImportantLines(summary, statusLine); len(importantLines) > 0 {
+			if _, err := fmt.Fprintln(bw, "Highlights:"); err != nil {
+				return err
+			}
+			for _, line := range importantLines {
+				if _, err := fmt.Fprintf(bw, "  - %s\n", line); err != nil {
+					return err
+				}
+			}
+		}
 		return bw.Flush()
 	}
 
