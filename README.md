@@ -17,7 +17,7 @@ For full docs, real before/after examples, agent setup, hook guidance, limitatio
 - Wraps either `gradle` or `./gradlew`
 - Preserves the Gradle exit code
 - Keeps the full raw log on disk
-- Returns failed tasks, failed tests, warnings, build scan URLs, configured custom regex matches, artifacts, and final status
+- Returns failed tasks, failed tests, warnings, build scan URLs, configured custom regex matches, generated output paths, artifacts, report-task output, and final status
 - Normalizes output-shaping flags so reduction stays stable
 - Reuses or starts the Gradle daemon by default
 - Works across Spring Boot, Ktor, Android, Kotlin Multiplatform, plain JVM, and multi-project builds
@@ -70,6 +70,22 @@ Tests: 2 passed, 0 failed
 Warnings: 1
   - OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
 ```
+
+Report-style Gradle commands keep their report body in the default human output:
+
+```text
+$ build-brief gradle :tasks
+> Task :tasks
+Tasks runnable from root project 'sample'
+Build tasks
+-----------
+assemble - Assembles the outputs of this project.
+
+BUILD SUCCESSFUL in 400ms
+```
+
+Successful tasks can also surface generated output locations when tools print
+lines like `AgentPreview report written to: ...`.
 
 Example failed test run:
 
@@ -216,6 +232,7 @@ If your agent tool supports `AGENTS.md` or an instructions file, a simple defaul
 Use `build-brief` for routine Gradle commands.
 Prefer `build-brief gradle ...` or `build-brief ./gradlew ...` over raw Gradle calls.
 For chained shell commands, rewrite each Gradle segment, for example `build-brief gradle test && build-brief gradle check`.
+Use the default output for report-style Gradle commands like `tasks`, `help`, `projects`, `dependencies`, and `dependencyInsight`; build-brief preserves their report body.
 Fall back to raw Gradle only when the reduced summary is not enough.
 ```
 

@@ -74,6 +74,7 @@ type Summary struct {
 	Warnings                  []string            `json:"warnings"`
 	ImportantLines            []string            `json:"important_lines"`
 	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
+	ReportLines               []string            `json:"report_lines,omitempty"`
 	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
 	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
 	GeneratedClassFileCount   int                 `json:"generated_class_file_count,omitempty"`
@@ -125,6 +126,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		Warnings:       []string{},
 		ImportantLines: []string{},
 		BuildScanURLs:  []string{},
+		ReportLines:    []string{},
 		CustomMatches:  customMatchResults(opts.CustomMatches),
 		Artifacts:      []Artifact{},
 	}
@@ -140,6 +142,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	artifactHints := make([]string, 0)
 	artifactHintSeen := make(map[string]struct{})
+	invocationShape := gradle.AnalyzeArgs(command.Args)
 
 	file, err := os.Open(result.RawLogPath)
 	if err != nil {
@@ -189,7 +192,15 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			summary.BuildStatusLine = text
 		}
 
+		if invocationShape.IsPureInformational && shouldPreserveReportLine(text) {
+			summary.ReportLines = append(summary.ReportLines, text)
+		}
+
 		if isImportantLine(text) {
+			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+		}
+
+		if isGeneratedOutputLocationLine(text) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 		}
 
@@ -293,10 +304,7 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 }
 
 func shouldReportAvailableArtifacts(command []string) bool {
-	for _, arg := range command {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
+	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
@@ -348,10 +356,7 @@ func filterAvailableArtifacts(found []Artifact, command []string) []Artifact {
 func commandProjectPrefixes(command []string) []string {
 	seen := make(map[string]struct{})
 	prefixes := make([]string, 0)
-	for _, arg := range command {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
+	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
 		lastColon := strings.LastIndex(arg, ":")
 		if lastColon <= 0 {
 			continue
@@ -644,10 +649,7 @@ func extractRelevantStackFrame(stack string) string {
 }
 
 func shouldFallbackToAvailableJUnitReports(command []string) bool {
-	for _, arg := range command {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
+	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
@@ -719,6 +721,30 @@ func shouldCaptureCompilerContextLine(text string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldPreserveReportLine(text string) bool {
+	if text == "" {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(text, "BUILD SUCCESSFUL"):
+		return false
+	case strings.HasPrefix(text, "BUILD FAILED"):
+		return false
+	case strings.Contains(text, " actionable task"):
+		return false
+	case strings.HasPrefix(text, "Consider enabling configuration cache"):
+		return false
+	default:
+		return true
+	}
+}
+
+func isGeneratedOutputLocationLine(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, " written to: ") &&
+		(strings.Contains(text, "/") || strings.Contains(text, `\`))
 }
 
 func normalizeLine(text string) string {
