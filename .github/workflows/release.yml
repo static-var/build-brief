@@ -60,7 +60,7 @@ jobs:
       - name: Prepare release metadata
         id: prepare
         run: |
-          chmod +x scripts/prepare-release.sh scripts/build-artifacts.sh scripts/generate-homebrew-formula.sh scripts/validate-homebrew-formula.sh scripts/publish-homebrew-tap.sh
+          chmod +x scripts/prepare-release.sh scripts/build-artifacts.sh scripts/generate-homebrew-formula.sh scripts/validate-homebrew-formula.sh scripts/publish-homebrew-tap.sh scripts/append-generated-release-notes.sh
           scripts/prepare-release.sh \
             --bump "${{ inputs.bump }}" \
             --version "${{ inputs.version }}" \
@@ -106,6 +106,25 @@ jobs:
         if: steps.prepare.outputs.tag_exists != 'true'
         run: git push origin "${{ steps.prepare.outputs.tag }}"
 
+      - name: Generate GitHub changelog notes
+        id: github-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          generated_notes_file=".release/github-generated-notes.md"
+          combined_notes_file=".release/release-notes-with-github-changelog.md"
+
+          gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${{ steps.prepare.outputs.tag }}" \
+            -q '.body' > "$generated_notes_file"
+
+          scripts/append-generated-release-notes.sh \
+            --notes-file "${{ steps.prepare.outputs.notes_file }}" \
+            --generated-file "$generated_notes_file" \
+            --output "$combined_notes_file"
+
+          echo "notes_file=$combined_notes_file" >> "$GITHUB_OUTPUT"
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -113,7 +132,7 @@ jobs:
           path: |
             dist/*
             .release/build-brief.rb
-            .release/release-notes.md
+            .release/*.md
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -125,13 +144,13 @@ jobs:
             gh release edit "${{ steps.prepare.outputs.tag }}" \
               --repo "${{ github.repository }}" \
               --title "build-brief ${{ steps.prepare.outputs.tag }}" \
-              --notes-file "${{ steps.prepare.outputs.notes_file }}"
+              --notes-file "${{ steps.github-notes.outputs.notes_file }}"
           else
             gh release create "${{ steps.prepare.outputs.tag }}" \
               dist/* \
               --repo "${{ github.repository }}" \
               --title "build-brief ${{ steps.prepare.outputs.tag }}" \
-              --notes-file "${{ steps.prepare.outputs.notes_file }}"
+              --notes-file "${{ steps.github-notes.outputs.notes_file }}"
           fi
 
       - name: Publish Homebrew tap
