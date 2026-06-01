@@ -784,6 +784,8 @@ func shouldPreserveReportLine(text string) bool {
 		return false
 	case strings.HasPrefix(text, "Consider enabling configuration cache"):
 		return false
+	case strings.HasPrefix(text, "Configuration cache entry "):
+		return false
 	default:
 		return true
 	}
