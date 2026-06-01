@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.12 - 2026-06-01
+
+- Add generated changelog to release notes (#17) (8eb872e)
+- Fix installer release downloads (#16) (e3c9ed3)
+- Fix configuration cache report duplication (#15) (2320a7c)
+- Surface Gradle Configuration Cache status and problems (#11) (764017d)
+- Preserve Gradle report output (#12) (358c1ac)
+
 ## v0.0.11 - 2026-05-20
 
 - Fix Claude hook stdin payload (996b73f)
