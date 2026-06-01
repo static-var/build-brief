@@ -211,6 +211,53 @@ func TestSplitInvocationLeavesTaskOnlyArgsAlone(t *testing.T) {
 	}
 }
 
+func TestAnalyzeArgsClassifiesPureInformationalTasks(t *testing.T) {
+	shape := AnalyzeArgs([]string{
+		"--console=plain",
+		"-p", "smoke/projects/jvm-junit",
+		":app:tasks",
+		"--all",
+	})
+
+	if !shape.IsPureInformational {
+		t.Fatalf("expected informational shape, got %+v", shape)
+	}
+	if got := strings.Join(shape.TaskSelectors, ","); got != ":app:tasks" {
+		t.Fatalf("unexpected task selectors %q", got)
+	}
+}
+
+func TestAnalyzeArgsConsumesInformationalOptionValues(t *testing.T) {
+	shape := AnalyzeArgs([]string{
+		"--console=plain",
+		"help",
+		"--task", "test",
+		"dependencyInsight",
+		"--dependency=junit",
+		"--configuration", "testRuntimeClasspath",
+	})
+
+	if !shape.IsPureInformational {
+		t.Fatalf("expected informational shape, got %+v", shape)
+	}
+	if got := strings.Join(shape.TaskSelectors, ","); got != "help,dependencyInsight" {
+		t.Fatalf("unexpected task selectors %q", got)
+	}
+}
+
+func TestAnalyzeArgsDoesNotClassifyMixedOrOptionValueTasks(t *testing.T) {
+	for _, args := range [][]string{
+		{"tasks", "build"},
+		{"help", "--task", "test", "build"},
+		{"test", "-x", "tasks"},
+		{"listTasks"},
+	} {
+		if shape := AnalyzeArgs(args); shape.IsPureInformational {
+			t.Fatalf("did not expect %v to be informational, got %+v", args, shape)
+		}
+	}
+}
+
 func TestValidateArgsRejectsQuietFlag(t *testing.T) {
 	if err := ValidateArgs([]string{"--quiet", "test"}); err != nil {
 		t.Fatalf("expected quiet flag to be accepted and sanitized later, got %v", err)

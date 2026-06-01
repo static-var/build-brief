@@ -27,6 +27,67 @@ func TestRenderHumanKeepsSuccessConcise(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsInformationalReportOnSuccess(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		CommandLine:     "gradle tasks",
+		ReportLines: []string{
+			"> Task :tasks",
+			"Tasks runnable from root project 'sample'",
+			"Build tasks",
+			"assemble - Assembles the outputs of this project.",
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render success output with report: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"> Task :tasks",
+		"Tasks runnable from root project 'sample'",
+		"assemble - Assembles the outputs of this project.",
+		"BUILD SUCCESSFUL in 1s",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected report output to contain %q, got %q", expected, rendered)
+		}
+	}
+	if strings.Index(rendered, "> Task :tasks") > strings.Index(rendered, "BUILD SUCCESSFUL in 1s") {
+		t.Fatalf("expected report body before status, got %q", rendered)
+	}
+}
+
+func TestRenderHumanShowsHighlightsOnSuccess(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		ImportantLines: []string{
+			"BUILD SUCCESSFUL in 1s",
+			"AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json",
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render success output with highlights: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"BUILD SUCCESSFUL in 1s",
+		"Highlights:",
+		"AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected success highlights to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
 func TestRenderHumanKeepsFailureDetails(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         false,

@@ -17,27 +17,27 @@ import (
 )
 
 var (
-	taskFailurePattern              = regexp.MustCompile(`^> Task (.+) FAILED$`)
-	taskExecutionPattern            = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
-	testFailurePattern              = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
-	javacErrorPattern               = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
-	urlPattern                      = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
-	ansiPattern                     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	taskFailurePattern   = regexp.MustCompile(`^> Task (.+) FAILED$`)
+	taskExecutionPattern = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
+	testFailurePattern   = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
+	javacErrorPattern    = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
+	urlPattern           = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
+	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	// Status verbs and summary verbs mirror Gradle's own output (ConfigurationCacheProblems.kt
 	// status lines + ConfigurationCacheProblemsFixture.groovy header regex): the cache action is
 	// one of store/load/update -> stored/reused/updated and storing/reusing/updating.
 	configCacheStatusPattern         = regexp.MustCompile(`^Configuration cache entry (reused|stored|discarded|updated)\b`)
 	configCacheProblemSummaryPattern = regexp.MustCompile(`^\d+ problems? (?:was|were) found (?:storing|reusing|updating) the configuration cache`)
 	configCacheReportPattern         = regexp.MustCompile(`^See the complete report at (file://\S+)`)
-	maxWarnings                     = 8
-	maxImportantLines               = 12
-	maxCustomMatchLines             = 8
-	maxConfigCacheLines             = 8
-	configCacheCaptureLines         = 4
-	contextCaptureLines             = 2
-	compilerCaptureLines            = 3
-	maxJUnitReportFiles             = 100
-	junitTimeSkew                   = time.Second
+	maxWarnings                      = 8
+	maxImportantLines                = 12
+	maxCustomMatchLines              = 8
+	maxConfigCacheLines              = 8
+	configCacheCaptureLines          = 4
+	contextCaptureLines              = 2
+	compilerCaptureLines             = 3
+	maxJUnitReportFiles              = 100
+	junitTimeSkew                    = time.Second
 )
 
 type Artifact = artifacts.Artifact
@@ -85,6 +85,7 @@ type Summary struct {
 	ConfigCacheStatus         string              `json:"config_cache_status,omitempty"`
 	ConfigCacheProblems       []string            `json:"config_cache_problems,omitempty"`
 	ConfigCacheReportURL      string              `json:"config_cache_report_url,omitempty"`
+	ReportLines               []string            `json:"report_lines,omitempty"`
 	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
 	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
 	GeneratedClassFileCount   int                 `json:"generated_class_file_count,omitempty"`
@@ -129,14 +130,15 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			append([]string{filepath.Base(command.Executable)}, command.Args...),
 			" ",
 		),
-		Source:         string(command.Source),
-		RawLogPath:     result.RawLogPath,
-		FailedTasks:    []string{},
-		FailedTests:    []string{},
-		Warnings:       []string{},
-		ImportantLines: []string{},
+		Source:              string(command.Source),
+		RawLogPath:          result.RawLogPath,
+		FailedTasks:         []string{},
+		FailedTests:         []string{},
+		Warnings:            []string{},
+		ImportantLines:      []string{},
 		BuildScanURLs:       []string{},
 		ConfigCacheProblems: []string{},
+		ReportLines:         []string{},
 		CustomMatches:       customMatchResults(opts.CustomMatches),
 		Artifacts:           []Artifact{},
 	}
@@ -153,6 +155,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	artifactHints := make([]string, 0)
 	artifactHintSeen := make(map[string]struct{})
+	invocationShape := gradle.AnalyzeArgs(command.Args)
 
 	file, err := os.Open(result.RawLogPath)
 	if err != nil {
@@ -203,7 +206,15 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			summary.BuildStatusLine = text
 		}
 
+		if invocationShape.IsPureInformational && shouldPreserveReportLine(text) {
+			summary.ReportLines = append(summary.ReportLines, text)
+		}
+
 		if isImportantLine(text) {
+			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+		}
+
+		if isGeneratedOutputLocationLine(text) {
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 		}
 
@@ -325,10 +336,7 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 }
 
 func shouldReportAvailableArtifacts(command []string) bool {
-	for _, arg := range command {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
+	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
@@ -380,10 +388,7 @@ func filterAvailableArtifacts(found []Artifact, command []string) []Artifact {
 func commandProjectPrefixes(command []string) []string {
 	seen := make(map[string]struct{})
 	prefixes := make([]string, 0)
-	for _, arg := range command {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
+	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
 		lastColon := strings.LastIndex(arg, ":")
 		if lastColon <= 0 {
 			continue
@@ -692,10 +697,7 @@ func extractRelevantStackFrame(stack string) string {
 }
 
 func shouldFallbackToAvailableJUnitReports(command []string) bool {
-	for _, arg := range command {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
+	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
@@ -767,6 +769,30 @@ func shouldCaptureCompilerContextLine(text string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldPreserveReportLine(text string) bool {
+	if text == "" {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(text, "BUILD SUCCESSFUL"):
+		return false
+	case strings.HasPrefix(text, "BUILD FAILED"):
+		return false
+	case strings.Contains(text, " actionable task"):
+		return false
+	case strings.HasPrefix(text, "Consider enabling configuration cache"):
+		return false
+	default:
+		return true
+	}
+}
+
+func isGeneratedOutputLocationLine(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, " written to: ") &&
+		(strings.Contains(text, "/") || strings.Contains(text, `\`))
 }
 
 func normalizeLine(text string) string {

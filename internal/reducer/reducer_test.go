@@ -667,6 +667,90 @@ func TestReduceCapturesJavaSymbolErrorFromConsole(t *testing.T) {
 	}
 }
 
+func TestReducePreservesInformationalReportOutput(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "-p", "smoke/projects/jvm-junit", ":tasks", "--all"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :tasks",
+			"",
+			"------------------------------------------------------------",
+			"Tasks runnable from root project 'jvm-junit-smoke'",
+			"------------------------------------------------------------",
+			"",
+			"Build tasks",
+			"-----------",
+			"assemble - Assembles the outputs of this project.",
+			"BUILD SUCCESSFUL in 1s",
+			"1 actionable task: 1 executed",
+			"Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.5.1/userguide/configuration_cache_enabling.html",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce informational report: %v", err)
+	}
+
+	for _, expected := range []string{
+		"> Task :tasks",
+		"Tasks runnable from root project 'jvm-junit-smoke'",
+		"Build tasks",
+		"assemble - Assembles the outputs of this project.",
+	} {
+		if !contains(summary.ReportLines, expected) {
+			t.Fatalf("expected report line %q in %v", expected, summary.ReportLines)
+		}
+	}
+	for _, unexpected := range []string{
+		"BUILD SUCCESSFUL in 1s",
+		"1 actionable task: 1 executed",
+		"Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.5.1/userguide/configuration_cache_enabling.html",
+	} {
+		if contains(summary.ReportLines, unexpected) {
+			t.Fatalf("did not expect report line %q in %v", unexpected, summary.ReportLines)
+		}
+	}
+}
+
+func TestReduceHighlightsGeneratedOutputLocations(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "captureComposePreviews"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots",
+			"AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json",
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce generated output locations: %v", err)
+	}
+
+	for _, expected := range []string{
+		"AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots",
+		"AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json",
+	} {
+		if !contains(summary.ImportantLines, expected) {
+			t.Fatalf("expected generated output highlight %q in %v", expected, summary.ImportantLines)
+		}
+	}
+}
+
 func TestReduceFindsGeneratedArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	projectDir := t.TempDir()
 	staleArtifact := filepath.Join(projectDir, "legacy", "build", "libs", "legacy.jar")
