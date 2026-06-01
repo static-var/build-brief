@@ -888,3 +888,193 @@ func containsArtifact(artifacts []Artifact, kind, path string) bool {
 	}
 	return false
 }
+
+func TestReduceConfigCacheStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		line   string
+		status string
+	}{
+		// Status lines mirror Gradle's ConfigurationCacheProblems.kt beforeComplete handler.
+		{"reused", "Configuration cache entry reused.", "reused"},
+		{"reused-with-problems", "Configuration cache entry reused with 3 problems.", "reused"},
+		{"stored", "Configuration cache entry stored.", "stored"},
+		{"stored-with-problems", "Configuration cache entry stored with 2 problems.", "stored"},
+		{"updated", "Configuration cache entry updated for 1 project, 2 up-to-date.", "updated"},
+		{"updated-with-problems", "Configuration cache entry updated for 1 project with 2 problems, 3 up-to-date.", "updated"},
+		{"discarded-with-problem", "Configuration cache entry discarded with 1 problem.", "discarded"},
+		{"discarded-too-many", "Configuration cache entry discarded with too many problems (512).", "discarded"},
+		{"discarded-serialization", "Configuration cache entry discarded due to serialization error.", "discarded"},
+		{"discarded", "Configuration cache entry discarded.", "discarded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := gradle.Command{
+				Executable: "/tmp/gradlew",
+				Args:       []string{"assemble"},
+				ProjectDir: "/tmp/project",
+				Source:     gradle.SourceWrapper,
+			}
+			result := runner.Result{
+				ExitCode: 0,
+				Duration: 2 * time.Second,
+				RawLogPath: writeTestLog(t, []string{
+					tc.line,
+					"BUILD SUCCESSFUL in 2s",
+				}),
+			}
+			summary, err := Reduce(command, result)
+			if err != nil {
+				t.Fatalf("reduce: %v", err)
+			}
+			if summary.ConfigCacheStatus != tc.status {
+				t.Fatalf("expected status %q, got %q", tc.status, summary.ConfigCacheStatus)
+			}
+		})
+	}
+}
+
+func TestReduceConfigCacheProblems(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"assemble"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	// Real Gradle 9.x configuration-cache output: a summary line, problem entries with
+	// varied location prefixes (Build file / Settings file / Script), indented per-problem
+	// doc-hint lines that must NOT be captured as problems, and the report URL.
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: 4 * time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :app:compileDebugKotlin",
+			"3 problems were found storing the configuration cache.",
+			"- Build file 'build.gradle': line 3: external process started 'git --version'",
+			"  See https://docs.gradle.org/9.5.1/userguide/configuration_cache.html#config_cache:requirements:external_processes",
+			"- Settings file 'settings.gradle': line 5: external process started 'uname -a'",
+			"  See https://docs.gradle.org/9.5.1/userguide/configuration_cache.html#config_cache:requirements:external_processes",
+			"- Script 'gradle/scripts/build-logic.gradle': line 8: external process started 'sw_vers'",
+			"See the complete report at file:///tmp/project/build/reports/configuration-cache/abc123/configuration-cache-report.html",
+			"BUILD SUCCESSFUL in 4s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce config cache log: %v", err)
+	}
+
+	expected := []string{
+		"3 problems were found storing the configuration cache.",
+		"Build file 'build.gradle': line 3: external process started 'git --version'",
+		"Settings file 'settings.gradle': line 5: external process started 'uname -a'",
+		"Script 'gradle/scripts/build-logic.gradle': line 8: external process started 'sw_vers'",
+	}
+	if len(summary.ConfigCacheProblems) != len(expected) {
+		t.Fatalf("expected %d config cache problems, got %d: %v", len(expected), len(summary.ConfigCacheProblems), summary.ConfigCacheProblems)
+	}
+	for i, want := range expected {
+		if summary.ConfigCacheProblems[i] != want {
+			t.Fatalf("unexpected config cache problem %d: got %q, want %q", i, summary.ConfigCacheProblems[i], want)
+		}
+	}
+	for _, problem := range summary.ConfigCacheProblems {
+		if strings.HasPrefix(problem, "See https://docs.gradle.org") {
+			t.Fatalf("doc-hint line should not be captured as a problem: %q", problem)
+		}
+	}
+	if summary.ConfigCacheReportURL != "file:///tmp/project/build/reports/configuration-cache/abc123/configuration-cache-report.html" {
+		t.Fatalf("unexpected report URL: %q", summary.ConfigCacheReportURL)
+	}
+}
+
+func TestReduceConfigCacheUpdatingSummaryAndTaskProblem(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"someTask"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	// Partial/incremental reuse: Gradle emits an "updating" summary header and a Kotlin-style
+	// "- Task `:x` of type `Y`:" problem line (backticks, not quotes). Gradle identifies problem
+	// lines with "- (.*)", which our "- " prefix check mirrors.
+	result := runner.Result{
+		ExitCode: 0,
+		Duration: 3 * time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :someTask",
+			"1 problem was found updating the configuration cache.",
+			"- Task `:someTask` of type `org.gradle.api.DefaultTask`: invocation of 'Task.project' at execution time is unsupported with the configuration cache.",
+			"  See https://docs.gradle.org/9.5.1/userguide/configuration_cache_requirements.html#config_cache:requirements:use_project_during_execution",
+			"See the complete report at file:///tmp/project/build/reports/configuration-cache/ghi789/configuration-cache-report.html",
+			"Configuration cache entry updated for 1 project, 2 up-to-date.",
+			"BUILD SUCCESSFUL in 3s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce updating config cache log: %v", err)
+	}
+
+	if summary.ConfigCacheStatus != "updated" {
+		t.Fatalf("expected updated status, got %q", summary.ConfigCacheStatus)
+	}
+	expected := []string{
+		"1 problem was found updating the configuration cache.",
+		"Task `:someTask` of type `org.gradle.api.DefaultTask`: invocation of 'Task.project' at execution time is unsupported with the configuration cache.",
+	}
+	if len(summary.ConfigCacheProblems) != len(expected) {
+		t.Fatalf("expected %d config cache problems, got %d: %v", len(expected), len(summary.ConfigCacheProblems), summary.ConfigCacheProblems)
+	}
+	for i, want := range expected {
+		if summary.ConfigCacheProblems[i] != want {
+			t.Fatalf("unexpected config cache problem %d: got %q, want %q", i, summary.ConfigCacheProblems[i], want)
+		}
+	}
+}
+
+func TestReduceConfigCacheSingularProblemAndDiscardedStatus(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"assemble"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: 2 * time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"1 problem was found storing the configuration cache.",
+			"- Build file 'build.gradle': line 3: external process started 'git --version'",
+			"  See https://docs.gradle.org/9.5.1/userguide/configuration_cache.html#config_cache:requirements:external_processes",
+			"See the complete report at file:///tmp/project/build/reports/configuration-cache/def456/configuration-cache-report.html",
+			"Configuration cache entry discarded with 1 problem.",
+			"BUILD FAILED in 2s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce singular config cache log: %v", err)
+	}
+
+	if summary.ConfigCacheStatus != "discarded" {
+		t.Fatalf("expected discarded status, got %q", summary.ConfigCacheStatus)
+	}
+	expected := []string{
+		"1 problem was found storing the configuration cache.",
+		"Build file 'build.gradle': line 3: external process started 'git --version'",
+	}
+	if len(summary.ConfigCacheProblems) != len(expected) {
+		t.Fatalf("expected %d config cache problems, got %d: %v", len(expected), len(summary.ConfigCacheProblems), summary.ConfigCacheProblems)
+	}
+	for i, want := range expected {
+		if summary.ConfigCacheProblems[i] != want {
+			t.Fatalf("unexpected config cache problem %d: got %q, want %q", i, summary.ConfigCacheProblems[i], want)
+		}
+	}
+	if summary.ConfigCacheReportURL != "file:///tmp/project/build/reports/configuration-cache/def456/configuration-cache-report.html" {
+		t.Fatalf("unexpected report URL: %q", summary.ConfigCacheReportURL)
+	}
+}

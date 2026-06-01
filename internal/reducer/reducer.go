@@ -23,13 +23,21 @@ var (
 	javacErrorPattern    = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
 	urlPattern           = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-	maxWarnings          = 8
-	maxImportantLines    = 12
-	maxCustomMatchLines  = 8
-	contextCaptureLines  = 2
-	compilerCaptureLines = 3
-	maxJUnitReportFiles  = 100
-	junitTimeSkew        = time.Second
+	// Status verbs and summary verbs mirror Gradle's own output (ConfigurationCacheProblems.kt
+	// status lines + ConfigurationCacheProblemsFixture.groovy header regex): the cache action is
+	// one of store/load/update -> stored/reused/updated and storing/reusing/updating.
+	configCacheStatusPattern         = regexp.MustCompile(`^Configuration cache entry (reused|stored|discarded|updated)\b`)
+	configCacheProblemSummaryPattern = regexp.MustCompile(`^\d+ problems? (?:was|were) found (?:storing|reusing|updating) the configuration cache`)
+	configCacheReportPattern         = regexp.MustCompile(`^See the complete report at (file://\S+)`)
+	maxWarnings                      = 8
+	maxImportantLines                = 12
+	maxCustomMatchLines              = 8
+	maxConfigCacheLines              = 8
+	configCacheCaptureLines          = 4
+	contextCaptureLines              = 2
+	compilerCaptureLines             = 3
+	maxJUnitReportFiles              = 100
+	junitTimeSkew                    = time.Second
 )
 
 type Artifact = artifacts.Artifact
@@ -74,6 +82,9 @@ type Summary struct {
 	Warnings                  []string            `json:"warnings"`
 	ImportantLines            []string            `json:"important_lines"`
 	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
+	ConfigCacheStatus         string              `json:"config_cache_status,omitempty"`
+	ConfigCacheProblems       []string            `json:"config_cache_problems,omitempty"`
+	ConfigCacheReportURL      string              `json:"config_cache_report_url,omitempty"`
 	ReportLines               []string            `json:"report_lines,omitempty"`
 	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
 	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
@@ -119,16 +130,17 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			append([]string{filepath.Base(command.Executable)}, command.Args...),
 			" ",
 		),
-		Source:         string(command.Source),
-		RawLogPath:     result.RawLogPath,
-		FailedTasks:    []string{},
-		FailedTests:    []string{},
-		Warnings:       []string{},
-		ImportantLines: []string{},
-		BuildScanURLs:  []string{},
-		ReportLines:    []string{},
-		CustomMatches:  customMatchResults(opts.CustomMatches),
-		Artifacts:      []Artifact{},
+		Source:              string(command.Source),
+		RawLogPath:          result.RawLogPath,
+		FailedTasks:         []string{},
+		FailedTests:         []string{},
+		Warnings:            []string{},
+		ImportantLines:      []string{},
+		BuildScanURLs:       []string{},
+		ConfigCacheProblems: []string{},
+		ReportLines:         []string{},
+		CustomMatches:       customMatchResults(opts.CustomMatches),
+		Artifacts:           []Artifact{},
 	}
 
 	failedTasks := make(map[string]struct{})
@@ -136,6 +148,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	warnings := make(map[string]struct{})
 	important := make(map[string]struct{})
 	buildScanURLs := make(map[string]struct{})
+	configCacheProblemSeen := make(map[string]struct{})
 	customMatchSeen := make([]map[string]struct{}, len(opts.CustomMatches))
 	for i := range customMatchSeen {
 		customMatchSeen[i] = make(map[string]struct{})
@@ -154,6 +167,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	captureContextRemaining := 0
 	captureCompilerRemaining := 0
 	captureBuildScanURLRemaining := 0
+	captureConfigCacheRemaining := 0
 	for {
 		rawLine, err := reader.ReadString('\n')
 		if len(rawLine) == 0 && err != nil {
@@ -218,6 +232,24 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining--
+			}
+		}
+
+		if status, ok := configCacheStatus(text); ok {
+			summary.ConfigCacheStatus = status
+		}
+		if m := configCacheReportPattern.FindStringSubmatch(text); m != nil {
+			summary.ConfigCacheReportURL = m[1]
+		}
+		if isConfigCacheProblemSummary(text) {
+			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, text, maxConfigCacheLines)
+			captureConfigCacheRemaining = configCacheCaptureLines
+		} else if captureConfigCacheRemaining > 0 {
+			if isConfigCacheProblemDetail(text) {
+				addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, strings.TrimPrefix(text, "- "), maxConfigCacheLines)
+				captureConfigCacheRemaining = configCacheCaptureLines
+			} else {
+				captureConfigCacheRemaining--
 			}
 		}
 
@@ -534,6 +566,22 @@ func isBuildScanMarkerLine(text string) bool {
 
 	return strings.Contains(lower, "develocity") &&
 		(strings.Contains(lower, "publishing") || strings.Contains(lower, "published"))
+}
+
+func configCacheStatus(text string) (string, bool) {
+	m := configCacheStatusPattern.FindStringSubmatch(text)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+func isConfigCacheProblemSummary(text string) bool {
+	return configCacheProblemSummaryPattern.MatchString(text)
+}
+
+func isConfigCacheProblemDetail(text string) bool {
+	return strings.HasPrefix(text, "- ")
 }
 
 func isWarningLine(text string) bool {
