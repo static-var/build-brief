@@ -23,15 +23,17 @@ var (
 	javacErrorPattern               = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
 	urlPattern                      = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
 	ansiPattern                     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-	configCacheReusedPattern         = regexp.MustCompile(`^Configuration cache entry reused\.$`)
-	configCacheStoredPattern         = regexp.MustCompile(`^Configuration cache entry stored\.$`)
-	configCacheProblemSummaryPattern = regexp.MustCompile(`\d+ problems? (?:were found|found) storing the configuration cache`)
-	configCacheProblemDetailPattern  = regexp.MustCompile(`^- Script '[^']+': line \d+: .+`)
+	// Status verbs and summary verbs mirror Gradle's own output (ConfigurationCacheProblems.kt
+	// status lines + ConfigurationCacheProblemsFixture.groovy header regex): the cache action is
+	// one of store/load/update -> stored/reused/updated and storing/reusing/updating.
+	configCacheStatusPattern         = regexp.MustCompile(`^Configuration cache entry (reused|stored|discarded|updated)\b`)
+	configCacheProblemSummaryPattern = regexp.MustCompile(`^\d+ problems? (?:was|were) found (?:storing|reusing|updating) the configuration cache`)
 	configCacheReportPattern         = regexp.MustCompile(`^See the complete report at (file://\S+)`)
 	maxWarnings                     = 8
 	maxImportantLines               = 12
 	maxCustomMatchLines             = 8
 	maxConfigCacheLines             = 8
+	configCacheCaptureLines         = 4
 	contextCaptureLines             = 2
 	compilerCaptureLines            = 3
 	maxJUnitReportFiles             = 100
@@ -162,6 +164,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	captureContextRemaining := 0
 	captureCompilerRemaining := 0
 	captureBuildScanURLRemaining := 0
+	captureConfigCacheRemaining := 0
 	for {
 		rawLine, err := reader.ReadString('\n')
 		if len(rawLine) == 0 && err != nil {
@@ -221,16 +224,22 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			}
 		}
 
-		if configCacheReusedPattern.MatchString(text) {
-			summary.ConfigCacheStatus = "reused"
-		} else if configCacheStoredPattern.MatchString(text) {
-			summary.ConfigCacheStatus = "stored"
-		} else if configCacheProblemDetailPattern.MatchString(text) {
-			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, strings.TrimPrefix(text, "- "), maxConfigCacheLines)
-		} else if configCacheProblemSummaryPattern.MatchString(text) {
-			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, text, maxConfigCacheLines)
-		} else if m := configCacheReportPattern.FindStringSubmatch(text); m != nil {
+		if status, ok := configCacheStatus(text); ok {
+			summary.ConfigCacheStatus = status
+		}
+		if m := configCacheReportPattern.FindStringSubmatch(text); m != nil {
 			summary.ConfigCacheReportURL = m[1]
+		}
+		if isConfigCacheProblemSummary(text) {
+			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, text, maxConfigCacheLines)
+			captureConfigCacheRemaining = configCacheCaptureLines
+		} else if captureConfigCacheRemaining > 0 {
+			if isConfigCacheProblemDetail(text) {
+				addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, strings.TrimPrefix(text, "- "), maxConfigCacheLines)
+				captureConfigCacheRemaining = configCacheCaptureLines
+			} else {
+				captureConfigCacheRemaining--
+			}
 		}
 
 		for i, rule := range opts.CustomMatches {
@@ -552,6 +561,22 @@ func isBuildScanMarkerLine(text string) bool {
 
 	return strings.Contains(lower, "develocity") &&
 		(strings.Contains(lower, "publishing") || strings.Contains(lower, "published"))
+}
+
+func configCacheStatus(text string) (string, bool) {
+	m := configCacheStatusPattern.FindStringSubmatch(text)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+func isConfigCacheProblemSummary(text string) bool {
+	return configCacheProblemSummaryPattern.MatchString(text)
+}
+
+func isConfigCacheProblemDetail(text string) bool {
+	return strings.HasPrefix(text, "- ")
 }
 
 func isWarningLine(text string) bool {
