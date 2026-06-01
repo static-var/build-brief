@@ -689,6 +689,7 @@ func TestReducePreservesInformationalReportOutput(t *testing.T) {
 			"assemble - Assembles the outputs of this project.",
 			"BUILD SUCCESSFUL in 1s",
 			"1 actionable task: 1 executed",
+			"Configuration cache entry stored.",
 			"Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.5.1/userguide/configuration_cache_enabling.html",
 		}),
 	}
@@ -711,6 +712,7 @@ func TestReducePreservesInformationalReportOutput(t *testing.T) {
 	for _, unexpected := range []string{
 		"BUILD SUCCESSFUL in 1s",
 		"1 actionable task: 1 executed",
+		"Configuration cache entry stored.",
 		"Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.5.1/userguide/configuration_cache_enabling.html",
 	} {
 		if contains(summary.ReportLines, unexpected) {
