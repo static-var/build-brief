@@ -56,6 +56,7 @@ build-brief ./gradlew test
 build-brief --gradle-user-home /tmp/build-brief-gradle-home ./gradlew test
 build-brief --config .build-brief.json connectedCheck
 build-brief gains --history
+build-brief doctor
 build-brief --help
 ```
 
@@ -127,6 +128,18 @@ matches in the brief:
 
 You can also point to a config file with `--config PATH` or
 `BUILD_BRIEF_CONFIG`. Invalid regex patterns fail fast before Gradle starts.
+
+## Build Brief Doctor
+
+Use `build-brief doctor` to run read-only checks before wrapping a Gradle command. Doctor validates the project directory, optional config file and custom regexes, Gradle resolution, wrapper health, Build Brief environment overrides, and basic install health. It does not execute Gradle or modify files.
+
+```bash
+build-brief doctor
+build-brief doctor --project-dir /path/to/project
+build-brief doctor --config .build-brief.json
+```
+
+Doctor exits `0` when no checks fail, `1` when one or more checks fail, and `2` for doctor usage errors. Warnings do not fail the command.
 
 ## Check your gains
 

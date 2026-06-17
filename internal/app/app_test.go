@@ -435,3 +435,120 @@ func TestRunHumanModeUsesDefaultProjectConfig(t *testing.T) {
 		t.Fatalf("expected custom match output, got %q", rendered)
 	}
 }
+
+func TestRunDoctorHealthyProject(t *testing.T) {
+	projectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
+	if err := os.MkdirAll(filepath.Join(projectDir, "gradle", "wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "gradle", "wrapper", "gradle-wrapper.properties"), []byte("distributionUrl=https://example.invalid/gradle.zip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "gradle", "wrapper", "gradle-wrapper.jar"), []byte("jar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", projectDir}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+	out := stdout.String()
+	for _, expected := range []string{"Build Brief Doctor", "Project", "Gradle", "PASS project directory", "Result: healthy"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("expected doctor output to contain %q, got %q", expected, out)
+		}
+	}
+}
+
+func TestRunDoctorFailureExitsOne(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", filepath.Join(t.TempDir(), "missing")}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "FAIL project directory") {
+		t.Fatalf("expected failure in stdout, got %q", stdout.String())
+	}
+}
+
+func TestRunDoctorUnknownFlagExitsTwo(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--bad-flag"}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown doctor flag") {
+		t.Fatalf("expected usage error in stderr, got %q", stderr.String())
+	}
+}
+
+func writeExecutable(t *testing.T, path string) {
+	t.Helper()
+	mode := os.FileMode(0o755)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho should-not-run > marker\n"), mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunDoctorInvalidCLIModeExitsTwo(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--mode", "json"}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid mode") {
+		t.Fatalf("expected invalid mode error, got %q", stderr.String())
+	}
+}
+
+func TestRunDoctorInvalidEnvModeExitsOneWithReport(t *testing.T) {
+	t.Setenv("BUILD_BRIEF_MODE", "json")
+	projectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", projectDir}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "FAIL mode") {
+		t.Fatalf("expected mode failure in report, got %q", stdout.String())
+	}
+}
+
+func TestRunDoctorGradleDirectoryFails(t *testing.T) {
+	projectDir := t.TempDir()
+	gradleDir := filepath.Join(projectDir, "not-gradle")
+	if err := os.Mkdir(gradleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", projectDir, "--gradle", gradleDir}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "FAIL resolution") {
+		t.Fatalf("expected gradle resolution failure, got %q", stdout.String())
+	}
+}
