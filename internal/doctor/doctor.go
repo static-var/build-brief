@@ -136,6 +136,8 @@ func checkMode(report *Report, mode string) {
 	switch strings.ToLower(trimmed) {
 	case "human", "raw":
 		report.add("Environment", "mode", StatusPass, trimmed)
+	case "json":
+		report.add("Environment", "mode", StatusPass, "human")
 	default:
 		report.add("Environment", "mode", StatusFail, "invalid mode", trimmed)
 	}
