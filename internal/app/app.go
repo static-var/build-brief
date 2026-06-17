@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"build-brief/internal/config"
+	"build-brief/internal/doctor"
 	"build-brief/internal/gradle"
 	"build-brief/internal/install"
 	"build-brief/internal/output"
@@ -45,6 +46,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return runGains(args[1:], stdout, stderr)
 		case "rewrite":
 			return runRewrite(args[1:], stdout, stderr)
+		case "doctor":
+			return runDoctor(args[1:], stdout, stderr)
 		}
 	}
 
@@ -199,6 +202,151 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	return runResult.ExitCode
 }
 
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	opts, err := parseDoctorArgs(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "build-brief doctor: %v\n\n", err)
+		writeDoctorUsage(stderr)
+		return 2
+	}
+	if opts.Help {
+		writeDoctorUsage(stdout)
+		return 0
+	}
+	if opts.ProjectDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "build-brief doctor: resolve project directory: %v\n", err)
+			return 1
+		}
+		opts.ProjectDir = wd
+	}
+	report := doctor.Check(doctor.Options{
+		ProjectDir:     opts.ProjectDir,
+		GradlePath:     opts.GradlePath,
+		LogDir:         opts.LogDir,
+		GradleUserHome: opts.GradleUserHome,
+		ConfigPath:     opts.ConfigPath,
+		Mode:           opts.Mode,
+		Version:        Version,
+	})
+	if err := doctor.WriteHuman(stdout, report); err != nil {
+		fmt.Fprintf(stderr, "build-brief doctor: write report: %v\n", err)
+		return 1
+	}
+	if report.HasFailures() {
+		return 1
+	}
+	return 0
+}
+
+func parseDoctorArgs(args []string) (Options, error) {
+	opts := Options{
+		Mode:           os.Getenv("BUILD_BRIEF_MODE"),
+		ProjectDir:     os.Getenv("BUILD_BRIEF_PROJECT_DIR"),
+		GradlePath:     os.Getenv("BUILD_BRIEF_GRADLE_PATH"),
+		LogDir:         os.Getenv("BUILD_BRIEF_LOG_DIR"),
+		GradleUserHome: os.Getenv("BUILD_BRIEF_GRADLE_USER_HOME"),
+		ConfigPath:     os.Getenv("BUILD_BRIEF_CONFIG"),
+	}
+	modeFromCLI := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			opts.Help = true
+		case strings.HasPrefix(arg, "--mode="):
+			opts.Mode = strings.TrimPrefix(arg, "--mode=")
+			modeFromCLI = true
+		case arg == "--mode":
+			value, next, err := nextArg(args, i, "--mode")
+			if err != nil {
+				return Options{}, err
+			}
+			opts.Mode = value
+			modeFromCLI = true
+			i = next
+		case strings.HasPrefix(arg, "--project-dir="):
+			opts.ProjectDir = strings.TrimPrefix(arg, "--project-dir=")
+		case arg == "--project-dir":
+			value, next, err := nextArg(args, i, "--project-dir")
+			if err != nil {
+				return Options{}, err
+			}
+			opts.ProjectDir = value
+			i = next
+		case strings.HasPrefix(arg, "--gradle="):
+			opts.GradlePath = strings.TrimPrefix(arg, "--gradle=")
+		case arg == "--gradle":
+			value, next, err := nextArg(args, i, "--gradle")
+			if err != nil {
+				return Options{}, err
+			}
+			opts.GradlePath = value
+			i = next
+		case strings.HasPrefix(arg, "--log-dir="):
+			opts.LogDir = strings.TrimPrefix(arg, "--log-dir=")
+		case arg == "--log-dir":
+			value, next, err := nextArg(args, i, "--log-dir")
+			if err != nil {
+				return Options{}, err
+			}
+			opts.LogDir = value
+			i = next
+		case strings.HasPrefix(arg, "--gradle-user-home="):
+			opts.GradleUserHome = strings.TrimPrefix(arg, "--gradle-user-home=")
+		case arg == "--gradle-user-home":
+			value, next, err := nextArg(args, i, "--gradle-user-home")
+			if err != nil {
+				return Options{}, err
+			}
+			opts.GradleUserHome = value
+			i = next
+		case strings.HasPrefix(arg, "--config="):
+			opts.ConfigPath = strings.TrimPrefix(arg, "--config=")
+		case arg == "--config":
+			value, next, err := nextArg(args, i, "--config")
+			if err != nil {
+				return Options{}, err
+			}
+			opts.ConfigPath = value
+			i = next
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return Options{}, fmt.Errorf("unknown doctor flag %q", arg)
+			}
+			return Options{}, fmt.Errorf("unexpected doctor argument %q", arg)
+		}
+	}
+	if modeFromCLI && !validDoctorMode(opts.Mode) {
+		return Options{}, fmt.Errorf("invalid mode %q (expected human or raw)", opts.Mode)
+	}
+	return opts, nil
+}
+
+func validDoctorMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "human", "raw":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeDoctorUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  build-brief doctor [doctor flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Doctor flags:")
+	fmt.Fprintln(w, "  --project-dir PATH        Project directory to inspect")
+	fmt.Fprintln(w, "  --gradle PATH             Explicit gradle/gradlew path to resolve")
+	fmt.Fprintln(w, "  --gradle-user-home PATH   Gradle user home path to inspect")
+	fmt.Fprintln(w, "  --log-dir PATH            Raw log directory path to inspect")
+	fmt.Fprintln(w, "  --config PATH             Optional custom match config file to validate")
+	fmt.Fprintln(w, "  --mode [human|raw]        Validate mode override; doctor output stays human")
+	fmt.Fprintln(w, "  --help, -h                Show doctor help")
+}
+
 func parseArgs(args []string) (Options, []string, error) {
 	opts := Options{
 		Mode:           envOrDefault("BUILD_BRIEF_MODE", "human"),
@@ -344,6 +492,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  build-brief gains [--project] [--history] [--format text|json]")
 	fmt.Fprintln(w, "  build-brief gains --reset")
 	fmt.Fprintln(w, "  build-brief rewrite <shell command>")
+	fmt.Fprintln(w, "  build-brief doctor [doctor flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Core flags:")
 	fmt.Fprintln(w, "  --mode [human|raw]        Output mode (default: human)")
@@ -369,6 +518,8 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  build-brief --install-force")
 	fmt.Fprintln(w, "  build-brief --global")
 	fmt.Fprintln(w, "  build-brief gains --history")
+	fmt.Fprintln(w, "  build-brief doctor")
+	fmt.Fprintln(w, "  build-brief doctor --project-dir /path/to/project")
 	fmt.Fprintln(w, "  build-brief rewrite 'gradle test'")
 	fmt.Fprintln(w, "  build-brief rewrite 'gradle test && gradle check'")
 	fmt.Fprintln(w)
@@ -391,6 +542,12 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Supported global tool registry:")
 	fmt.Fprintln(w, "  GitHub Copilot CLI, Claude Code, Codex App & CLI, OpenCode, Pi Coding Agent, Gemini CLI")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Doctor command:")
+	fmt.Fprintln(w, "  build-brief doctor")
+	fmt.Fprintln(w, "      Runs read-only checks for project paths, config, regexes, Gradle resolution, environment overrides, and install health.")
+	fmt.Fprintln(w, "      Exits 0 when there are no failures, 1 when checks fail, and 2 for doctor usage errors.")
+	fmt.Fprintln(w, "      Supports --project-dir, --gradle, --gradle-user-home, --log-dir, --config, --mode, and --help.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Rewrite command:")
 	fmt.Fprintln(w, "  build-brief rewrite")
