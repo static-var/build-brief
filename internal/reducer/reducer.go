@@ -56,6 +56,16 @@ type CustomMatchResult struct {
 	Matches []string `json:"matches"`
 }
 
+type Diagnostic struct {
+	ID         string   `json:"id"`
+	Category   string   `json:"category"`
+	Severity   string   `json:"severity"`
+	Summary    string   `json:"summary"`
+	Evidence   []string `json:"evidence"`
+	NextChecks []string `json:"next_checks,omitempty"`
+	Confidence string   `json:"confidence"`
+}
+
 type Summary struct {
 	SchemaVersion             string              `json:"schema_version"`
 	Tool                      string              `json:"tool"`
@@ -81,6 +91,7 @@ type Summary struct {
 	WarningCount              int                 `json:"warning_count"`
 	Warnings                  []string            `json:"warnings"`
 	ImportantLines            []string            `json:"important_lines"`
+	Diagnostics               []Diagnostic        `json:"diagnostics,omitempty"`
 	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
 	ConfigCacheStatus         string              `json:"config_cache_status,omitempty"`
 	ConfigCacheProblems       []string            `json:"config_cache_problems,omitempty"`
@@ -155,6 +166,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	artifactHints := make([]string, 0)
 	artifactHintSeen := make(map[string]struct{})
+	diagnosticEvidence := newDiagnosticEvidence()
 	invocationShape := gradle.AnalyzeArgs(command.Args)
 
 	file, err := os.Open(result.RawLogPath)
@@ -184,6 +196,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			}
 			continue
 		}
+		diagnosticEvidence.collect(text)
 
 		switch {
 		case taskFailurePattern.MatchString(text):
@@ -303,6 +316,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 
 	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important)
 	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints)
+	summary.Diagnostics = Diagnose(diagnosticEvidence, summary)
 
 	return summary, nil
 }

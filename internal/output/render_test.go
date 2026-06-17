@@ -279,3 +279,51 @@ func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderHumanShowsDiagnosisInsteadOfHighlights(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         false,
+		BuildStatusLine: "BUILD FAILED in 14s",
+		CommandLine:     "gradle compileDebugKotlin",
+		RawLogPath:      "/tmp/raw.log",
+		FailedTasks:     []string{":app:compileDebugKotlin"},
+		ImportantLines: []string{
+			"Execution failed for task ':app:compileDebugKotlin'.",
+			"e: Daemon compilation failed: Could not connect to Kotlin compile daemon",
+		},
+		Diagnostics: []reducer.Diagnostic{{
+			ID:         "kotlin_daemon_failure",
+			Category:   "kotlin",
+			Severity:   "error",
+			Summary:    "Kotlin compiler daemon failure",
+			Evidence:   []string{"Could not connect to Kotlin compile daemon", "Daemon compilation failed"},
+			NextChecks: []string{"Inspect Gradle/Kotlin JVM args", "Retry with --no-daemon only if daemon state looks corrupted"},
+			Confidence: "high",
+		}},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render failure output: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"BUILD FAILED in 14s",
+		"Diagnosis: Kotlin compiler daemon failure",
+		"Evidence:",
+		"Could not connect to Kotlin compile daemon",
+		"Next checks:",
+		"Inspect Gradle/Kotlin JVM args",
+		"Failed tasks:",
+		":app:compileDebugKotlin",
+		"Raw log: /tmp/raw.log",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected diagnostic output to contain %q, got %q", expected, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Highlights:") {
+		t.Fatalf("expected diagnostics to replace highlights, got %q", rendered)
+	}
+}
