@@ -132,3 +132,12 @@ func findResult(t *testing.T, report Report, check string) Result {
 	t.Fatalf("missing result %q in %+v", check, report.Results)
 	return Result{}
 }
+
+func TestRunTreatsJSONModeAsHumanCompatibility(t *testing.T) {
+	report := Run(Options{ProjectDir: t.TempDir(), Mode: "json"})
+
+	result := findResult(t, report, "mode")
+	if result.Status != StatusPass || result.Summary != "human" {
+		t.Fatalf("mode result = %+v, want PASS human", result)
+	}
+}

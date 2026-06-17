@@ -504,20 +504,23 @@ func writeExecutable(t *testing.T, path string) {
 	}
 }
 
-func TestRunDoctorInvalidCLIModeExitsTwo(t *testing.T) {
+func TestRunDoctorJSONCLIModeIsCompatibleWithHuman(t *testing.T) {
+	projectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	exitCode := Run(context.Background(), []string{"doctor", "--mode", "json"}, strings.NewReader(""), &stdout, &stderr)
+	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", projectDir, "--mode", "json"}, strings.NewReader(""), &stdout, &stderr)
 
-	if exitCode != 2 {
-		t.Fatalf("expected exit code 2, got %d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "invalid mode") {
-		t.Fatalf("expected invalid mode error, got %q", stderr.String())
+	if !strings.Contains(stdout.String(), "PASS mode: human") {
+		t.Fatalf("expected json mode to normalize to human, got %q", stdout.String())
 	}
 }
 
-func TestRunDoctorInvalidEnvModeExitsOneWithReport(t *testing.T) {
+func TestRunDoctorJSONEnvModeIsCompatibleWithHuman(t *testing.T) {
 	t.Setenv("BUILD_BRIEF_MODE", "json")
 	projectDir := t.TempDir()
 	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
@@ -526,11 +529,11 @@ func TestRunDoctorInvalidEnvModeExitsOneWithReport(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", projectDir}, strings.NewReader(""), &stdout, &stderr)
 
-	if exitCode != 1 {
-		t.Fatalf("expected exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "FAIL mode") {
-		t.Fatalf("expected mode failure in report, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "PASS mode: human") {
+		t.Fatalf("expected env json mode to normalize to human, got %q", stdout.String())
 	}
 }
 

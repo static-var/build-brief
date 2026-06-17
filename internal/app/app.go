@@ -318,18 +318,28 @@ func parseDoctorArgs(args []string) (Options, error) {
 			return Options{}, fmt.Errorf("unexpected doctor argument %q", arg)
 		}
 	}
-	if modeFromCLI && !validDoctorMode(opts.Mode) {
-		return Options{}, fmt.Errorf("invalid mode %q (expected human or raw)", opts.Mode)
+	if modeFromCLI {
+		mode, err := normalizeDoctorMode(opts.Mode)
+		if err != nil {
+			return Options{}, err
+		}
+		opts.Mode = mode
+	} else if strings.EqualFold(strings.TrimSpace(opts.Mode), "json") {
+		opts.Mode = "human"
 	}
 	return opts, nil
 }
 
-func validDoctorMode(mode string) bool {
+func normalizeDoctorMode(mode string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", "human", "raw":
-		return true
+	case "", "human":
+		return "human", nil
+	case "raw":
+		return "raw", nil
+	case "json":
+		return "human", nil
 	default:
-		return false
+		return "", fmt.Errorf("invalid mode %q (expected human or raw)", mode)
 	}
 }
 
