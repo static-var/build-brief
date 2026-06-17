@@ -146,6 +146,12 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		return err
 	}
 
+	if len(summary.Diagnostics) > 0 {
+		if err := renderDiagnostic(bw, summary.Diagnostics[0]); err != nil {
+			return err
+		}
+	}
+
 	if len(summary.FailedTasks) > 0 {
 		if _, err := fmt.Fprintln(bw, "Failed tasks:"); err != nil {
 			return err
@@ -168,13 +174,15 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
-	if importantLines := filteredImportantLines(summary, statusLine); len(importantLines) > 0 {
-		if _, err := fmt.Fprintln(bw, "Highlights:"); err != nil {
-			return err
-		}
-		for _, line := range importantLines {
-			if _, err := fmt.Fprintf(bw, "  - %s\n", line); err != nil {
+	if len(summary.Diagnostics) == 0 {
+		if importantLines := filteredImportantLines(summary, statusLine); len(importantLines) > 0 {
+			if _, err := fmt.Fprintln(bw, "Highlights:"); err != nil {
 				return err
+			}
+			for _, line := range importantLines {
+				if _, err := fmt.Fprintf(bw, "  - %s\n", line); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -184,6 +192,33 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	}
 
 	return bw.Flush()
+}
+
+func renderDiagnostic(w io.Writer, diagnostic reducer.Diagnostic) error {
+	if _, err := fmt.Fprintf(w, "Diagnosis: %s\n", diagnostic.Summary); err != nil {
+		return err
+	}
+	if len(diagnostic.Evidence) > 0 {
+		if _, err := fmt.Fprintln(w, "Evidence:"); err != nil {
+			return err
+		}
+		for _, evidence := range diagnostic.Evidence {
+			if _, err := fmt.Fprintf(w, "  - %s\n", evidence); err != nil {
+				return err
+			}
+		}
+	}
+	if len(diagnostic.NextChecks) > 0 {
+		if _, err := fmt.Fprintln(w, "Next checks:"); err != nil {
+			return err
+		}
+		for _, nextCheck := range diagnostic.NextChecks {
+			if _, err := fmt.Fprintf(w, "  - %s\n", nextCheck); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func nonEmptyCustomMatches(groups []reducer.CustomMatchResult) []reducer.CustomMatchResult {
