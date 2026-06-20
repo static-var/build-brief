@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.0 - 2026-06-20
+
+- fix reducer Kotlin diagnostics and scan links (#21) (107ab4f)
+- fix: align doctor json mode compatibility (#20) (f7af0b1)
+- feat: add gradle failure diagnostics (#19) (9c1c4f1)
+- feat: add build brief doctor (#18) (c8f69d1)
+
 ## v0.0.12 - 2026-06-01
 
 - Add generated changelog to release notes (#17) (8eb872e)
