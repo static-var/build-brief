@@ -177,6 +177,34 @@ func TestReduceCapturesSameLineBuildScanURL(t *testing.T) {
 	}
 }
 
+func TestReduceDoesNotTreatGradleHelpURLAsBuildScan(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"* Try:",
+			"> Run with --scan to get full insights from a Build Scan (powered by Develocity).",
+			"> Get more help at https://help.gradle.org.",
+			"BUILD FAILED in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce gradle help URL log: %v", err)
+	}
+
+	if len(summary.BuildScanURLs) != 0 {
+		t.Fatalf("did not expect Gradle help URL as build scan, got %v", summary.BuildScanURLs)
+	}
+}
+
 func TestReduceDoesNotTreatUnrelatedURLsAsBuildScans(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradlew",
@@ -664,6 +692,40 @@ func TestReduceCapturesJavaSymbolErrorFromConsole(t *testing.T) {
 	}
 	if !contains(summary.ImportantLines, "location: class App") {
 		t.Fatalf("expected location detail in important lines: %v", summary.ImportantLines)
+	}
+}
+
+func TestReduceCapturesKotlinSourceErrorFromConsole(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", ":shared:embedAndSignAppleFrameworkForXcode"},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode: 1,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :shared-ui:compileKotlinIosSimulatorArm64",
+			"/tmp/project/shared-ui/src/commonMain/kotlin/example/SharedNetworkIcon.kt:98:17: error: 'when' expression must be exhaustive. Add the 'Inverted' branch or an 'else' branch.",
+			"> Task :shared-ui:compileKotlinIosSimulatorArm64 FAILED",
+			"error: Compilation finished with errors",
+			"FAILURE: Build failed with an exception.",
+			"* What went wrong:",
+			"Execution failed for task ':shared-ui:compileKotlinIosSimulatorArm64'.",
+			"> Compilation finished with errors",
+			"BUILD FAILED in 2s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce kotlin source error log: %v", err)
+	}
+
+	expected := "/tmp/project/shared-ui/src/commonMain/kotlin/example/SharedNetworkIcon.kt:98:17: error: 'when' expression must be exhaustive. Add the 'Inverted' branch or an 'else' branch."
+	if !contains(summary.ImportantLines, expected) {
+		t.Fatalf("expected kotlin source error line in important lines: %v", summary.ImportantLines)
 	}
 }
 
