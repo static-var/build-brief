@@ -20,7 +20,7 @@ var (
 	taskFailurePattern   = regexp.MustCompile(`^> Task (.+) FAILED$`)
 	taskExecutionPattern = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
 	testFailurePattern   = regexp.MustCompile(`^(.+?) > (.+?) FAILED$`)
-	javacErrorPattern    = regexp.MustCompile(`^.+\.(java|groovy|scala):\d+(?::\d+)?: error: .+$`)
+	sourceErrorPattern   = regexp.MustCompile(`^.+\.(java|groovy|scala|kt|kts):\d+(?::\d+)?: error: .+$`)
 	urlPattern           = regexp.MustCompile(`https?://[^\s<>"'\)\]]+`)
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	// Status verbs and summary verbs mirror Gradle's own output (ConfigurationCacheProblems.kt
@@ -234,14 +234,14 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		lineURLs := extractURLs(text)
 		if isBuildScanMarkerLine(text) {
 			if len(lineURLs) > 0 {
-				addUniqueURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
+				addUniqueBuildScanURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining = 3
 			}
 		} else if captureBuildScanURLRemaining > 0 {
 			if len(lineURLs) > 0 {
-				addUniqueURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
+				addUniqueBuildScanURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining--
@@ -542,10 +542,17 @@ func addUnique(items *[]string, seen map[string]struct{}, value string, limit in
 	}
 }
 
-func addUniqueURLs(items *[]string, seen map[string]struct{}, values []string) {
+func addUniqueBuildScanURLs(items *[]string, seen map[string]struct{}, values []string) {
 	for _, value := range values {
-		addUnique(items, seen, value, 0)
+		if isBuildScanURL(value) {
+			addUnique(items, seen, value, 0)
+		}
 	}
+}
+
+func isBuildScanURL(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, "/s/")
 }
 
 func extractURLs(text string) []string {
@@ -649,7 +656,7 @@ func opensContextCapture(text string) bool {
 
 func opensCompilerContext(text string) bool {
 	switch {
-	case javacErrorPattern.MatchString(text):
+	case sourceErrorPattern.MatchString(text):
 		return true
 	case strings.HasPrefix(text, "e: ") && (strings.Contains(text, ".kt:") || strings.Contains(text, ".kts:")):
 		return true
