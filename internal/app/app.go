@@ -38,6 +38,7 @@ type Options struct {
 var (
 	currentDir         = os.Getwd
 	estimateFileTokens = tracking.EstimateFileTokens
+	runGradle          = runner.RunWithOptions
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -124,18 +125,23 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	})
 	trackingCommand := command.TrackingLine()
 
-	runResult, err := runner.RunWithOptions(ctx, command, opts.LogDir, runner.Options{
+	runResult, err := runGradle(ctx, command, opts.LogDir, runner.Options{
 		ProgressInterval: 30 * time.Second,
 		Progress: func(event runner.ProgressEvent) {
 			fmt.Fprintf(stderr, "build-brief: still running after %s (raw log: %s)\n", formatElapsed(event.Elapsed), event.RawLogPath)
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "build-brief: %v\n", err)
+		ancillaryError := runner.IsAncillaryError(err)
+		if ancillaryError {
+			fmt.Fprintf(stderr, "build-brief: warning: %v; continuing with Gradle result\n", err)
+		} else {
+			fmt.Fprintf(stderr, "build-brief: %v\n", err)
+		}
 		if runResult.RawLogPath != "" {
 			fmt.Fprintf(stderr, "Raw log: %s\n", runResult.RawLogPath)
 		}
-		if !runner.IsAncillaryError(err) {
+		if !ancillaryError {
 			if runResult.ExitCode > 0 {
 				return runResult.ExitCode
 			}
