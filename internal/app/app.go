@@ -36,7 +36,8 @@ type Options struct {
 }
 
 var (
-	currentDir = os.Getwd
+	currentDir         = os.Getwd
+	estimateFileTokens = tracking.EstimateFileTokens
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -134,23 +135,28 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if runResult.RawLogPath != "" {
 			fmt.Fprintf(stderr, "Raw log: %s\n", runResult.RawLogPath)
 		}
-		if runResult.ExitCode > 0 {
-			return runResult.ExitCode
+		if !runner.IsAncillaryError(err) {
+			if runResult.ExitCode > 0 {
+				return runResult.ExitCode
+			}
+			return 1
 		}
-		return 1
 	}
 
-	rawTokens, err := tracking.EstimateFileTokens(runResult.RawLogPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "build-brief: estimate raw tokens: %v\n", err)
-		return 1
+	rawTokens := 0 // Token fields are ints; zero represents unavailable metrics.
+	tokenMetricsAvailable := true
+	if estimated, err := estimateFileTokens(runResult.RawLogPath); err != nil {
+		fmt.Fprintf(stderr, "build-brief: warning: estimate raw tokens: %v; continuing with zero token metrics\n", err)
+		tokenMetricsAvailable = false
+	} else {
+		rawTokens = estimated
 	}
 
 	switch opts.Mode {
 	case "raw":
 		if err := output.RenderRaw(stdout, runResult.RawLogPath); err != nil {
 			fmt.Fprintf(stderr, "build-brief: render raw output: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
@@ -168,21 +174,23 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: reduce log output: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		summary.RawOutputTokens = rawTokens
 
 		rendered, err := renderSummary(summary)
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: render summary: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
-		summary.EmittedTokens = tracking.EstimateTokens(rendered)
-		summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
-		summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
+		if tokenMetricsAvailable {
+			summary.EmittedTokens = tracking.EstimateTokens(rendered)
+			summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
+			summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
+		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),

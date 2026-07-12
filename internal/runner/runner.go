@@ -27,6 +27,25 @@ type Result struct {
 	ArtifactSnapshot artifacts.Snapshot `json:"-"`
 }
 
+// AncillaryError marks a failure in post-execution maintenance, not Gradle execution or output capture.
+type AncillaryError struct {
+	Err error
+}
+
+func (e *AncillaryError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *AncillaryError) Unwrap() error {
+	return e.Err
+}
+
+// IsAncillaryError reports whether err is a post-execution ancillary failure.
+func IsAncillaryError(err error) bool {
+	var ancillaryErr *AncillaryError
+	return errors.As(err, &ancillaryErr)
+}
+
 type ProgressEvent struct {
 	RawLogPath string
 	Elapsed    time.Duration
@@ -164,7 +183,7 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	}
 
 	if err := pruneProjectRawLogs(filepath.Dir(rawLogPath), command.ProjectDir, rawLogPath); err != nil {
-		return result, fmt.Errorf("prune raw log files: %w", err)
+		return result, &AncillaryError{Err: fmt.Errorf("prune raw log files: %w", err)}
 	}
 
 	return result, nil
