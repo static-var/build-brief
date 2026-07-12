@@ -125,7 +125,7 @@ func TestTrackingLineRedactsSecretFlags(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew test --stacktrace --tests com.example.SecretTest -P<redacted> -D<redacted> --project-prop <redacted> --system-prop <redacted> --scan" {
+	if got != "v2:gradlew test --stacktrace --tests com.example.SecretTest -P<redacted> -D<redacted> --project-prop <redacted> --system-prop <redacted> --scan" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }
@@ -141,7 +141,7 @@ func TestTrackingLineDropsDuplicatedGradleInvocationArgs(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew build" {
+	if got != "v2:gradlew build" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestTrackingLineKeepsEqualsFormTaskSelectors(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew test --tests=com.example.SecretTest --exclude-task=lint" {
+	if got != "v2:gradlew test --tests=com.example.SecretTest --exclude-task=lint" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }
@@ -176,7 +176,7 @@ func TestTrackingLineRedactsSpaceSeparatedShortPropertyFlags(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew test -P <redacted> -D <redacted> --tests com.example.SecretTest" {
+	if got != "v2:gradlew test -P <redacted> -D <redacted> --tests com.example.SecretTest" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }

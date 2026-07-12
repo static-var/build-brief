@@ -119,7 +119,7 @@ func SavingsPct(rawTokens, emittedTokens int) float64 {
 }
 
 func RecordRun(record Record) error {
-	record.Command = gradle.SanitizeCommandLine(record.Command)
+	record.Command = gradle.SanitizeTrackingLine(record.Command)
 	path, err := dbPath()
 	if err != nil {
 		return err
@@ -135,7 +135,7 @@ func RecordRun(record Record) error {
 		filtered := make([]Record, 0, len(records)+1)
 		for _, existing := range records {
 			if existing.Timestamp.After(cutoff) {
-				existing.Command = gradle.SanitizeCommandLine(existing.Command)
+				existing.Command = gradle.SanitizeTrackingLine(existing.Command)
 				filtered = append(filtered, existing)
 			}
 		}
@@ -369,16 +369,16 @@ func summarize(records []Record) Summary {
 
 func sanitizeReport(report Report) Report {
 	for i := range report.Summary.ByCommand {
-		report.Summary.ByCommand[i].Command = gradle.SanitizeCommandLine(report.Summary.ByCommand[i].Command)
+		report.Summary.ByCommand[i].Command = gradle.SanitizeHistoricCommand(report.Summary.ByCommand[i].Command)
 	}
 	for i := range report.Recent {
-		report.Recent[i].Command = gradle.SanitizeCommandLine(report.Recent[i].Command)
+		report.Recent[i].Command = gradle.SanitizeHistoricCommand(report.Recent[i].Command)
 	}
 	return report
 }
 
 func normalizeHistoricCommand(command string) string {
-	fields := strings.Fields(gradle.SanitizeCommandLine(command))
+	fields := strings.Fields(gradle.SanitizeHistoricCommand(command))
 	if len(fields) == 0 {
 		return ""
 	}

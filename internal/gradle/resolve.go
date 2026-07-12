@@ -16,6 +16,9 @@ const (
 	SourceExplicit Source = "explicit"
 	SourceWrapper  Source = "wrapper"
 	SourceSystem   Source = "system"
+
+	trackingLineVersion   = "v2:"
+	redactedLegacyCommand = "<redacted legacy command>"
 )
 
 type Command struct {
@@ -149,9 +152,45 @@ func SanitizeArgs(args []string) []string {
 	return sanitized
 }
 
-// SanitizeCommandLine handles the display/history string boundary; execution keeps structured args.
+// SanitizeCommandLine handles a shell-like command string; execution keeps structured args.
 func SanitizeCommandLine(command string) string {
 	return strings.Join(SanitizeArgs(parseCommandLine(command)), " ")
+}
+
+// SanitizeTrackingLine stores new labels in a distinguishable format and replaces
+// ambiguous unversioned labels instead of trying to recover flattened secrets.
+func SanitizeTrackingLine(command string) string {
+	if strings.HasPrefix(command, trackingLineVersion) {
+		return trackingLineVersion + SanitizeCommandLine(strings.TrimPrefix(command, trackingLineVersion))
+	}
+	if containsSensitivePropertyFlag(command) {
+		return trackingLineVersion + redactedLegacyCommand
+	}
+	return trackingLineVersion + SanitizeCommandLine(command)
+}
+
+// SanitizeHistoricCommand returns a display-safe label from either format.
+func SanitizeHistoricCommand(command string) string {
+	if strings.HasPrefix(command, trackingLineVersion) {
+		return SanitizeCommandLine(strings.TrimPrefix(command, trackingLineVersion))
+	}
+	if containsSensitivePropertyFlag(command) {
+		return redactedLegacyCommand
+	}
+	return SanitizeCommandLine(command)
+}
+
+func containsSensitivePropertyFlag(command string) bool {
+	for _, arg := range parseCommandLine(command) {
+		switch {
+		case arg == "-P", arg == "-D", arg == "--project-prop", arg == "--system-prop":
+			return true
+		case strings.HasPrefix(arg, "-P"), strings.HasPrefix(arg, "-D"),
+			strings.HasPrefix(arg, "--project-prop="), strings.HasPrefix(arg, "--system-prop="):
+			return true
+		}
+	}
+	return false
 }
 
 // parseCommandLine only groups shell-style quotes and escaped whitespace; it does not execute a shell.
@@ -263,7 +302,7 @@ func (c Command) TrackingLine() string {
 		}
 	}
 
-	return normalizeTrackingCommand(strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " "))
+	return trackingLineVersion + normalizeTrackingCommand(strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " "))
 }
 
 func shouldKeepTrackingArg(arg string) bool {
