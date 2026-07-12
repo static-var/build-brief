@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -102,6 +104,84 @@ func TestRunnerOutputHelper(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "stderr-%03d\n", i)
 	}
 	os.Exit(0)
+}
+
+func TestRunWaitsForDescendantOutput(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+
+	t.Setenv("BUILD_BRIEF_RUNNER_DESCENDANT", "parent")
+	result, err := Run(context.Background(), gradle.Command{
+		Executable: os.Args[0],
+		Args:       []string{"-test.run=TestRunnerDescendantOutputHelper$"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}, logDir)
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+
+	content, err := os.ReadFile(result.RawLogPath)
+	if err != nil {
+		t.Fatalf("read raw log: %v", err)
+	}
+	if got := string(content); got != "early\nlate\n" {
+		t.Fatalf("unexpected raw log contents: %q", got)
+	}
+}
+
+func TestRunnerDescendantOutputHelper(t *testing.T) {
+	switch os.Getenv("BUILD_BRIEF_RUNNER_DESCENDANT") {
+	case "parent":
+		fmt.Fprintln(os.Stdout, "early")
+		child := exec.Command(os.Args[0], "-test.run=TestRunnerDescendantOutputHelper$")
+		child.Env = append(os.Environ(), "BUILD_BRIEF_RUNNER_DESCENDANT=child")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "child":
+		time.Sleep(250 * time.Millisecond)
+		fmt.Fprintln(os.Stdout, "late")
+		os.Exit(0)
+	}
+}
+
+func TestRawLogWriterReportsWriteFailure(t *testing.T) {
+	wantErr := errors.New("injected write failure")
+	cancelCalls := 0
+	writer := &rawLogWriter{
+		destination: failingWriter{err: wantErr},
+		onError: func() {
+			cancelCalls++
+		},
+	}
+
+	if _, err := writer.Write([]byte("output")); !errors.Is(err, wantErr) {
+		t.Fatalf("expected write error %v, got %v", wantErr, err)
+	}
+	if !errors.Is(writer.Err(), wantErr) {
+		t.Fatalf("expected writer to retain write error %v, got %v", wantErr, writer.Err())
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("expected one cancellation callback, got %d", cancelCalls)
+	}
+
+	_, _ = writer.Write([]byte("another output"))
+	if cancelCalls != 1 {
+		t.Fatalf("expected cancellation callback to run once, got %d calls", cancelCalls)
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func TestRunConcurrentInvocationsUseSeparateLogs(t *testing.T) {

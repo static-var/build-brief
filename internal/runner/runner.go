@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"build-brief/internal/artifacts"
@@ -53,7 +55,43 @@ type Options struct {
 	ProgressInterval time.Duration
 }
 
-const maxProjectRawLogs = 20
+const (
+	maxProjectRawLogs = 20
+	commandWaitDelay  = 5 * time.Second
+)
+
+type rawLogWriter struct {
+	destination io.Writer
+	onError     func()
+
+	mu  sync.Mutex
+	err error
+}
+
+func (w *rawLogWriter) Write(p []byte) (int, error) {
+	n, err := w.destination.Write(p)
+	if err == nil {
+		return n, nil
+	}
+
+	w.mu.Lock()
+	firstError := w.err == nil
+	if firstError {
+		w.err = err
+	}
+	w.mu.Unlock()
+
+	if firstError && w.onError != nil {
+		w.onError()
+	}
+	return n, err
+}
+
+func (w *rawLogWriter) Err() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
 
 func Run(ctx context.Context, command gradle.Command, logDir string) (Result, error) {
 	return RunWithOptions(ctx, command, logDir, Options{})
@@ -78,7 +116,10 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	cmd := exec.CommandContext(runCtx, command.Executable, command.Args...)
 	cmd.Dir = command.ProjectDir
 	configureCommand(cmd)
-	cmd.WaitDelay = 5 * time.Second
+	// WaitDelay bounds cancellation and descendants that retain inherited
+	// output descriptors after the command exits. Wait still drains normally
+	// when those descriptors close, preserving all captured output.
+	cmd.WaitDelay = commandWaitDelay
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -89,12 +130,15 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		return nil
 	}
 
-	// One OS-level destination makes the raw log the child process's faithful
-	// combined byte stream. It preserves the order in which the OS accepts
-	// writes to the shared destination, but cannot define a total order for
-	// concurrent writes or retain stdout/stderr identity.
-	cmd.Stdout = rawLogFile
-	cmd.Stderr = rawLogFile
+	// Keep one shared, comparable non-*os.File writer in both fields. exec.Cmd
+	// then gives stdout and stderr one pipe and one copy goroutine, so Wait
+	// drains inherited descriptors and reports copy/write failures.
+	outputWriter := &rawLogWriter{
+		destination: rawLogFile,
+		onError:     cancel,
+	}
+	cmd.Stdout = outputWriter
+	cmd.Stderr = outputWriter
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -109,6 +153,7 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	duration := time.Since(startedAt)
 	exitCode := exitCodeFromWait(waitErr, cmd)
 
+	writeErr := outputWriter.Err()
 	var closeErr error
 	if err := rawLogFile.Close(); err != nil {
 		closeErr = fmt.Errorf("close raw log: %w", err)
@@ -130,6 +175,10 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	rawLogPath = finalRawLogPath
 
 	result.RawLogPath = rawLogPath
+
+	if writeErr != nil {
+		return result, fmt.Errorf("write raw log: %w", writeErr)
+	}
 
 	if closeErr != nil {
 		return result, closeErr
