@@ -3,12 +3,16 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"build-brief/internal/tracking"
 )
 
 func TestParseArgsStopsAtGradleArgs(t *testing.T) {
@@ -396,14 +400,14 @@ func TestRunPreservesNonzeroGradleExitCodeWhenLogPruningFails(t *testing.T) {
 	}
 }
 
-func TestRunPreservesGradleExitCodeWhenTokenEstimationFailsAfterSuccess(t *testing.T) {
+func TestRunContinuesAfterTokenEstimationFailureOnSuccess(t *testing.T) {
+	setAppTrackingEnv(t)
+	failRawTokenEstimation(t)
+
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	t.Setenv("BUILD_BRIEF_TEST_LOG_DIR", logDir)
-
 	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	script := "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nchmod 000 \"$BUILD_BRIEF_TEST_LOG_DIR\"/build-brief-*.partial.log\nexit 0\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write fake gradle: %v", err)
 	}
 
@@ -419,8 +423,100 @@ func TestRunPreservesGradleExitCodeWhenTokenEstimationFailsAfterSuccess(t *testi
 	if exitCode != 0 {
 		t.Fatalf("expected Gradle exit code 0 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "estimate raw tokens") {
+	if !strings.Contains(stderr.String(), "warning: estimate raw tokens: token estimator unavailable") {
 		t.Fatalf("expected token estimation warning, got stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "BUILD SUCCESSFUL in 1s") {
+		t.Fatalf("expected normal summary after token estimation warning, got stdout=%q", stdout.String())
+	}
+
+	record := readLastTrackedRecord(t)
+	if !record.Success {
+		t.Fatalf("expected successful run to be tracked as successful, got %+v", record)
+	}
+	assertZeroTokenMetrics(t, record)
+}
+
+func TestRunContinuesAfterTokenEstimationFailureOnGradleFailure(t *testing.T) {
+	setAppTrackingEnv(t)
+	failRawTokenEstimation(t)
+
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '> Task :test FAILED'\necho 'BUILD FAILED in 1s'\nexit 9\n"), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 9 {
+		t.Fatalf("expected exact Gradle exit code 9 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "warning: estimate raw tokens: token estimator unavailable") {
+		t.Fatalf("expected token estimation warning, got stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "BUILD FAILED in 1s") {
+		t.Fatalf("expected normal failure summary after token estimation warning, got stdout=%q", stdout.String())
+	}
+
+	record := readLastTrackedRecord(t)
+	if record.Success {
+		t.Fatalf("expected failed run to be tracked as failed, got %+v", record)
+	}
+	assertZeroTokenMetrics(t, record)
+}
+
+func failRawTokenEstimation(t *testing.T) {
+	t.Helper()
+	original := estimateFileTokens
+	estimateFileTokens = func(string) (int, error) {
+		return 0, errors.New("token estimator unavailable")
+	}
+	t.Cleanup(func() {
+		estimateFileTokens = original
+	})
+}
+
+func setAppTrackingEnv(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
+func readLastTrackedRecord(t *testing.T) tracking.Record {
+	t.Helper()
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("resolve config dir: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "build-brief", "tracking.jsonl"))
+	if err != nil {
+		t.Fatalf("read tracking data: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatal("expected a tracked run")
+	}
+	var record tracking.Record
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &record); err != nil {
+		t.Fatalf("decode tracked run: %v", err)
+	}
+	return record
+}
+
+func assertZeroTokenMetrics(t *testing.T, record tracking.Record) {
+	t.Helper()
+	if record.RawTokens != 0 || record.EmittedTokens != 0 || record.SavedTokens != 0 || record.SavingsPct != 0 {
+		t.Fatalf("expected unavailable token metrics to remain zero, got %+v", record)
 	}
 }
 

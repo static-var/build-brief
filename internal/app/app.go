@@ -36,7 +36,8 @@ type Options struct {
 }
 
 var (
-	currentDir = os.Getwd
+	currentDir         = os.Getwd
+	estimateFileTokens = tracking.EstimateFileTokens
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -142,10 +143,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	}
 
-	rawTokens, err := tracking.EstimateFileTokens(runResult.RawLogPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "build-brief: estimate raw tokens: %v\n", err)
-		return runResult.ExitCode
+	rawTokens := 0 // Token fields are ints; zero represents unavailable metrics.
+	tokenMetricsAvailable := true
+	if estimated, err := estimateFileTokens(runResult.RawLogPath); err != nil {
+		fmt.Fprintf(stderr, "build-brief: warning: estimate raw tokens: %v; continuing with zero token metrics\n", err)
+		tokenMetricsAvailable = false
+	} else {
+		rawTokens = estimated
 	}
 
 	switch opts.Mode {
@@ -179,9 +183,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			fmt.Fprintf(stderr, "build-brief: render summary: %v\n", err)
 			return runResult.ExitCode
 		}
-		summary.EmittedTokens = tracking.EstimateTokens(rendered)
-		summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
-		summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
+		if tokenMetricsAvailable {
+			summary.EmittedTokens = tracking.EstimateTokens(rendered)
+			summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
+			summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
+		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
 			return runResult.ExitCode
