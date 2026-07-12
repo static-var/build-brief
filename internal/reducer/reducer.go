@@ -127,6 +127,7 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 }
 
 func ReduceWithOptions(command gradle.Command, result runner.Result, opts Options) (Summary, error) {
+	sanitizedArgs := gradle.SanitizeArgs(command.Args)
 	summary := Summary{
 		SchemaVersion: "v1",
 		Tool:          "build-brief",
@@ -136,9 +137,9 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		DurationMs:    result.Duration.Milliseconds(),
 		ProjectDir:    command.ProjectDir,
 		Executable:    command.Executable,
-		Command:       append([]string{command.Executable}, command.Args...),
+		Command:       append([]string{command.Executable}, sanitizedArgs...),
 		CommandLine: strings.Join(
-			append([]string{filepath.Base(command.Executable)}, command.Args...),
+			append([]string{filepath.Base(command.Executable)}, sanitizedArgs...),
 			" ",
 		),
 		Source:              string(command.Source),

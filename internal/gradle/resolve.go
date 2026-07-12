@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 type Source string
@@ -15,6 +16,9 @@ const (
 	SourceExplicit Source = "explicit"
 	SourceWrapper  Source = "wrapper"
 	SourceSystem   Source = "system"
+
+	trackingLineVersion   = "v2:"
+	redactedLegacyCommand = "<redacted legacy command>"
 )
 
 type Command struct {
@@ -121,15 +125,157 @@ func ValidateArgs(args []string) error {
 	return nil
 }
 
+// SanitizeArgs redacts sensitive Gradle property values without changing execution args.
+func SanitizeArgs(args []string) []string {
+	sanitized := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-P" || arg == "-D" || arg == "--project-prop" || arg == "--system-prop":
+			sanitized = append(sanitized, arg)
+			if i+1 < len(args) {
+				sanitized = append(sanitized, "<redacted>")
+				i++
+			}
+		case strings.HasPrefix(arg, "-P") && arg != "-P":
+			sanitized = append(sanitized, "-P<redacted>")
+		case strings.HasPrefix(arg, "-D") && arg != "-D":
+			sanitized = append(sanitized, "-D<redacted>")
+		case strings.HasPrefix(arg, "--project-prop="):
+			sanitized = append(sanitized, "--project-prop=<redacted>")
+		case strings.HasPrefix(arg, "--system-prop="):
+			sanitized = append(sanitized, "--system-prop=<redacted>")
+		default:
+			sanitized = append(sanitized, arg)
+		}
+	}
+	return sanitized
+}
+
+// SanitizeCommandLine handles a shell-like command string; execution keeps structured args.
+func SanitizeCommandLine(command string) string {
+	return strings.Join(SanitizeArgs(parseCommandLine(command)), " ")
+}
+
+// SanitizeTrackingLine stores new labels in a distinguishable format and replaces
+// ambiguous unversioned labels instead of trying to recover flattened secrets.
+func SanitizeTrackingLine(command string) string {
+	if strings.HasPrefix(command, trackingLineVersion) {
+		return trackingLineVersion + SanitizeCommandLine(strings.TrimPrefix(command, trackingLineVersion))
+	}
+	if containsSensitivePropertyFlag(command) && !containsOnlyKnownSafeSensitiveProperties(command) {
+		return trackingLineVersion + redactedLegacyCommand
+	}
+	return trackingLineVersion + SanitizeCommandLine(command)
+}
+
+// SanitizeHistoricCommand returns a display-safe label from either format.
+func SanitizeHistoricCommand(command string) string {
+	if strings.HasPrefix(command, trackingLineVersion) {
+		return SanitizeCommandLine(strings.TrimPrefix(command, trackingLineVersion))
+	}
+	if containsSensitivePropertyFlag(command) && !containsOnlyKnownSafeSensitiveProperties(command) {
+		return redactedLegacyCommand
+	}
+	return SanitizeCommandLine(command)
+}
+
+func containsOnlyKnownSafeSensitiveProperties(command string) bool {
+	foundSensitiveProperty := false
+	args := parseCommandLine(command)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-P" || arg == "-D" || arg == "--project-prop" || arg == "--system-prop":
+			foundSensitiveProperty = true
+			if i+1 >= len(args) || args[i+1] != "<redacted>" {
+				return false
+			}
+			i++
+		case arg == "-P<redacted>" || arg == "-D<redacted>" ||
+			arg == "--project-prop=<redacted>" || arg == "--system-prop=<redacted>":
+			foundSensitiveProperty = true
+		case strings.HasPrefix(arg, "-P") || strings.HasPrefix(arg, "-D") ||
+			strings.HasPrefix(arg, "--project-prop=") || strings.HasPrefix(arg, "--system-prop="):
+			return false
+		}
+	}
+	return foundSensitiveProperty
+}
+
+func containsSensitivePropertyFlag(command string) bool {
+	for _, arg := range parseCommandLine(command) {
+		switch {
+		case arg == "-P", arg == "-D", arg == "--project-prop", arg == "--system-prop":
+			return true
+		case strings.HasPrefix(arg, "-P"), strings.HasPrefix(arg, "-D"),
+			strings.HasPrefix(arg, "--project-prop="), strings.HasPrefix(arg, "--system-prop="):
+			return true
+		}
+	}
+	return false
+}
+
+// parseCommandLine only groups shell-style quotes and escaped whitespace; it does not execute a shell.
+func parseCommandLine(command string) []string {
+	runes := []rune(command)
+	args := make([]string, 0)
+	var current strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	started := false
+
+	flush := func() {
+		if !started {
+			return
+		}
+		args = append(args, current.String())
+		current.Reset()
+		started = false
+	}
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case r == '\\' && !inSingleQuote:
+			if i+1 < len(runes) {
+				next := runes[i+1]
+				if unicode.IsSpace(next) || next == '\\' || next == '\'' || next == '"' {
+					current.WriteRune(next)
+					started = true
+					i++
+					continue
+				}
+			}
+			current.WriteRune(r)
+			started = true
+		case r == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+			started = true
+		case r == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+			started = true
+		case unicode.IsSpace(r) && !inSingleQuote && !inDoubleQuote:
+			flush()
+		default:
+			current.WriteRune(r)
+			started = true
+		}
+	}
+	flush()
+	return args
+}
+
 func (c Command) DisplayLine() string {
-	return strings.Join(append([]string{filepath.Base(c.Executable)}, c.Args...), " ")
+	return strings.Join(append([]string{filepath.Base(c.Executable)}, SanitizeArgs(c.Args)...), " ")
 }
 
 func (c Command) TrackingLine() string {
-	filtered := make([]string, 0, len(c.Args))
+	sanitizedArgs := SanitizeArgs(c.Args)
+	filtered := make([]string, 0, len(sanitizedArgs))
 	skipNext := false
 	nextValueMode := ""
-	for _, arg := range c.Args {
+	for _, arg := range sanitizedArgs {
 		if skipNext {
 			skipNext = false
 			switch nextValueMode {
@@ -169,8 +315,9 @@ func (c Command) TrackingLine() string {
 			nextValueMode = "keep"
 		case strings.HasPrefix(arg, "--tests="), strings.HasPrefix(arg, "--exclude-task="):
 			filtered = append(filtered, arg)
-		case shouldRedactTrackingArg(arg):
-			filtered = append(filtered, redactTrackingArg(arg))
+		case strings.HasPrefix(arg, "-P"), strings.HasPrefix(arg, "-D"),
+			strings.HasPrefix(arg, "--project-prop="), strings.HasPrefix(arg, "--system-prop="):
+			filtered = append(filtered, arg)
 		case shouldKeepTrackingArg(arg):
 			filtered = append(filtered, arg)
 		default:
@@ -178,25 +325,7 @@ func (c Command) TrackingLine() string {
 		}
 	}
 
-	return normalizeTrackingCommand(strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " "))
-}
-
-func shouldRedactTrackingArg(arg string) bool {
-	return (strings.HasPrefix(arg, "-P") && arg != "-P") ||
-		(strings.HasPrefix(arg, "-D") && arg != "-D") ||
-		arg == "--project-prop" ||
-		arg == "--system-prop"
-}
-
-func redactTrackingArg(arg string) string {
-	switch {
-	case strings.HasPrefix(arg, "-P"):
-		return "-P<redacted>"
-	case strings.HasPrefix(arg, "-D"):
-		return "-D<redacted>"
-	default:
-		return "<redacted>"
-	}
+	return trackingLineVersion + normalizeTrackingCommand(strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " "))
 }
 
 func shouldKeepTrackingArg(arg string) bool {

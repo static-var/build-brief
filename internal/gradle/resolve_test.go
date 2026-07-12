@@ -125,7 +125,7 @@ func TestTrackingLineRedactsSecretFlags(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew test --stacktrace --tests com.example.SecretTest -P<redacted> -D<redacted> --project-prop <redacted> --system-prop <redacted> --scan" {
+	if got != "v2:gradlew test --stacktrace --tests com.example.SecretTest -P<redacted> -D<redacted> --project-prop <redacted> --system-prop <redacted> --scan" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }
@@ -141,7 +141,7 @@ func TestTrackingLineDropsDuplicatedGradleInvocationArgs(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew build" {
+	if got != "v2:gradlew build" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestTrackingLineKeepsEqualsFormTaskSelectors(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew test --tests=com.example.SecretTest --exclude-task=lint" {
+	if got != "v2:gradlew test --tests=com.example.SecretTest --exclude-task=lint" {
 		t.Fatalf("unexpected tracking line: %q", got)
 	}
 }
@@ -176,8 +176,161 @@ func TestTrackingLineRedactsSpaceSeparatedShortPropertyFlags(t *testing.T) {
 
 	got := command.TrackingLine()
 
-	if got != "gradlew test -P <redacted> -D <redacted> --tests com.example.SecretTest" {
+	if got != "v2:gradlew test -P <redacted> -D <redacted> --tests com.example.SecretTest" {
 		t.Fatalf("unexpected tracking line: %q", got)
+	}
+}
+
+func TestDisplayLineRedactsWhitespacePropertyValues(t *testing.T) {
+	command := Command{
+		Executable: "/tmp/gradlew",
+		Args: []string{
+			"test",
+			"-P", "project.key=quoted project secret",
+			"-Djoined.system=joined escaped system secret",
+			"--project-prop", "long.project=long quoted project secret",
+			"--system-prop=equals.system=equals system secret",
+			"--tests", "com.example.SafeTest",
+		},
+	}
+
+	got := command.DisplayLine()
+	for _, secret := range []string{
+		"quoted project secret",
+		"joined escaped system secret",
+		"long quoted project secret",
+		"equals system secret",
+	} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("display line leaked %q: %q", secret, got)
+		}
+	}
+	for _, safe := range []string{"gradlew", "test", "--tests", "com.example.SafeTest"} {
+		if !strings.Contains(got, safe) {
+			t.Fatalf("display line lost safe argument %q: %q", safe, got)
+		}
+	}
+}
+
+func TestSanitizeCommandLineRedactsQuotedAndEscapedPropertyValues(t *testing.T) {
+	command := `gradlew test -P "project.key=qp-one qp-two qp-three" -Pjoined.project="jp-one jp-two jp-three" -D "system.key=ds-one ds-two ds-three" -Djoined.system=joined\ escaped\ system\ secret --project-prop "long.project=lp-one lp-two lp-three" --project-prop=equals.project=equals\ project\ secret --system-prop "long.system=ls-one ls-two ls-three" --system-prop=equals.system=equals\ system\ secret --tests com.example.SafeTest`
+
+	got := SanitizeCommandLine(command)
+	for _, secret := range []string{
+		"qp-one", "qp-two", "qp-three",
+		"jp-one", "jp-two", "jp-three",
+		"ds-one", "ds-two", "ds-three",
+		"joined\\", "escaped\\", "system\\", "secret",
+		"lp-one", "lp-two", "lp-three",
+		"ep-one", "project\\",
+		"ls-one", "ls-two", "ls-three",
+		"es-one", "system\\",
+	} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("sanitized command leaked %q: %q", secret, got)
+		}
+	}
+	for _, safe := range []string{"gradlew test", "--tests com.example.SafeTest", "<redacted>"} {
+		if !strings.Contains(got, safe) {
+			t.Fatalf("sanitized command lost safe value %q: %q", safe, got)
+		}
+	}
+}
+
+func TestSanitizeTrackingLineMigratesKnownSafePredecessorLabels(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "short project joined",
+			input: "gradlew test --tests com.example.SafeTest -P<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -P<redacted>",
+		},
+		{
+			name:  "short project split",
+			input: "gradlew test --tests com.example.SafeTest -P <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -P <redacted>",
+		},
+		{
+			name:  "short system joined",
+			input: "gradlew test --tests com.example.SafeTest -D<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -D<redacted>",
+		},
+		{
+			name:  "short system split",
+			input: "gradlew test --tests com.example.SafeTest -D <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -D <redacted>",
+		},
+		{
+			name:  "long project split",
+			input: "gradlew test --tests com.example.SafeTest --project-prop <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --project-prop <redacted>",
+		},
+		{
+			name:  "long project equals",
+			input: "gradlew test --tests com.example.SafeTest --project-prop=<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --project-prop=<redacted>",
+		},
+		{
+			name:  "long system split",
+			input: "gradlew test --tests com.example.SafeTest --system-prop <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --system-prop <redacted>",
+		},
+		{
+			name:  "long system equals",
+			input: "gradlew test --tests com.example.SafeTest --system-prop=<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --system-prop=<redacted>",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := SanitizeTrackingLine(test.input); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+			if got := SanitizeHistoricCommand(test.input); got != strings.TrimPrefix(test.want, trackingLineVersion) {
+				t.Fatalf("expected historic label %q, got %q", strings.TrimPrefix(test.want, trackingLineVersion), got)
+			}
+		})
+	}
+}
+
+func TestSanitizeTrackingLineRedactsAmbiguousLegacyLabels(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "unredacted short joined",
+			input: "gradlew test --tests com.example.SafeTest -Pproject.key=secret",
+		},
+		{
+			name:  "unredacted short split",
+			input: "gradlew test --tests com.example.SafeTest -P project.key=secret",
+		},
+		{
+			name:  "unredacted long split",
+			input: "gradlew test --tests com.example.SafeTest --project-prop project.key=secret",
+		},
+		{
+			name:  "unredacted long equals",
+			input: "gradlew test --tests com.example.SafeTest --project-prop=project.key=secret",
+		},
+		{
+			name:  "mixed safe and unredacted",
+			input: "gradlew test --tests com.example.SafeTest -P<redacted> -Dsystem.key=secret",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := "v2:<redacted legacy command>"
+			if got := SanitizeTrackingLine(test.input); got != want {
+				t.Fatalf("expected %q, got %q", want, got)
+			}
+		})
 	}
 }
 
