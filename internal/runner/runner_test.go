@@ -60,6 +60,50 @@ func TestRunUsesUniqueRawLogPerRun(t *testing.T) {
 	}
 }
 
+func TestRunPreservesCombinedOutputOrder(t *testing.T) {
+	t.Setenv("BUILD_BRIEF_RUNNER_HELPER", "1")
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+
+	var want strings.Builder
+	for i := 0; i < 128; i++ {
+		fmt.Fprintf(&want, "stdout-%03d\n", i)
+		fmt.Fprintf(&want, "stderr-%03d\n", i)
+	}
+
+	for run := 0; run < 20; run++ {
+		result, err := Run(context.Background(), gradle.Command{
+			Executable: os.Args[0],
+			Args:       []string{"-test.run=TestRunnerOutputHelper"},
+			ProjectDir: projectDir,
+			Source:     gradle.SourceExplicit,
+		}, logDir)
+		if err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+
+		content, err := os.ReadFile(result.RawLogPath)
+		if err != nil {
+			t.Fatalf("read run %d raw log: %v", run, err)
+		}
+		if got := string(content); got != want.String() {
+			t.Fatalf("run %d reordered combined output; got %q, want %q", run, got, want.String())
+		}
+	}
+}
+
+func TestRunnerOutputHelper(t *testing.T) {
+	if os.Getenv("BUILD_BRIEF_RUNNER_HELPER") != "1" {
+		return
+	}
+
+	for i := 0; i < 128; i++ {
+		fmt.Fprintf(os.Stdout, "stdout-%03d\n", i)
+		fmt.Fprintf(os.Stderr, "stderr-%03d\n", i)
+	}
+	os.Exit(0)
+}
+
 func TestRunConcurrentInvocationsUseSeparateLogs(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()

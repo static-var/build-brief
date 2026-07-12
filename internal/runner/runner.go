@@ -1,18 +1,15 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"build-brief/internal/artifacts"
@@ -92,14 +89,12 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		return nil
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{RawLogPath: rawLogPath}, fmt.Errorf("attach stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{RawLogPath: rawLogPath}, fmt.Errorf("attach stderr pipe: %w", err)
-	}
+	// One OS-level destination makes the raw log the child process's faithful
+	// combined byte stream. It preserves the order in which the OS accepts
+	// writes to the shared destination, but cannot define a total order for
+	// concurrent writes or retain stdout/stderr identity.
+	cmd.Stdout = rawLogFile
+	cmd.Stderr = rawLogFile
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -110,44 +105,13 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	startProgressReporter(rawLogPath, startedAt, opts, doneCh)
 	defer close(doneCh)
 
-	linesCh := make(chan string, 64)
-	scanErrCh := make(chan error, 2)
-	var readers sync.WaitGroup
-	readers.Add(2)
-
-	go scanStream(stdout, linesCh, scanErrCh, &readers)
-	go scanStream(stderr, linesCh, scanErrCh, &readers)
-	go func() {
-		readers.Wait()
-		close(linesCh)
-		close(scanErrCh)
-	}()
-
-	var writeErr error
-	for line := range linesCh {
-		if writeErr != nil {
-			continue
-		}
-		if _, err := fmt.Fprintln(rawLogFile, line); err != nil {
-			writeErr = fmt.Errorf("write raw log: %w", err)
-			cancel()
-		}
-	}
-
-	var streamErr error
-	for scanErr := range scanErrCh {
-		if scanErr != nil && streamErr == nil {
-			streamErr = fmt.Errorf("scan command output: %w", scanErr)
-			cancel()
-		}
-	}
-
 	waitErr := cmd.Wait()
 	duration := time.Since(startedAt)
 	exitCode := exitCodeFromWait(waitErr, cmd)
 
-	if err := rawLogFile.Close(); err != nil && writeErr == nil {
-		writeErr = fmt.Errorf("close raw log: %w", err)
+	var closeErr error
+	if err := rawLogFile.Close(); err != nil {
+		closeErr = fmt.Errorf("close raw log: %w", err)
 	}
 	rawLogClosed = true
 
@@ -167,12 +131,8 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 
 	result.RawLogPath = rawLogPath
 
-	if writeErr != nil {
-		return result, writeErr
-	}
-
-	if streamErr != nil {
-		return result, streamErr
+	if closeErr != nil {
+		return result, closeErr
 	}
 
 	if waitErr != nil {
@@ -298,34 +258,6 @@ func pruneProjectRawLogs(logDir, projectDir, keepPath string) error {
 	}
 
 	return nil
-}
-
-func scanStream(stream io.ReadCloser, linesCh chan<- string, errCh chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer stream.Close()
-
-	reader := bufio.NewReaderSize(stream, 64*1024)
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			linesCh <- trimLineEnding(line)
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			errCh <- nil
-			return
-		}
-		errCh <- err
-		return
-	}
-}
-
-func trimLineEnding(line string) string {
-	line = strings.TrimSuffix(line, "\n")
-	line = strings.TrimSuffix(line, "\r")
-	return line
 }
 
 func exitCodeFromWait(waitErr error, cmd *exec.Cmd) int {
