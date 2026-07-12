@@ -237,6 +237,103 @@ func TestSanitizeCommandLineRedactsQuotedAndEscapedPropertyValues(t *testing.T) 
 	}
 }
 
+func TestSanitizeTrackingLineMigratesKnownSafePredecessorLabels(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "short project joined",
+			input: "gradlew test --tests com.example.SafeTest -P<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -P<redacted>",
+		},
+		{
+			name:  "short project split",
+			input: "gradlew test --tests com.example.SafeTest -P <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -P <redacted>",
+		},
+		{
+			name:  "short system joined",
+			input: "gradlew test --tests com.example.SafeTest -D<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -D<redacted>",
+		},
+		{
+			name:  "short system split",
+			input: "gradlew test --tests com.example.SafeTest -D <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest -D <redacted>",
+		},
+		{
+			name:  "long project split",
+			input: "gradlew test --tests com.example.SafeTest --project-prop <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --project-prop <redacted>",
+		},
+		{
+			name:  "long project equals",
+			input: "gradlew test --tests com.example.SafeTest --project-prop=<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --project-prop=<redacted>",
+		},
+		{
+			name:  "long system split",
+			input: "gradlew test --tests com.example.SafeTest --system-prop <redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --system-prop <redacted>",
+		},
+		{
+			name:  "long system equals",
+			input: "gradlew test --tests com.example.SafeTest --system-prop=<redacted>",
+			want:  "v2:gradlew test --tests com.example.SafeTest --system-prop=<redacted>",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := SanitizeTrackingLine(test.input); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+			if got := SanitizeHistoricCommand(test.input); got != strings.TrimPrefix(test.want, trackingLineVersion) {
+				t.Fatalf("expected historic label %q, got %q", strings.TrimPrefix(test.want, trackingLineVersion), got)
+			}
+		})
+	}
+}
+
+func TestSanitizeTrackingLineRedactsAmbiguousLegacyLabels(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "unredacted short joined",
+			input: "gradlew test --tests com.example.SafeTest -Pproject.key=secret",
+		},
+		{
+			name:  "unredacted short split",
+			input: "gradlew test --tests com.example.SafeTest -P project.key=secret",
+		},
+		{
+			name:  "unredacted long split",
+			input: "gradlew test --tests com.example.SafeTest --project-prop project.key=secret",
+		},
+		{
+			name:  "unredacted long equals",
+			input: "gradlew test --tests com.example.SafeTest --project-prop=project.key=secret",
+		},
+		{
+			name:  "mixed safe and unredacted",
+			input: "gradlew test --tests com.example.SafeTest -P<redacted> -Dsystem.key=secret",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := "v2:<redacted legacy command>"
+			if got := SanitizeTrackingLine(test.input); got != want {
+				t.Fatalf("expected %q, got %q", want, got)
+			}
+		})
+	}
+}
+
 func TestSplitInvocationRecognizesGradleExecutable(t *testing.T) {
 	invocation, args := SplitInvocation([]string{"gradle", "test"})
 	if invocation != "gradle" {

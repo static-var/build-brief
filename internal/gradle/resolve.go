@@ -163,7 +163,7 @@ func SanitizeTrackingLine(command string) string {
 	if strings.HasPrefix(command, trackingLineVersion) {
 		return trackingLineVersion + SanitizeCommandLine(strings.TrimPrefix(command, trackingLineVersion))
 	}
-	if containsSensitivePropertyFlag(command) {
+	if containsSensitivePropertyFlag(command) && !containsOnlyKnownSafeSensitiveProperties(command) {
 		return trackingLineVersion + redactedLegacyCommand
 	}
 	return trackingLineVersion + SanitizeCommandLine(command)
@@ -174,10 +174,33 @@ func SanitizeHistoricCommand(command string) string {
 	if strings.HasPrefix(command, trackingLineVersion) {
 		return SanitizeCommandLine(strings.TrimPrefix(command, trackingLineVersion))
 	}
-	if containsSensitivePropertyFlag(command) {
+	if containsSensitivePropertyFlag(command) && !containsOnlyKnownSafeSensitiveProperties(command) {
 		return redactedLegacyCommand
 	}
 	return SanitizeCommandLine(command)
+}
+
+func containsOnlyKnownSafeSensitiveProperties(command string) bool {
+	foundSensitiveProperty := false
+	args := parseCommandLine(command)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-P" || arg == "-D" || arg == "--project-prop" || arg == "--system-prop":
+			foundSensitiveProperty = true
+			if i+1 >= len(args) || args[i+1] != "<redacted>" {
+				return false
+			}
+			i++
+		case arg == "-P<redacted>" || arg == "-D<redacted>" ||
+			arg == "--project-prop=<redacted>" || arg == "--system-prop=<redacted>":
+			foundSensitiveProperty = true
+		case strings.HasPrefix(arg, "-P") || strings.HasPrefix(arg, "-D") ||
+			strings.HasPrefix(arg, "--project-prop=") || strings.HasPrefix(arg, "--system-prop="):
+			return false
+		}
+	}
+	return foundSensitiveProperty
 }
 
 func containsSensitivePropertyFlag(command string) bool {

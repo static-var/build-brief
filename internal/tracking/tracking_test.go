@@ -444,6 +444,114 @@ func TestRecordRunScrubsLegacySensitiveCommandsBeforeRewrite(t *testing.T) {
 	}
 }
 
+func TestRecordRunMigratesKnownSafePredecessorLabels(t *testing.T) {
+	setTrackingEnv(t)
+
+	path, err := dbPath()
+	if err != nil {
+		t.Fatalf("db path: %v", err)
+	}
+
+	legacy := []struct {
+		command string
+		want    string
+	}{
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest -P<redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest -P<redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest -P <redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest -P <redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest -D<redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest -D<redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest -D <redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest -D <redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest --project-prop <redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest --project-prop <redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest --project-prop=<redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest --project-prop=<redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest --system-prop <redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest --system-prop <redacted>",
+		},
+		{
+			command: "gradlew :app:assembleDebug --tests com.example.SafeTest --system-prop=<redacted>",
+			want:    "v2:gradlew :app:assembleDebug --tests com.example.SafeTest --system-prop=<redacted>",
+		},
+	}
+
+	seeded := make([]Record, 0, len(legacy))
+	for index, item := range legacy {
+		seeded = append(seeded, Record{
+			Timestamp:     time.Now().Add(-time.Duration(len(legacy)-index) * time.Minute),
+			ProjectPath:   "/tmp/project",
+			Command:       item.command,
+			Mode:          "human",
+			RawTokens:     100,
+			EmittedTokens: 10,
+			SavedTokens:   90,
+			SavingsPct:    90,
+		})
+	}
+	if err := writeRecords(path, seeded); err != nil {
+		t.Fatalf("seed legacy records: %v", err)
+	}
+
+	if err := RecordRun(Record{
+		Timestamp:     time.Now(),
+		ProjectPath:   "/tmp/project",
+		Command:       "gradlew check",
+		Mode:          "human",
+		RawTokens:     100,
+		EmittedTokens: 10,
+		SavedTokens:   90,
+		SavingsPct:    90,
+	}); err != nil {
+		t.Fatalf("rewrite tracking records: %v", err)
+	}
+
+	records, err := loadRecords(path)
+	if err != nil {
+		t.Fatalf("load rewritten tracking history: %v", err)
+	}
+	if len(records) != len(legacy)+1 {
+		t.Fatalf("expected %d rewritten records, got %d", len(legacy)+1, len(records))
+	}
+	for index, item := range legacy {
+		if records[index].Command != item.want {
+			t.Fatalf("expected stored command %q, got %q", item.want, records[index].Command)
+		}
+	}
+
+	report, err := LoadReport("", true)
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	for _, item := range legacy {
+		want := strings.TrimPrefix(item.want, "v2:")
+		found := false
+		for _, record := range report.Recent {
+			if record.Command == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("report lost migrated safe label %q: %+v", want, report.Recent)
+		}
+	}
+}
+
 func TestRecordRunRedactsUnrecoverableLegacySensitiveLabels(t *testing.T) {
 	setTrackingEnv(t)
 
