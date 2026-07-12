@@ -134,13 +134,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if runResult.RawLogPath != "" {
 			fmt.Fprintf(stderr, "Raw log: %s\n", runResult.RawLogPath)
 		}
-		if runner.IsAncillaryError(err) {
-			return runResult.ExitCode
+		if !runner.IsAncillaryError(err) {
+			if runResult.ExitCode > 0 {
+				return runResult.ExitCode
+			}
+			return 1
 		}
-		if runResult.ExitCode > 0 {
-			return runResult.ExitCode
-		}
-		return 1
 	}
 
 	rawTokens, err := tracking.EstimateFileTokens(runResult.RawLogPath)
