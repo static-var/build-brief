@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,6 +311,72 @@ func TestRunInstallsLocalAgentsFile(t *testing.T) {
 
 	if strings.Contains(stdout.String(), "RTK detected on this machine") {
 		t.Fatalf("expected no RTK notice when RTK is not detected, got %q", stdout.String())
+	}
+}
+
+func TestRunPreservesGradleExitCodeWhenLogPruningFails(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(projectDir))
+	prefix := "build-brief-" + fmt.Sprintf("%08x", hash.Sum32()) + "-"
+	for i := 0; i < 21; i++ {
+		oldLogDir := filepath.Join(logDir, fmt.Sprintf("%sold-%02d.log", prefix, i))
+		if err := os.Mkdir(oldLogDir, 0o755); err != nil {
+			t.Fatalf("create old log directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(oldLogDir, "keep"), []byte("old log\n"), 0o644); err != nil {
+			t.Fatalf("write old log contents: %v", err)
+		}
+	}
+
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("expected Gradle exit code 0 despite pruning failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "prune raw log files") {
+		t.Fatalf("expected pruning failure to remain observable, got stderr=%q", stderr.String())
+	}
+}
+
+func TestRunPreservesGradleExitCodeWhenTokenEstimationFails(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	t.Setenv("BUILD_BRIEF_TEST_LOG_DIR", logDir)
+
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	script := "#!/bin/sh\necho 'BUILD FAILED in 1s'\nchmod 000 \"$BUILD_BRIEF_TEST_LOG_DIR\"/build-brief-*.partial.log\nexit 9\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 9 {
+		t.Fatalf("expected Gradle exit code 9 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "estimate raw tokens") {
+		t.Fatalf("expected token estimation failure to remain observable, got stderr=%q", stderr.String())
 	}
 }
 

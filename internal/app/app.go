@@ -134,6 +134,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if runResult.RawLogPath != "" {
 			fmt.Fprintf(stderr, "Raw log: %s\n", runResult.RawLogPath)
 		}
+		if runner.IsAncillaryError(err) {
+			return runResult.ExitCode
+		}
 		if runResult.ExitCode > 0 {
 			return runResult.ExitCode
 		}
@@ -143,14 +146,14 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	rawTokens, err := tracking.EstimateFileTokens(runResult.RawLogPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "build-brief: estimate raw tokens: %v\n", err)
-		return 1
+		return runResult.ExitCode
 	}
 
 	switch opts.Mode {
 	case "raw":
 		if err := output.RenderRaw(stdout, runResult.RawLogPath); err != nil {
 			fmt.Fprintf(stderr, "build-brief: render raw output: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
@@ -168,21 +171,21 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: reduce log output: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		summary.RawOutputTokens = rawTokens
 
 		rendered, err := renderSummary(summary)
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: render summary: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		summary.EmittedTokens = tracking.EstimateTokens(rendered)
 		summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
 		summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
-			return 1
+			return runResult.ExitCode
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
