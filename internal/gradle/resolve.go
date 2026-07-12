@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 type Source string
@@ -121,6 +122,7 @@ func ValidateArgs(args []string) error {
 	return nil
 }
 
+// SanitizeArgs redacts sensitive Gradle property values without changing execution args.
 func SanitizeArgs(args []string) []string {
 	sanitized := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -147,8 +149,59 @@ func SanitizeArgs(args []string) []string {
 	return sanitized
 }
 
+// SanitizeCommandLine handles the display/history string boundary; execution keeps structured args.
 func SanitizeCommandLine(command string) string {
-	return strings.Join(SanitizeArgs(strings.Fields(command)), " ")
+	return strings.Join(SanitizeArgs(parseCommandLine(command)), " ")
+}
+
+// parseCommandLine only groups shell-style quotes and escaped whitespace; it does not execute a shell.
+func parseCommandLine(command string) []string {
+	runes := []rune(command)
+	args := make([]string, 0)
+	var current strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	started := false
+
+	flush := func() {
+		if !started {
+			return
+		}
+		args = append(args, current.String())
+		current.Reset()
+		started = false
+	}
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case r == '\\' && !inSingleQuote:
+			if i+1 < len(runes) {
+				next := runes[i+1]
+				if unicode.IsSpace(next) || next == '\\' || next == '\'' || next == '"' {
+					current.WriteRune(next)
+					started = true
+					i++
+					continue
+				}
+			}
+			current.WriteRune(r)
+			started = true
+		case r == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+			started = true
+		case r == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+			started = true
+		case unicode.IsSpace(r) && !inSingleQuote && !inDoubleQuote:
+			flush()
+		default:
+			current.WriteRune(r)
+			started = true
+		}
+	}
+	flush()
+	return args
 }
 
 func (c Command) DisplayLine() string {

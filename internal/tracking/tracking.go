@@ -135,6 +135,7 @@ func RecordRun(record Record) error {
 		filtered := make([]Record, 0, len(records)+1)
 		for _, existing := range records {
 			if existing.Timestamp.After(cutoff) {
+				existing.Command = gradle.SanitizeCommandLine(existing.Command)
 				filtered = append(filtered, existing)
 			}
 		}

@@ -181,41 +181,58 @@ func TestTrackingLineRedactsSpaceSeparatedShortPropertyFlags(t *testing.T) {
 	}
 }
 
-func TestTrackingLineRedactsAllSensitivePropertyForms(t *testing.T) {
+func TestDisplayLineRedactsWhitespacePropertyValues(t *testing.T) {
 	command := Command{
 		Executable: "/tmp/gradlew",
 		Args: []string{
 			"test",
-			"-P", "split.project=split-project-secret",
-			"-D", "split.system=split-system-secret",
-			"-Pjoined.project=joined-project-secret",
-			"-Djoined.system=joined-system-secret",
-			"--project-prop", "long.project=long-project-secret",
-			"--system-prop", "long.system=long-system-secret",
-			"--project-prop=equals.project=equals-project-secret",
-			"--system-prop=equals.system=equals-system-secret",
+			"-P", "project.key=quoted project secret",
+			"-Djoined.system=joined escaped system secret",
+			"--project-prop", "long.project=long quoted project secret",
+			"--system-prop=equals.system=equals system secret",
 			"--tests", "com.example.SafeTest",
 		},
 	}
 
-	got := command.TrackingLine()
+	got := command.DisplayLine()
 	for _, secret := range []string{
-		"split-project-secret",
-		"split-system-secret",
-		"joined-project-secret",
-		"joined-system-secret",
-		"long-project-secret",
-		"long-system-secret",
-		"equals-project-secret",
-		"equals-system-secret",
+		"quoted project secret",
+		"joined escaped system secret",
+		"long quoted project secret",
+		"equals system secret",
 	} {
 		if strings.Contains(got, secret) {
-			t.Fatalf("tracking line leaked %q: %q", secret, got)
+			t.Fatalf("display line leaked %q: %q", secret, got)
 		}
 	}
-	for _, safe := range []string{"gradlew test", "--tests com.example.SafeTest", "-P <redacted>", "--project-prop=<redacted>"} {
+	for _, safe := range []string{"gradlew", "test", "--tests", "com.example.SafeTest"} {
 		if !strings.Contains(got, safe) {
-			t.Fatalf("tracking line lost safe value %q: %q", safe, got)
+			t.Fatalf("display line lost safe argument %q: %q", safe, got)
+		}
+	}
+}
+
+func TestSanitizeCommandLineRedactsQuotedAndEscapedPropertyValues(t *testing.T) {
+	command := `gradlew test -P "project.key=qp-one qp-two qp-three" -Pjoined.project="jp-one jp-two jp-three" -D "system.key=ds-one ds-two ds-three" -Djoined.system=joined\ escaped\ system\ secret --project-prop "long.project=lp-one lp-two lp-three" --project-prop=equals.project=equals\ project\ secret --system-prop "long.system=ls-one ls-two ls-three" --system-prop=equals.system=equals\ system\ secret --tests com.example.SafeTest`
+
+	got := SanitizeCommandLine(command)
+	for _, secret := range []string{
+		"qp-one", "qp-two", "qp-three",
+		"jp-one", "jp-two", "jp-three",
+		"ds-one", "ds-two", "ds-three",
+		"joined\\", "escaped\\", "system\\", "secret",
+		"lp-one", "lp-two", "lp-three",
+		"ep-one", "project\\",
+		"ls-one", "ls-two", "ls-three",
+		"es-one", "system\\",
+	} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("sanitized command leaked %q: %q", secret, got)
+		}
+	}
+	for _, safe := range []string{"gradlew test", "--tests com.example.SafeTest", "<redacted>"} {
+		if !strings.Contains(got, safe) {
+			t.Fatalf("sanitized command lost safe value %q: %q", safe, got)
 		}
 	}
 }
