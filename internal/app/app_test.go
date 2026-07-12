@@ -352,13 +352,13 @@ func TestRunPreservesGradleExitCodeWhenLogPruningFails(t *testing.T) {
 	}
 }
 
-func TestRunPreservesGradleExitCodeWhenTokenEstimationFails(t *testing.T) {
+func TestRunPreservesGradleExitCodeWhenTokenEstimationFailsAfterSuccess(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
 	t.Setenv("BUILD_BRIEF_TEST_LOG_DIR", logDir)
 
 	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	script := "#!/bin/sh\necho 'BUILD FAILED in 1s'\nchmod 000 \"$BUILD_BRIEF_TEST_LOG_DIR\"/build-brief-*.partial.log\nexit 9\n"
+	script := "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nchmod 000 \"$BUILD_BRIEF_TEST_LOG_DIR\"/build-brief-*.partial.log\nexit 0\n"
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gradle: %v", err)
 	}
@@ -372,11 +372,43 @@ func TestRunPreservesGradleExitCodeWhenTokenEstimationFails(t *testing.T) {
 		"test",
 	}, strings.NewReader(""), &stdout, &stderr)
 
-	if exitCode != 9 {
-		t.Fatalf("expected Gradle exit code 9 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
+	if exitCode != 0 {
+		t.Fatalf("expected Gradle exit code 0 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "estimate raw tokens") {
-		t.Fatalf("expected token estimation failure to remain observable, got stderr=%q", stderr.String())
+		t.Fatalf("expected token estimation warning, got stderr=%q", stderr.String())
+	}
+}
+
+func TestRunKeepsRequiredRawLogFinalizationFailureFatal(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	t.Setenv("BUILD_BRIEF_TEST_LOG_DIR", logDir)
+	defer func() { _ = os.Chmod(logDir, 0o755) }()
+
+	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
+	script := "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nchmod 0555 \"$BUILD_BRIEF_TEST_LOG_DIR\"\nexit 0\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gradle: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode == 0 {
+		t.Fatalf("expected required raw-log finalization failure to remain fatal, stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "finalize raw log file") {
+		t.Fatalf("expected finalization failure to be visible, got stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Raw log:") {
+		t.Fatalf("expected raw log path to be visible, got stderr=%q", stderr.String())
 	}
 }
 
