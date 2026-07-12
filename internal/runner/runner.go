@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -56,7 +55,43 @@ type Options struct {
 	ProgressInterval time.Duration
 }
 
-const maxProjectRawLogs = 20
+const (
+	maxProjectRawLogs = 20
+	commandWaitDelay  = 5 * time.Second
+)
+
+type rawLogWriter struct {
+	destination io.Writer
+	onError     func()
+
+	mu  sync.Mutex
+	err error
+}
+
+func (w *rawLogWriter) Write(p []byte) (int, error) {
+	n, err := w.destination.Write(p)
+	if err == nil {
+		return n, nil
+	}
+
+	w.mu.Lock()
+	firstError := w.err == nil
+	if firstError {
+		w.err = err
+	}
+	w.mu.Unlock()
+
+	if firstError && w.onError != nil {
+		w.onError()
+	}
+	return n, err
+}
+
+func (w *rawLogWriter) Err() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
 
 func Run(ctx context.Context, command gradle.Command, logDir string) (Result, error) {
 	return RunWithOptions(ctx, command, logDir, Options{})
@@ -81,7 +116,10 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	cmd := exec.CommandContext(runCtx, command.Executable, command.Args...)
 	cmd.Dir = command.ProjectDir
 	configureCommand(cmd)
-	cmd.WaitDelay = 5 * time.Second
+	// WaitDelay bounds cancellation and descendants that retain inherited
+	// output descriptors after the command exits. Wait still drains normally
+	// when those descriptors close, preserving all captured output.
+	cmd.WaitDelay = commandWaitDelay
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -92,14 +130,15 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		return nil
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{RawLogPath: rawLogPath}, fmt.Errorf("attach stdout pipe: %w", err)
+	// Keep one shared, comparable non-*os.File writer in both fields. exec.Cmd
+	// then gives stdout and stderr one pipe and one copy goroutine, so Wait
+	// drains inherited descriptors and reports copy/write failures.
+	outputWriter := &rawLogWriter{
+		destination: rawLogFile,
+		onError:     cancel,
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{RawLogPath: rawLogPath}, fmt.Errorf("attach stderr pipe: %w", err)
-	}
+	cmd.Stdout = outputWriter
+	cmd.Stderr = outputWriter
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -110,44 +149,14 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	startProgressReporter(rawLogPath, startedAt, opts, doneCh)
 	defer close(doneCh)
 
-	linesCh := make(chan string, 64)
-	scanErrCh := make(chan error, 2)
-	var readers sync.WaitGroup
-	readers.Add(2)
-
-	go scanStream(stdout, linesCh, scanErrCh, &readers)
-	go scanStream(stderr, linesCh, scanErrCh, &readers)
-	go func() {
-		readers.Wait()
-		close(linesCh)
-		close(scanErrCh)
-	}()
-
-	var writeErr error
-	for line := range linesCh {
-		if writeErr != nil {
-			continue
-		}
-		if _, err := fmt.Fprintln(rawLogFile, line); err != nil {
-			writeErr = fmt.Errorf("write raw log: %w", err)
-			cancel()
-		}
-	}
-
-	var streamErr error
-	for scanErr := range scanErrCh {
-		if scanErr != nil && streamErr == nil {
-			streamErr = fmt.Errorf("scan command output: %w", scanErr)
-			cancel()
-		}
-	}
-
 	waitErr := cmd.Wait()
 	duration := time.Since(startedAt)
 	exitCode := exitCodeFromWait(waitErr, cmd)
 
-	if err := rawLogFile.Close(); err != nil && writeErr == nil {
-		writeErr = fmt.Errorf("close raw log: %w", err)
+	writeErr := outputWriter.Err()
+	var closeErr error
+	if err := rawLogFile.Close(); err != nil {
+		closeErr = fmt.Errorf("close raw log: %w", err)
 	}
 	rawLogClosed = true
 
@@ -168,11 +177,11 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	result.RawLogPath = rawLogPath
 
 	if writeErr != nil {
-		return result, writeErr
+		return result, fmt.Errorf("write raw log: %w", writeErr)
 	}
 
-	if streamErr != nil {
-		return result, streamErr
+	if closeErr != nil {
+		return result, closeErr
 	}
 
 	if waitErr != nil {
@@ -298,34 +307,6 @@ func pruneProjectRawLogs(logDir, projectDir, keepPath string) error {
 	}
 
 	return nil
-}
-
-func scanStream(stream io.ReadCloser, linesCh chan<- string, errCh chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer stream.Close()
-
-	reader := bufio.NewReaderSize(stream, 64*1024)
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			linesCh <- trimLineEnding(line)
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			errCh <- nil
-			return
-		}
-		errCh <- err
-		return
-	}
-}
-
-func trimLineEnding(line string) string {
-	line = strings.TrimSuffix(line, "\n")
-	line = strings.TrimSuffix(line, "\r")
-	return line
 }
 
 func exitCodeFromWait(waitErr error, cmd *exec.Cmd) int {
