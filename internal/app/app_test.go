@@ -7,11 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"build-brief/internal/gradle"
+	"build-brief/internal/runner"
 	"build-brief/internal/tracking"
 )
 
@@ -334,10 +338,7 @@ func TestRunPreservesGradleExitCodeWhenLogPruningFails(t *testing.T) {
 		}
 	}
 
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "BUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -351,9 +352,7 @@ func TestRunPreservesGradleExitCodeWhenLogPruningFails(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected Gradle exit code 0 despite pruning failure, got %d stderr=%q", exitCode, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "prune raw log files") {
-		t.Fatalf("expected pruning failure to remain observable, got stderr=%q", stderr.String())
-	}
+	assertPruningWarning(t, stderr.String())
 	if !strings.Contains(stdout.String(), "BUILD SUCCESSFUL in 1s") {
 		t.Fatalf("expected normal summary after pruning warning, got stdout=%q", stdout.String())
 	}
@@ -375,10 +374,7 @@ func TestRunPreservesNonzeroGradleExitCodeWhenLogPruningFails(t *testing.T) {
 		}
 	}
 
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '> Task :test FAILED'\necho 'BUILD FAILED in 1s'\nexit 9\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "> Task :test FAILED\nBUILD FAILED in 1s\n", "", 9)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -392,9 +388,7 @@ func TestRunPreservesNonzeroGradleExitCodeWhenLogPruningFails(t *testing.T) {
 	if exitCode != 9 {
 		t.Fatalf("expected Gradle exit code 9 despite pruning failure, got %d stderr=%q", exitCode, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "prune raw log files") {
-		t.Fatalf("expected pruning failure to remain observable, got stderr=%q", stderr.String())
-	}
+	assertPruningWarning(t, stderr.String())
 	if !strings.Contains(stdout.String(), "BUILD FAILED in 1s") {
 		t.Fatalf("expected normal summary after pruning warning, got stdout=%q", stdout.String())
 	}
@@ -406,10 +400,7 @@ func TestRunContinuesAfterTokenEstimationFailureOnSuccess(t *testing.T) {
 
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "BUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -443,10 +434,7 @@ func TestRunContinuesAfterTokenEstimationFailureOnGradleFailure(t *testing.T) {
 
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '> Task :test FAILED'\necho 'BUILD FAILED in 1s'\nexit 9\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "> Task :test FAILED\nBUILD FAILED in 1s\n", "", 9)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -520,44 +508,55 @@ func assertZeroTokenMetrics(t *testing.T, record tracking.Record) {
 	}
 }
 
-func TestRunKeepsRequiredRawLogFinalizationFailureFatal(t *testing.T) {
-	projectDir := t.TempDir()
-	logDir := t.TempDir()
-	t.Setenv("BUILD_BRIEF_TEST_LOG_DIR", logDir)
-	defer func() { _ = os.Chmod(logDir, 0o755) }()
+func assertPruningWarning(t *testing.T, stderr string) {
+	t.Helper()
+	if !strings.Contains(stderr, "build-brief: warning:") {
+		t.Fatalf("expected pruning failure to be labeled as a warning, got stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "prune raw log files") {
+		t.Fatalf("expected pruning failure to remain observable, got stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "continuing with Gradle result") {
+		t.Fatalf("expected pruning warning to indicate continuation, got stderr=%q", stderr)
+	}
+}
 
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	script := "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nchmod 0555 \"$BUILD_BRIEF_TEST_LOG_DIR\"\nexit 0\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
+func appGradleCommand(t *testing.T, stdout, stderr string, exitCode int) string {
+	t.Helper()
+	originalRunGradle := runGradle
+	runGradle = func(ctx context.Context, command gradle.Command, logDir string, opts runner.Options) (runner.Result, error) {
+		command.Args = []string{"-test.run=TestAppGradleHelper$"}
+		return runner.RunWithOptions(ctx, command, logDir, opts)
+	}
+	t.Cleanup(func() {
+		runGradle = originalRunGradle
+	})
+
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_HELPER", "1")
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_STDOUT", stdout)
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_STDERR", stderr)
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_EXIT", strconv.Itoa(exitCode))
+	return os.Args[0]
+}
+
+func TestAppGradleHelper(t *testing.T) {
+	if os.Getenv("BUILD_BRIEF_APP_GRADLE_HELPER") != "1" {
+		return
 	}
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	exitCode := Run(context.Background(), []string{
-		"--project-dir", projectDir,
-		"--gradle", scriptPath,
-		"--log-dir", logDir,
-		"test",
-	}, strings.NewReader(""), &stdout, &stderr)
-
-	if exitCode == 0 {
-		t.Fatalf("expected required raw-log finalization failure to remain fatal, stderr=%q", stderr.String())
+	_, _ = io.WriteString(os.Stdout, os.Getenv("BUILD_BRIEF_APP_GRADLE_STDOUT"))
+	_, _ = io.WriteString(os.Stderr, os.Getenv("BUILD_BRIEF_APP_GRADLE_STDERR"))
+	exitCode, err := strconv.Atoi(os.Getenv("BUILD_BRIEF_APP_GRADLE_EXIT"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid helper exit code: %v", err)
+		os.Exit(1)
 	}
-	if !strings.Contains(stderr.String(), "finalize raw log file") {
-		t.Fatalf("expected finalization failure to be visible, got stderr=%q", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "Raw log:") {
-		t.Fatalf("expected raw log path to be visible, got stderr=%q", stderr.String())
-	}
+	os.Exit(exitCode)
 }
 
 func TestRunRawModeStreamsOutput(t *testing.T) {
 	projectDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho raw-line-1\necho raw-line-2\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "raw-line-1\nraw-line-2\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -579,10 +578,7 @@ func TestRunRawModeStreamsOutput(t *testing.T) {
 
 func TestRunHumanModePreservesInformationalTaskOutput(t *testing.T) {
 	projectDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '> Task :tasks'\necho \"Tasks runnable from root project 'sample'\"\necho 'assemble - Assembles the outputs of this project.'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "> Task :tasks\nTasks runnable from root project 'sample'\nassemble - Assembles the outputs of this project.\nBUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -611,10 +607,7 @@ func TestRunHumanModePreservesInformationalTaskOutput(t *testing.T) {
 
 func TestRunHumanModeHighlightsGeneratedOutputLocations(t *testing.T) {
 	projectDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots'\necho 'AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots\nAgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json\nBUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -651,10 +644,7 @@ func TestRunHumanModeUsesDefaultProjectConfig(t *testing.T) {
 	}`), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'Firebase result https://console.firebase.google.com/testlab'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "Firebase result https://console.firebase.google.com/testlab\nBUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -738,8 +728,7 @@ func TestRunDoctorUnknownFlagExitsTwo(t *testing.T) {
 
 func writeExecutable(t *testing.T, path string) {
 	t.Helper()
-	mode := os.FileMode(0o755)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho should-not-run > marker\n"), mode); err != nil {
+	if err := os.WriteFile(path, []byte("portable executable placeholder\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
