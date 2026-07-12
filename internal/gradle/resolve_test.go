@@ -181,6 +181,45 @@ func TestTrackingLineRedactsSpaceSeparatedShortPropertyFlags(t *testing.T) {
 	}
 }
 
+func TestTrackingLineRedactsAllSensitivePropertyForms(t *testing.T) {
+	command := Command{
+		Executable: "/tmp/gradlew",
+		Args: []string{
+			"test",
+			"-P", "split.project=split-project-secret",
+			"-D", "split.system=split-system-secret",
+			"-Pjoined.project=joined-project-secret",
+			"-Djoined.system=joined-system-secret",
+			"--project-prop", "long.project=long-project-secret",
+			"--system-prop", "long.system=long-system-secret",
+			"--project-prop=equals.project=equals-project-secret",
+			"--system-prop=equals.system=equals-system-secret",
+			"--tests", "com.example.SafeTest",
+		},
+	}
+
+	got := command.TrackingLine()
+	for _, secret := range []string{
+		"split-project-secret",
+		"split-system-secret",
+		"joined-project-secret",
+		"joined-system-secret",
+		"long-project-secret",
+		"long-system-secret",
+		"equals-project-secret",
+		"equals-system-secret",
+	} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("tracking line leaked %q: %q", secret, got)
+		}
+	}
+	for _, safe := range []string{"gradlew test", "--tests com.example.SafeTest", "-P <redacted>", "--project-prop=<redacted>"} {
+		if !strings.Contains(got, safe) {
+			t.Fatalf("tracking line lost safe value %q: %q", safe, got)
+		}
+	}
+}
+
 func TestSplitInvocationRecognizesGradleExecutable(t *testing.T) {
 	invocation, args := SplitInvocation([]string{"gradle", "test"})
 	if invocation != "gradle" {

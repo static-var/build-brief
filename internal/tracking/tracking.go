@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"build-brief/internal/gradle"
 )
 
 const (
@@ -117,6 +119,7 @@ func SavingsPct(rawTokens, emittedTokens int) float64 {
 }
 
 func RecordRun(record Record) error {
+	record.Command = gradle.SanitizeCommandLine(record.Command)
 	path, err := dbPath()
 	if err != nil {
 		return err
@@ -196,6 +199,7 @@ func Reset() error {
 }
 
 func RenderText(w io.Writer, report Report, history bool) error {
+	report = sanitizeReport(report)
 	if report.Summary.TotalCommands == 0 {
 		_, err := fmt.Fprintln(w, "No gains data yet.")
 		return err
@@ -296,6 +300,7 @@ func RenderText(w io.Writer, report Report, history bool) error {
 }
 
 func RenderJSON(w io.Writer, report Report) error {
+	report = sanitizeReport(report)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)
@@ -361,8 +366,18 @@ func summarize(records []Record) Summary {
 	return summary
 }
 
+func sanitizeReport(report Report) Report {
+	for i := range report.Summary.ByCommand {
+		report.Summary.ByCommand[i].Command = gradle.SanitizeCommandLine(report.Summary.ByCommand[i].Command)
+	}
+	for i := range report.Recent {
+		report.Recent[i].Command = gradle.SanitizeCommandLine(report.Recent[i].Command)
+	}
+	return report
+}
+
 func normalizeHistoricCommand(command string) string {
-	fields := strings.Fields(command)
+	fields := strings.Fields(gradle.SanitizeCommandLine(command))
 	if len(fields) == 0 {
 		return ""
 	}

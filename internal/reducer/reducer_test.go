@@ -1,6 +1,7 @@
 package reducer
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -917,6 +918,62 @@ func TestReduceFindsKMPArtifactsAndVerifiedLogHints(t *testing.T) {
 	} {
 		if !containsArtifact(summary.Artifacts, expected.kind, expected.path) {
 			t.Fatalf("expected %s artifact %q in %+v", expected.kind, expected.path, summary.Artifacts)
+		}
+	}
+}
+
+func TestReduceSanitizesSensitiveCommandArguments(t *testing.T) {
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args: []string{
+			"--console=plain",
+			"test",
+			"-P", "split.project=split-project-secret",
+			"-D", "split.system=split-system-secret",
+			"-Pjoined.project=joined-project-secret",
+			"-Djoined.system=joined-system-secret",
+			"--project-prop", "long.project=long-project-secret",
+			"--system-prop", "long.system=long-system-secret",
+			"--project-prop=equals.project=equals-project-secret",
+			"--system-prop=equals.system=equals-system-secret",
+			"--tests", "com.example.SafeTest",
+		},
+		ProjectDir: "/tmp/project",
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce command summary: %v", err)
+	}
+
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	text := string(encoded)
+	for _, secret := range []string{
+		"split-project-secret",
+		"split-system-secret",
+		"joined-project-secret",
+		"joined-system-secret",
+		"long-project-secret",
+		"long-system-secret",
+		"equals-project-secret",
+		"equals-system-secret",
+	} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("structured summary leaked %q: %s", secret, text)
+		}
+	}
+	for _, safe := range []string{"test", "--tests", "com.example.SafeTest"} {
+		if !strings.Contains(text, safe) {
+			t.Fatalf("structured summary lost safe argument %q: %s", safe, text)
 		}
 	}
 }

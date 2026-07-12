@@ -396,6 +396,63 @@ func TestLoadReportNormalizesHistoricCommandLabels(t *testing.T) {
 	}
 }
 
+func TestRecordRunNeverPersistsSensitivePropertyValues(t *testing.T) {
+	setTrackingEnv(t)
+
+	command := "gradlew test -P split.project=split-project-secret -D split.system=split-system-secret -Pjoined.project=joined-project-secret -Djoined.system=joined-system-secret --project-prop long.project=long-project-secret --system-prop long.system=long-system-secret --project-prop=equals.project=equals-project-secret --system-prop=equals.system=equals-system-secret"
+	if err := RecordRun(Record{
+		Timestamp:     time.Now(),
+		ProjectPath:   "/tmp/project",
+		Command:       command,
+		Mode:          "human",
+		RawTokens:     100,
+		EmittedTokens: 10,
+		SavedTokens:   90,
+		SavingsPct:    90,
+	}); err != nil {
+		t.Fatalf("record run: %v", err)
+	}
+
+	path, err := dbPath()
+	if err != nil {
+		t.Fatalf("db path: %v", err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read tracking history: %v", err)
+	}
+	report, err := LoadReport("", true)
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	observed := string(stored) + string(encoded)
+	for _, secret := range []string{
+		"split-project-secret",
+		"split-system-secret",
+		"joined-project-secret",
+		"joined-system-secret",
+		"long-project-secret",
+		"long-system-secret",
+		"equals-project-secret",
+		"equals-system-secret",
+	} {
+		if strings.Contains(observed, secret) {
+			t.Fatalf("tracking history leaked %q: %s", secret, observed)
+		}
+	}
+	for _, command := range []string{report.Summary.ByCommand[0].Command, report.Recent[0].Command} {
+		for _, safe := range []string{"gradlew test", "--project-prop=<redacted>", "--system-prop=<redacted>"} {
+			if !strings.Contains(command, safe) {
+				t.Fatalf("tracking report lost safe value %q: %s", safe, command)
+			}
+		}
+	}
+}
+
 func setTrackingEnv(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

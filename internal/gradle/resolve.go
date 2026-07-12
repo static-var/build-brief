@@ -121,15 +121,46 @@ func ValidateArgs(args []string) error {
 	return nil
 }
 
+func SanitizeArgs(args []string) []string {
+	sanitized := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-P" || arg == "-D" || arg == "--project-prop" || arg == "--system-prop":
+			sanitized = append(sanitized, arg)
+			if i+1 < len(args) {
+				sanitized = append(sanitized, "<redacted>")
+				i++
+			}
+		case strings.HasPrefix(arg, "-P") && arg != "-P":
+			sanitized = append(sanitized, "-P<redacted>")
+		case strings.HasPrefix(arg, "-D") && arg != "-D":
+			sanitized = append(sanitized, "-D<redacted>")
+		case strings.HasPrefix(arg, "--project-prop="):
+			sanitized = append(sanitized, "--project-prop=<redacted>")
+		case strings.HasPrefix(arg, "--system-prop="):
+			sanitized = append(sanitized, "--system-prop=<redacted>")
+		default:
+			sanitized = append(sanitized, arg)
+		}
+	}
+	return sanitized
+}
+
+func SanitizeCommandLine(command string) string {
+	return strings.Join(SanitizeArgs(strings.Fields(command)), " ")
+}
+
 func (c Command) DisplayLine() string {
-	return strings.Join(append([]string{filepath.Base(c.Executable)}, c.Args...), " ")
+	return strings.Join(append([]string{filepath.Base(c.Executable)}, SanitizeArgs(c.Args)...), " ")
 }
 
 func (c Command) TrackingLine() string {
-	filtered := make([]string, 0, len(c.Args))
+	sanitizedArgs := SanitizeArgs(c.Args)
+	filtered := make([]string, 0, len(sanitizedArgs))
 	skipNext := false
 	nextValueMode := ""
-	for _, arg := range c.Args {
+	for _, arg := range sanitizedArgs {
 		if skipNext {
 			skipNext = false
 			switch nextValueMode {
@@ -169,8 +200,9 @@ func (c Command) TrackingLine() string {
 			nextValueMode = "keep"
 		case strings.HasPrefix(arg, "--tests="), strings.HasPrefix(arg, "--exclude-task="):
 			filtered = append(filtered, arg)
-		case shouldRedactTrackingArg(arg):
-			filtered = append(filtered, redactTrackingArg(arg))
+		case strings.HasPrefix(arg, "-P"), strings.HasPrefix(arg, "-D"),
+			strings.HasPrefix(arg, "--project-prop="), strings.HasPrefix(arg, "--system-prop="):
+			filtered = append(filtered, arg)
 		case shouldKeepTrackingArg(arg):
 			filtered = append(filtered, arg)
 		default:
@@ -179,24 +211,6 @@ func (c Command) TrackingLine() string {
 	}
 
 	return normalizeTrackingCommand(strings.Join(append([]string{filepath.Base(c.Executable)}, filtered...), " "))
-}
-
-func shouldRedactTrackingArg(arg string) bool {
-	return (strings.HasPrefix(arg, "-P") && arg != "-P") ||
-		(strings.HasPrefix(arg, "-D") && arg != "-D") ||
-		arg == "--project-prop" ||
-		arg == "--system-prop"
-}
-
-func redactTrackingArg(arg string) string {
-	switch {
-	case strings.HasPrefix(arg, "-P"):
-		return "-P<redacted>"
-	case strings.HasPrefix(arg, "-D"):
-		return "-D<redacted>"
-	default:
-		return "<redacted>"
-	}
 }
 
 func shouldKeepTrackingArg(arg string) bool {
