@@ -11,15 +11,19 @@ import (
 )
 
 const (
-	maxArtifactsReported = 20
-	maxScanErrors        = 8
-	maxScanCoverageRoots = 64
-	maxScanHints         = maxScanCoverageRoots
-	maxScanHintBytes     = 64 * 1024
-	maxHintsPerLine      = 64
-	maxHintBytesPerLine  = 64 * 1024
-	maxHintLength        = 4096
-	artifactTimeSkew     = time.Second
+	maxArtifactsReported       = 20
+	maxScanErrors              = 8
+	maxScanCoverageRoots       = 64
+	maxScanHints               = maxScanCoverageRoots
+	maxScanHintBytes           = 64 * 1024
+	maxHintsPerLine            = 64
+	maxHintBytesPerLine        = 64 * 1024
+	maxHintLength              = 4096
+	maxScanErrorBytes          = 64 * 1024
+	maxSnapshotArtifactEntries = 4096
+	maxSnapshotClassEntries    = 16384
+	maxSnapshotCodegenEntries  = 16384
+	artifactTimeSkew           = time.Second
 )
 
 type Artifact struct {
@@ -38,14 +42,16 @@ type Artifact struct {
 // set and Skipped is Discovered-Reported. HintsTruncated distinguishes a
 // bounded direct-API hint input from a reporting-cap truncation.
 type ScanMetadata struct {
-	Discovered      int      `json:"discovered"`
-	Reported        int      `json:"reported"`
-	Skipped         int      `json:"skipped"`
-	Errors          []string `json:"errors,omitempty"`
-	ErrorCount      int      `json:"error_count,omitempty"`
-	ErrorsTruncated bool     `json:"errors_truncated,omitempty"`
-	HintsTruncated  bool     `json:"hints_truncated,omitempty"`
-	Truncated       bool     `json:"truncated"`
+	Discovered        int      `json:"discovered"`
+	Reported          int      `json:"reported"`
+	Skipped           int      `json:"skipped"`
+	Errors            []string `json:"errors,omitempty"`
+	ErrorCount        int      `json:"error_count,omitempty"`
+	ErrorBytes        int64    `json:"error_bytes,omitempty"`
+	ErrorsTruncated   bool     `json:"errors_truncated,omitempty"`
+	HintsTruncated    bool     `json:"hints_truncated,omitempty"`
+	SnapshotTruncated bool     `json:"snapshot_truncated,omitempty"`
+	Truncated         bool     `json:"truncated"`
 }
 
 type GeneratedResult struct {
@@ -136,10 +142,18 @@ func (c *artifactCollector) addError(path string, err error) {
 	c.metadata.ErrorCount++
 	if len(c.metadata.Errors) >= maxScanErrors {
 		c.metadata.ErrorsTruncated = true
+		c.metadata.Truncated = true
 		return
 	}
 	scanError := sanitizeScanErrorText(c.projectDir, err.Error())
-	c.metadata.Errors = append(c.metadata.Errors, relativeScanPath(c.projectDir, path)+": "+scanError)
+	message := relativeScanPath(c.projectDir, path) + ": " + scanError
+	if c.metadata.ErrorBytes+int64(len(message)) > maxScanErrorBytes {
+		c.metadata.ErrorsTruncated = true
+		c.metadata.Truncated = true
+		return
+	}
+	c.metadata.Errors = append(c.metadata.Errors, message)
+	c.metadata.ErrorBytes += int64(len(message))
 }
 
 // addCoverage records only roots that can contain one of the supplied hints.
@@ -244,16 +258,34 @@ func scanPathVariants(projectDir string) []string {
 	return variants
 }
 
+type SnapshotEntryMetadata struct {
+	Discovered int
+	Retained   int
+	Truncated  bool
+}
+
+type SnapshotMetadata struct {
+	ArtifactEntries SnapshotEntryMetadata
+	ClassEntries    SnapshotEntryMetadata
+	CodegenEntries  SnapshotEntryMetadata
+}
+
+func (m SnapshotMetadata) Truncated() bool {
+	return m.ArtifactEntries.Truncated || m.ClassEntries.Truncated || m.CodegenEntries.Truncated
+}
+
 type Snapshot struct {
 	Captured        bool                     `json:"-"`
 	ArtifactEntries map[string]SnapshotEntry `json:"-"`
 	ClassEntries    map[string]SnapshotEntry `json:"-"`
 	CodegenEntries  map[string]SnapshotEntry `json:"-"`
+	Metadata        SnapshotMetadata         `json:"-"`
 }
 
 type SnapshotEntry struct {
-	ModTimeUnixNano int64 `json:"-"`
-	SizeBytes       int64 `json:"-"`
+	ModTimeUnixNano int64  `json:"-"`
+	SizeBytes       int64  `json:"-"`
+	Kind            string `json:"-"`
 }
 
 type artifactRoot struct {
@@ -319,7 +351,8 @@ func FindGeneratedWithMetadata(projectDir string, startedAt time.Time, snapshot 
 	threshold := startedAt.Add(-artifactTimeSkew)
 	collector := newArtifactCollector(projectDir)
 	collector.metadata.HintsTruncated = hintsTruncated
-	collector.metadata.Truncated = hintsTruncated
+	collector.metadata.SnapshotTruncated = snapshot.Metadata.Truncated()
+	collector.metadata.Truncated = hintsTruncated || collector.metadata.SnapshotTruncated
 	classCount := 0
 	codegenCount := 0
 
@@ -740,16 +773,16 @@ func buildDirPath(path string, entry fs.DirEntry) (string, bool, bool) {
 
 func captureBuildDir(buildDir, projectDir string, snapshot *Snapshot) {
 	for _, root := range artifactRoots {
-		captureArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, snapshot.ArtifactEntries)
+		captureArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, snapshot.ArtifactEntries, &snapshot.Metadata.ArtifactEntries)
 	}
 
-	captureMatchingFiles(filepath.Join(buildDir, "classes"), projectDir, snapshot.ClassEntries, func(path string) bool {
+	captureMatchingFiles(filepath.Join(buildDir, "classes"), projectDir, snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
 	})
-	captureMatchingFiles(filepath.Join(buildDir, "tmp", "kotlin-classes"), projectDir, snapshot.ClassEntries, func(path string) bool {
+	captureMatchingFiles(filepath.Join(buildDir, "tmp", "kotlin-classes"), projectDir, snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
 	})
-	captureMatchingFiles(filepath.Join(buildDir, "generated"), projectDir, snapshot.CodegenEntries, func(path string) bool {
+	captureMatchingFiles(filepath.Join(buildDir, "generated"), projectDir, snapshot.CodegenEntries, &snapshot.Metadata.CodegenEntries, maxSnapshotCodegenEntries, func(path string) bool {
 		return true
 	})
 }
@@ -775,7 +808,7 @@ func scanAvailableBuildDir(buildDir, projectDir string, collector *artifactColle
 	}
 }
 
-func captureArtifactRoot(rootDir, projectDir string, entries map[string]SnapshotEntry) {
+func captureArtifactRoot(rootDir, projectDir string, entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata) {
 	info, err := os.Stat(rootDir)
 	if err != nil || !info.IsDir() {
 		return
@@ -788,7 +821,7 @@ func captureArtifactRoot(rootDir, projectDir string, entries map[string]Snapshot
 		if entry.IsDir() {
 			artifact, state, ok := buildArtifact(path, entry, projectDir)
 			if ok {
-				entries[artifact.Path] = state
+				retainArtifactSnapshotEntry(entries, metadata, artifact, state)
 				return filepath.SkipDir
 			}
 			return nil
@@ -801,9 +834,38 @@ func captureArtifactRoot(rootDir, projectDir string, entries map[string]Snapshot
 		if !ok {
 			return nil
 		}
-		entries[artifact.Path] = state
+		retainArtifactSnapshotEntry(entries, metadata, artifact, state)
 		return nil
 	})
+}
+
+func retainArtifactSnapshotEntry(entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, artifact Artifact, state SnapshotEntry) {
+	if _, exists := entries[artifact.Path]; exists {
+		return
+	}
+	metadata.Discovered++
+	if len(entries) < maxSnapshotArtifactEntries {
+		entries[artifact.Path] = state
+		metadata.Retained++
+		return
+	}
+	metadata.Truncated = true
+	worstPath := ""
+	var worst Artifact
+	for path, entry := range entries {
+		kind := entry.Kind
+		if kind == "" {
+			kind, _ = artifactKind(filepath.Base(path), false)
+		}
+		candidate := Artifact{Kind: kind, Path: path, SizeBytes: entry.SizeBytes}
+		if worstPath == "" || artifactLess(worst, candidate) {
+			worstPath, worst = path, candidate
+		}
+	}
+	if artifactLess(artifact, worst) {
+		delete(entries, worstPath)
+		entries[artifact.Path] = state
+	}
 }
 
 func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector, hints []string) {
@@ -850,7 +912,7 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 	}
 }
 
-func captureMatchingFiles(rootDir, projectDir string, entries map[string]SnapshotEntry, match func(path string) bool) {
+func captureMatchingFiles(rootDir, projectDir string, entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, maxEntries int, match func(path string) bool) {
 	info, err := os.Stat(rootDir)
 	if err != nil || !info.IsDir() {
 		return
@@ -871,9 +933,32 @@ func captureMatchingFiles(rootDir, projectDir string, entries map[string]Snapsho
 		if !ok {
 			return nil
 		}
-		entries[relativePath] = state
+		retainSnapshotEntry(entries, metadata, maxEntries, relativePath, state)
 		return nil
 	})
+}
+
+func retainSnapshotEntry(entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, maxEntries int, path string, state SnapshotEntry) {
+	if _, exists := entries[path]; exists {
+		return
+	}
+	metadata.Discovered++
+	if len(entries) < maxEntries {
+		entries[path] = state
+		metadata.Retained++
+		return
+	}
+	metadata.Truncated = true
+	worstPath := ""
+	for retained := range entries {
+		if worstPath == "" || retained > worstPath {
+			worstPath = retained
+		}
+	}
+	if path < worstPath {
+		delete(entries, worstPath)
+		entries[path] = state
+	}
 }
 
 func countChangedFiles(rootDir, projectDir string, threshold time.Time, useSnapshot bool, beforeEntries map[string]SnapshotEntry, match func(path string) bool) int {
@@ -973,9 +1058,11 @@ func buildArtifact(path string, entry fs.DirEntry, projectDir string) (Artifact,
 	state := SnapshotEntry{
 		ModTimeUnixNano: info.ModTime().UnixNano(),
 		SizeBytes:       info.Size(),
+		Kind:            kind,
 	}
 	if entry.IsDir() {
 		state = directorySnapshot(path, info.ModTime())
+		state.Kind = kind
 	}
 
 	return Artifact{

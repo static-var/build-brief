@@ -1846,6 +1846,46 @@ func TestReduceBoundsSummaryCollectionBytes(t *testing.T) {
 	}
 }
 
+func TestReduceRawInputLineLimitCountsOnlyDiscardedContent(t *testing.T) {
+	cases := []struct {
+		name          string
+		contentBytes  int
+		wantPartial   bool
+		wantDiscarded int64
+	}{
+		{name: "limit minus one", contentBytes: maxReducerLineBytes - 1},
+		{name: "limit", contentBytes: maxReducerLineBytes},
+		{name: "limit plus one", contentBytes: maxReducerLineBytes + 1, wantPartial: true, wantDiscarded: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, err := Reduce(gradle.Command{
+				Executable: "/tmp/gradle",
+				Args:       []string{"--console=plain", "build"},
+				ProjectDir: t.TempDir(),
+				Source:     gradle.SourceSystem,
+			}, runner.Result{
+				ExitCode:   0,
+				Duration:   time.Second,
+				RawLogPath: writeTestLog(t, []string{strings.Repeat("x", tc.contentBytes), "BUILD SUCCESSFUL in 1s"}),
+			})
+			if err != nil {
+				t.Fatalf("reduce limit boundary: %v", err)
+			}
+			if tc.wantPartial {
+				if summary.RawInput == nil || !summary.RawInput.Partial || summary.RawInput.TruncatedLines != 1 || summary.RawInput.TruncatedBytes != tc.wantDiscarded {
+					t.Fatalf("expected discarded-content metadata, got %+v", summary.RawInput)
+				}
+				return
+			}
+			if summary.RawInput != nil {
+				t.Fatalf("expected complete %d-byte line plus newline, got %+v", tc.contentBytes, summary.RawInput)
+			}
+		})
+	}
+}
+
 func TestReduceLongFragmentedLineUsesRawInputCompleteness(t *testing.T) {
 	line := strings.Repeat("x", maxReducerLineBytes+1) + " > Task :trailing FAILED"
 	summary, err := Reduce(gradle.Command{
@@ -1869,6 +1909,11 @@ func TestReduceLongFragmentedLineUsesRawInputCompleteness(t *testing.T) {
 	}
 	if summary.Reducer == nil || !summary.Reducer.Partial || !contains(summary.Reducer.PartialFields, "failed_tasks") {
 		t.Fatalf("expected failed task field to be partial, got %+v", summary.Reducer)
+	}
+	for _, field := range []string{"artifacts", "artifact_hint_scan", "diagnostics", "config_cache_status", "config_cache_report_url", "warning_count"} {
+		if !contains(summary.Reducer.PartialFields, field) {
+			t.Fatalf("expected raw truncation to mark %q partial, got %+v", field, summary.Reducer.PartialFields)
+		}
 	}
 	encoded, err := json.Marshal(summary)
 	if err != nil {

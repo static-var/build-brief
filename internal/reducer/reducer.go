@@ -173,6 +173,7 @@ func (c *boundedStringCollector) add(value string) bool {
 		c.truncated = true
 		return false
 	}
+	value = strings.Clone(value)
 	c.values = append(c.values, value)
 	c.retainedBytes += int64(len(value))
 	if c.deduplicate {
@@ -405,20 +406,27 @@ func readLogLines(reader *bufio.Reader, visit func([]byte, bool, int64) error) e
 		fragment, err := reader.ReadSlice('\n')
 		if len(fragment) > 0 {
 			lineBytes += int64(len(fragment))
+			content := fragment
+			if err != bufio.ErrBufferFull && content[len(content)-1] == '\n' {
+				// The bound applies to line content. A newline terminator is not
+				// discarded content and must not make an exact-limit line partial.
+				content = content[:len(content)-1]
+			}
 			if !truncated {
 				remaining := maxReducerLineBytes - len(line)
-				if remaining <= 0 {
+				if len(content) > remaining {
+					line = append(line, content[:remaining]...)
 					truncated = true
 				} else {
-					if len(fragment) > remaining {
-						fragment = fragment[:remaining]
-						truncated = true
-					}
-					line = append(line, fragment...)
+					line = append(line, content...)
 				}
 			}
 			if err != bufio.ErrBufferFull {
-				if visitErr := visit(line, truncated, lineBytes-int64(len(line))); visitErr != nil {
+				contentBytes := lineBytes
+				if len(fragment) > 0 && fragment[len(fragment)-1] == '\n' {
+					contentBytes--
+				}
+				if visitErr := visit(line, truncated, contentBytes-int64(len(line))); visitErr != nil {
 					return visitErr
 				}
 				line = line[:0]
@@ -547,7 +555,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		}
 
 		if strings.HasPrefix(text, "BUILD SUCCESSFUL") || strings.HasPrefix(text, "BUILD FAILED") {
-			summary.BuildStatusLine = text
+			summary.BuildStatusLine = strings.Clone(text)
 		}
 
 		if invocationShape.IsPureInformational && shouldPreserveReportLine(text) {
@@ -583,10 +591,10 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		}
 
 		if status, ok := configCacheStatus(text); ok {
-			summary.ConfigCacheStatus = status
+			summary.ConfigCacheStatus = strings.Clone(status)
 		}
 		if m := configCacheReportPattern.FindStringSubmatch(text); m != nil {
-			summary.ConfigCacheReportURL = m[1]
+			summary.ConfigCacheReportURL = strings.Clone(m[1])
 		}
 		if isConfigCacheProblemSummary(text) {
 			configCacheProblems.add(text)
@@ -710,7 +718,7 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 	metadata := &ReducerMetadata{Collections: make(map[string]ReducerCollectionMetadata)}
 	partialFields := make(map[string]struct{})
 	if rawInput != nil {
-		for _, field := range []string{"build_status_line", "failed_tasks", "failed_tests", "warnings", "important_lines", "report_lines", "build_scan_urls", "config_cache_problems", "custom_matches"} {
+		for _, field := range []string{"artifact_hint_scan", "artifacts", "build_status_line", "build_scan_urls", "config_cache_problems", "config_cache_report_url", "config_cache_status", "custom_matches", "diagnostics", "failed_tasks", "failed_tests", "important_lines", "report_lines", "warning_count", "warnings"} {
 			partialFields[field] = struct{}{}
 		}
 	}

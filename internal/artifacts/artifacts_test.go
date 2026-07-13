@@ -216,6 +216,51 @@ func TestArtifactCollectorRetainsBoundedStateForLargeCandidateStream(t *testing.
 	}
 }
 
+func TestArtifactCollectorBoundsScanErrorBytesAndReportsOmission(t *testing.T) {
+	collector := newArtifactCollector("")
+	collector.addError("first", errors.New(strings.Repeat("x", maxScanErrorBytes-len("first: "))))
+	collector.addError("second", errors.New("discarded"))
+	metadata := collector.finish()
+
+	if metadata.ErrorCount != 2 || len(metadata.Errors) != 1 || metadata.ErrorBytes != int64(len(metadata.Errors[0])) {
+		t.Fatalf("expected bounded error details with truthful retained bytes, got %+v", metadata)
+	}
+	if !metadata.ErrorsTruncated || !metadata.Truncated {
+		t.Fatalf("expected omitted scan errors to mark metadata truncated, got %+v", metadata)
+	}
+}
+
+func TestCaptureBoundsSnapshotMapsAndReportsCounts(t *testing.T) {
+	projectDir := t.TempDir()
+	for i := 0; i < maxSnapshotArtifactEntries+1; i++ {
+		writeFile(t, filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%05d.jar", i)), "jar")
+	}
+	writeFile(t, filepath.Join(projectDir, "app", "build", "libs", "release.apk"), "apk")
+	for i := 0; i < maxSnapshotClassEntries+1; i++ {
+		writeFile(t, filepath.Join(projectDir, "app", "build", "classes", "main", fmt.Sprintf("Class%05d.class", i)), "class")
+	}
+	for i := 0; i < maxSnapshotCodegenEntries+1; i++ {
+		writeFile(t, filepath.Join(projectDir, "app", "build", "generated", "main", fmt.Sprintf("Generated%05d.kt", i)), "codegen")
+	}
+
+	snapshot := Capture(projectDir)
+	if len(snapshot.ArtifactEntries) > maxSnapshotArtifactEntries || len(snapshot.ClassEntries) > maxSnapshotClassEntries || len(snapshot.CodegenEntries) > maxSnapshotCodegenEntries {
+		t.Fatalf("snapshot maps exceeded explicit caps: %+v", snapshot)
+	}
+	if snapshot.Metadata.ArtifactEntries.Discovered != maxSnapshotArtifactEntries+2 || snapshot.Metadata.ArtifactEntries.Retained != maxSnapshotArtifactEntries || !snapshot.Metadata.ArtifactEntries.Truncated {
+		t.Fatalf("unexpected artifact snapshot metadata: %+v", snapshot.Metadata.ArtifactEntries)
+	}
+	if _, ok := snapshot.ArtifactEntries["app/build/libs/release.apk"]; !ok {
+		t.Fatalf("expected high-priority APK to survive snapshot cap: %+v", snapshot.ArtifactEntries)
+	}
+	if snapshot.Metadata.ClassEntries.Discovered != maxSnapshotClassEntries+1 || snapshot.Metadata.ClassEntries.Retained != maxSnapshotClassEntries || !snapshot.Metadata.ClassEntries.Truncated {
+		t.Fatalf("unexpected class snapshot metadata: %+v", snapshot.Metadata.ClassEntries)
+	}
+	if snapshot.Metadata.CodegenEntries.Discovered != maxSnapshotCodegenEntries+1 || snapshot.Metadata.CodegenEntries.Retained != maxSnapshotCodegenEntries || !snapshot.Metadata.CodegenEntries.Truncated {
+		t.Fatalf("unexpected codegen snapshot metadata: %+v", snapshot.Metadata.CodegenEntries)
+	}
+}
+
 func TestFindGeneratedPreservesArtifactPriorityWhenCapped(t *testing.T) {
 	projectDir := t.TempDir()
 	for i := 0; i < maxArtifactsReported; i++ {
