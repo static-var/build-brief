@@ -248,6 +248,78 @@ func TestReduceBuildScanCapacityTracksOnlyRealScanURLs(t *testing.T) {
 	}
 }
 
+func TestReduceBuildScanMetadataDeduplicatesOmittedURLsRegardlessOfOrder(t *testing.T) {
+	urls := make([]string, 0, maxBuildScanURLs+1)
+	for i := 0; i <= maxBuildScanURLs; i++ {
+		urls = append(urls, fmt.Sprintf("https://develocity.internal.example/s/%03d", i))
+	}
+
+	reverse := make([]string, len(urls))
+	for i := range urls {
+		reverse[len(urls)-1-i] = urls[i]
+	}
+	logs := [][]string{
+		append(append([]string{}, urls...), urls[len(urls)-1], urls[len(urls)-1]),
+		append(append([]string{}, reverse...), reverse[0], reverse[0]),
+	}
+
+	for _, urls := range logs {
+		summary, err := Reduce(gradle.Command{
+			Executable: "/tmp/gradlew",
+			Args:       []string{"--console=plain", "build"},
+			ProjectDir: t.TempDir(),
+			Source:     gradle.SourceWrapper,
+		}, runner.Result{
+			ExitCode:   0,
+			Duration:   time.Second,
+			RawLogPath: writeTestLog(t, []string{"Build scan: " + strings.Join(urls, " "), "BUILD SUCCESSFUL in 1s"}),
+		})
+		if err != nil {
+			t.Fatalf("reduce repeated over-cap build scans: %v", err)
+		}
+		metadata := summary.Reducer.Collections["build_scan_urls"]
+		if metadata.Observed != maxBuildScanURLs+1 || metadata.Retained != maxBuildScanURLs || metadata.Omitted != 1 || metadata.CountPrecision != "exact" || !metadata.Truncated {
+			t.Fatalf("repeated scan URL must not change distinct metadata: %+v", metadata)
+		}
+	}
+}
+
+func TestReduceBuildScanMetadataUsesStableLowerBoundsAfterAuxiliaryCapacity(t *testing.T) {
+	urls := make([]string, 0, 2*maxBuildScanURLs+1)
+	for i := 0; i <= 2*maxBuildScanURLs; i++ {
+		urls = append(urls, fmt.Sprintf("https://develocity.internal.example/s/%03d", i))
+	}
+
+	reverse := make([]string, len(urls))
+	for i := range urls {
+		reverse[len(urls)-1-i] = urls[i]
+	}
+	logs := [][]string{
+		append(append([]string{}, urls...), urls[len(urls)-1], urls[len(urls)-1]),
+		append(append([]string{}, reverse...), reverse[0], reverse[0]),
+	}
+
+	for _, urls := range logs {
+		summary, err := Reduce(gradle.Command{
+			Executable: "/tmp/gradlew",
+			Args:       []string{"--console=plain", "build"},
+			ProjectDir: t.TempDir(),
+			Source:     gradle.SourceWrapper,
+		}, runner.Result{
+			ExitCode:   0,
+			Duration:   time.Second,
+			RawLogPath: writeTestLog(t, []string{"Build scan: " + strings.Join(urls, " "), "BUILD SUCCESSFUL in 1s"}),
+		})
+		if err != nil {
+			t.Fatalf("reduce auxiliary-cap build scans: %v", err)
+		}
+		metadata := summary.Reducer.Collections["build_scan_urls"]
+		if metadata.Observed != 2*maxBuildScanURLs+1 || metadata.Retained != maxBuildScanURLs || metadata.Omitted != maxBuildScanURLs+1 || metadata.CountPrecision != "lower_bound" || !metadata.Truncated {
+			t.Fatalf("overflowed scan URL metadata must use stable lower bounds: %+v", metadata)
+		}
+	}
+}
+
 func TestReduceDoesNotTreatGradleHelpURLAsBuildScan(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradlew",
@@ -1421,7 +1493,7 @@ func TestFinishReducerMetadataMarksArtifactScanErrorsPartial(t *testing.T) {
 		nil,
 		Summary{ArtifactScan: &ArtifactScanMetadata{ErrorCount: 1}},
 		collector(), false, false, 0, 0, 0,
-		collector(), collector(), collector(), collector(), collector(), collector(), collector(), nil,
+		collector(), collector(), collector(), collector(), newBuildScanURLCollector(1, 1), collector(), collector(), nil,
 	)
 	if metadata == nil || !metadata.Partial {
 		t.Fatalf("expected artifact scan error to mark reducer partial, got %+v", metadata)

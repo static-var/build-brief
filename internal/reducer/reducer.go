@@ -97,14 +97,19 @@ type RawInputMetadata struct {
 }
 
 type ReducerCollectionMetadata struct {
-	Observed      int   `json:"observed"`
-	Retained      int   `json:"retained"`
-	Omitted       int   `json:"omitted"`
-	ObservedBytes int64 `json:"observed_bytes"`
-	RetainedBytes int64 `json:"retained_bytes"`
-	OmittedBytes  int64 `json:"omitted_bytes"`
-	Truncated     bool  `json:"truncated"`
+	Observed       int    `json:"observed"`
+	Retained       int    `json:"retained"`
+	Omitted        int    `json:"omitted"`
+	ObservedBytes  int64  `json:"observed_bytes"`
+	RetainedBytes  int64  `json:"retained_bytes"`
+	OmittedBytes   int64  `json:"omitted_bytes"`
+	CountPrecision string `json:"count_precision,omitempty"`
+	Truncated      bool   `json:"truncated"`
 }
+
+// CountPrecision describes collection count completeness. "exact" means the
+// observed, omitted, and byte totals are exact; "lower_bound" means each is a
+// minimum after the fixed auxiliary deduplication state was exhausted.
 
 type ReducerMetadata struct {
 	Partial       bool                                 `json:"partial"`
@@ -195,6 +200,91 @@ func (c *boundedStringCollector) metadata() ReducerCollectionMetadata {
 	}
 	if metadata.Omitted > 0 || metadata.OmittedBytes > 0 {
 		metadata.Truncated = true
+	}
+	return metadata
+}
+
+// buildScanURLCollector retains URLs and a separately bounded set of rejected
+// URLs. This deduplicates over-cap repeats exactly until auxiliary state fills.
+// Once it fills, totals remain stable lower bounds rather than counting an
+// indistinguishable repeat as a new URL.
+type buildScanURLCollector struct {
+	values        []string
+	retained      map[string]struct{}
+	omitted       map[string]struct{}
+	maxCount      int
+	maxBytes      int64
+	retainedBytes int64
+	omittedBytes  int64
+	observed      int
+	observedBytes int64
+	exact         bool
+	truncated     bool
+}
+
+func newBuildScanURLCollector(maxCount, maxBytes int) *buildScanURLCollector {
+	return &buildScanURLCollector{
+		values:   make([]string, 0, maxCount),
+		retained: make(map[string]struct{}, maxCount),
+		omitted:  make(map[string]struct{}, maxCount),
+		maxCount: maxCount,
+		maxBytes: int64(maxBytes),
+		exact:    true,
+	}
+}
+
+func (c *buildScanURLCollector) add(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if _, ok := c.retained[value]; ok {
+		return false
+	}
+	if _, ok := c.omitted[value]; ok {
+		return false
+	}
+	if !c.exact {
+		return false
+	}
+
+	c.observed++
+	c.observedBytes += int64(len(value))
+	if len(c.values) < c.maxCount && c.retainedBytes+int64(len(value)) <= c.maxBytes {
+		value = strings.Clone(value)
+		c.values = append(c.values, value)
+		c.retained[value] = struct{}{}
+		c.retainedBytes += int64(len(value))
+		return true
+	}
+
+	c.truncated = true
+	if len(c.omitted) < c.maxCount && c.omittedBytes+int64(len(value)) <= c.maxBytes {
+		value = strings.Clone(value)
+		c.omitted[value] = struct{}{}
+		c.omittedBytes += int64(len(value))
+		return false
+	}
+
+	// This URL is certainly distinct from all remembered URLs. Do not retain
+	// it: that would make later repeats indistinguishable from new URLs.
+	c.exact = false
+	return false
+}
+
+func (c *buildScanURLCollector) metadata() ReducerCollectionMetadata {
+	metadata := ReducerCollectionMetadata{
+		Observed:       c.observed,
+		Retained:       len(c.values),
+		Omitted:        c.observed - len(c.values),
+		ObservedBytes:  c.observedBytes,
+		RetainedBytes:  c.retainedBytes,
+		OmittedBytes:   c.observedBytes - c.retainedBytes,
+		Truncated:      c.truncated,
+		CountPrecision: "exact",
+	}
+	if !c.exact {
+		metadata.CountPrecision = "lower_bound"
 	}
 	return metadata
 }
@@ -512,7 +602,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	failedTests := newBoundedStringCollector(maxFailedTests, maxSummaryCollectionBytes, true)
 	warnings := newBoundedStringCollector(maxWarnings, maxSummaryCollectionBytes, true)
 	important := newBoundedStringCollector(maxImportantLines, maxSummaryCollectionBytes, true)
-	buildScanURLs := newBoundedStringCollector(maxBuildScanURLs, maxSummaryCollectionBytes, true)
+	buildScanURLs := newBuildScanURLCollector(maxBuildScanURLs, maxSummaryCollectionBytes)
 	configCacheProblems := newBoundedStringCollector(maxConfigCacheLines, maxSummaryCollectionBytes, true)
 	reportLines := newBoundedStringCollector(maxReportLines, maxSummaryCollectionBytes, false)
 	customMatches := make([]*boundedStringCollector, len(customRules))
@@ -724,7 +814,7 @@ func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
 	return results
 }
 
-func syncSummaryCollections(summary *Summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) {
+func syncSummaryCollections(summary *Summary, failedTasks, failedTests, warnings, important *boundedStringCollector, buildScanURLs *buildScanURLCollector, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) {
 	summary.FailedTasks = failedTasks.values
 	summary.FailedTests = failedTests.values
 	summary.Warnings = warnings.values
@@ -744,7 +834,7 @@ func finishRawInputMetadata(metadata RawInputMetadata) *RawInputMetadata {
 	return &metadata
 }
 
-func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandArgs *boundedStringCollector, commandArgsTruncated, customRulesTruncated bool, customRulesObserved int, customRulesBytes, customRulesRetainedBytes int64, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) *ReducerMetadata {
+func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandArgs *boundedStringCollector, commandArgsTruncated, customRulesTruncated bool, customRulesObserved int, customRulesBytes, customRulesRetainedBytes int64, failedTasks, failedTests, warnings, important *boundedStringCollector, buildScanURLs *buildScanURLCollector, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) *ReducerMetadata {
 	metadata := &ReducerMetadata{Collections: make(map[string]ReducerCollectionMetadata)}
 	partialFields := make(map[string]struct{})
 	if rawInput != nil {
@@ -756,7 +846,7 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 	addReducerCollectionMetadata(metadata, partialFields, "failed_tests", failedTests)
 	addReducerCollectionMetadata(metadata, partialFields, "warnings", warnings)
 	addReducerCollectionMetadata(metadata, partialFields, "important_lines", important)
-	addReducerCollectionMetadata(metadata, partialFields, "build_scan_urls", buildScanURLs)
+	addBuildScanCollectionMetadata(metadata, partialFields, buildScanURLs)
 	addReducerCollectionMetadata(metadata, partialFields, "config_cache_problems", configCacheProblems)
 	addReducerCollectionMetadata(metadata, partialFields, "report_lines", reportLines)
 	for i, collector := range customMatches {
@@ -812,6 +902,15 @@ func addReducerCollectionMetadata(metadata *ReducerMetadata, partialFields map[s
 	}
 	metadata.Collections[name] = collection
 	partialFields[name] = struct{}{}
+}
+
+func addBuildScanCollectionMetadata(metadata *ReducerMetadata, partialFields map[string]struct{}, collector *buildScanURLCollector) {
+	collection := collector.metadata()
+	if !collection.Truncated {
+		return
+	}
+	metadata.Collections["build_scan_urls"] = collection
+	partialFields["build_scan_urls"] = struct{}{}
 }
 
 func enrichWithArtifacts(projectDir string, result runner.Result, invocation semanticInvocation, summary *Summary, hints []string, warnings *boundedStringCollector) {
@@ -1192,7 +1291,7 @@ func addSelectionError(selection *junitReportSelection, projectDir, path string,
 // scanBuildScanURLs streams URL candidates and retains only build scans. This
 // keeps unrelated links from consuming the build-scan capacity and leaves the
 // collector as the sole bounded state owner and truncation authority.
-func scanBuildScanURLs(text string, items *boundedStringCollector) bool {
+func scanBuildScanURLs(text string, items *buildScanURLCollector) bool {
 	found := false
 	for offset := 0; offset < len(text); {
 		match := urlPattern.FindStringIndex(text[offset:])
