@@ -163,7 +163,7 @@ func RecordRun(record Record) error {
 }
 
 func LoadReport(projectPath string, history bool) (Report, error) {
-	path, err := dbPath()
+	path, err := trackingPath()
 	if err != nil {
 		return Report{}, err
 	}
@@ -468,15 +468,23 @@ func normalizeHistoricCommand(command string) string {
 }
 
 func dbPath() (string, error) {
+	path, err := trackingPath()
+	if err != nil {
+		return "", err
+	}
+	if err := ensureTrackingDir(filepath.Dir(path)); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// trackingPath resolves the history location without creating or repairing it.
+func trackingPath() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(configDir, "build-brief")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "tracking.jsonl"), nil
+	return filepath.Join(configDir, "build-brief", "tracking.jsonl"), nil
 }
 
 func loadRecords(path string) ([]Record, error) {
@@ -543,6 +551,10 @@ func acquireLockFile(lockPath string, timeout time.Duration) (*lockHandle, error
 			guardErr := releaseReclaimGuard(guard)
 			return nil, errors.Join(err, guardErr)
 		}
+		if err := rejectSymlink(lockPath, "tracking lock"); err != nil {
+			guardErr := releaseReclaimGuard(guard)
+			return nil, errors.Join(err, guardErr)
+		}
 
 		reclaimed, reclaimErr := reclaimStaleLockUnderGuard(lockPath)
 		guardErr := releaseReclaimGuard(guard)
@@ -583,7 +595,11 @@ func reclaimStaleLockUnderGuard(lockPath string) (bool, error) {
 }
 
 func acquireReclaimGuard(lockPath string, deadline time.Time) (*os.File, error) {
-	guard, err := os.OpenFile(reclaimGuardPath(lockPath), os.O_CREATE|os.O_RDWR, 0o600)
+	guardPath := reclaimGuardPath(lockPath)
+	if err := rejectSymlink(guardPath, "tracking lock reclaim guard"); err != nil {
+		return nil, err
+	}
+	guard, err := os.OpenFile(guardPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -728,29 +744,55 @@ func removeLockFile(lockPath string, timeout time.Duration, remove func(string) 
 	}
 }
 
-func writeRecords(path string, records []Record) error {
+func writeRecords(path string, records []Record) (err error) {
 	tmpPath := path + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
+	// file was created with O_EXCL, so this cannot change a pre-existing target.
+	if err := file.Chmod(0o600); err != nil {
+		return errors.Join(err, file.Close(), os.Remove(tmpPath))
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			err = errors.Join(err, file.Close(), os.Remove(tmpPath))
+		}
+	}()
 
 	encoder := json.NewEncoder(file)
 	for _, record := range records {
 		if err := encoder.Encode(record); err != nil {
-			file.Close()
 			return err
 		}
 	}
 
 	if err := file.Sync(); err != nil {
-		file.Close()
 		return err
 	}
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func rejectSymlink(path, description string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink: %s", description, path)
+	}
+	return nil
 }
 
 func truncate(value string, limit int) string {
