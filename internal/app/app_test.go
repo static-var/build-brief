@@ -3,10 +3,21 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"build-brief/internal/gradle"
+	"build-brief/internal/reducer"
+	"build-brief/internal/runner"
+	"build-brief/internal/tracking"
 )
 
 func TestParseArgsStopsAtGradleArgs(t *testing.T) {
@@ -312,12 +323,376 @@ func TestRunInstallsLocalAgentsFile(t *testing.T) {
 	}
 }
 
+func TestRunReturnsWrapperFailureWhenRawOutputRenderingFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			rawLogPath := writeAppRawLog(t, "raw output\n")
+			stubAppRunResult(t, runner.Result{ExitCode: gradleExitCode, RawLogPath: rawLogPath})
+
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--mode", "raw",
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), failingWriter{err: errors.New("stdout closed")}, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "render raw output")
+		})
+	}
+}
+
+func TestRunReturnsWrapperFailureWhenLogReductionFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			stubAppRunResult(t, runner.Result{
+				ExitCode:   gradleExitCode,
+				RawLogPath: filepath.Join(t.TempDir(), "missing.log"),
+			})
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), &stdout, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "reduce log output")
+		})
+	}
+}
+
+func TestRunReturnsWrapperFailureWhenSummaryRenderingFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			rawLogPath := writeAppRawLog(t, "BUILD SUCCESSFUL in 1s\n")
+			stubAppRunResult(t, runner.Result{ExitCode: gradleExitCode, RawLogPath: rawLogPath})
+			stubAppSummaryRenderFailure(t)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), &stdout, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "render summary")
+		})
+	}
+}
+
+func TestRunReturnsWrapperFailureWhenSummaryWriteFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			rawLogPath := writeAppRawLog(t, "BUILD SUCCESSFUL in 1s\n")
+			stubAppRunResult(t, runner.Result{ExitCode: gradleExitCode, RawLogPath: rawLogPath})
+
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), failingWriter{err: errors.New("stdout closed")}, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "write summary")
+		})
+	}
+}
+
+func stubAppSummaryRenderFailure(t *testing.T) {
+	t.Helper()
+	original := renderSummaryFn
+	renderSummaryFn = func(reducer.Summary) (string, error) {
+		return "", errors.New("summary renderer unavailable")
+	}
+	t.Cleanup(func() {
+		renderSummaryFn = original
+	})
+}
+
+func stubAppRunResult(t *testing.T, result runner.Result) {
+	t.Helper()
+	original := runGradle
+	runGradle = func(context.Context, gradle.Command, string, runner.Options) (runner.Result, error) {
+		return result, nil
+	}
+	t.Cleanup(func() {
+		runGradle = original
+	})
+}
+
+func writeAppRawLog(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write raw log: %v", err)
+	}
+	return path
+}
+
+func assertWrapperOutputFailure(t *testing.T, got, gradleExitCode int, stderr, branch string) {
+	t.Helper()
+	want := gradleExitCode
+	if want == 0 {
+		want = 1
+	}
+	if got != want {
+		t.Fatalf("%s: expected exit code %d, got %d stderr=%q", branch, want, got, stderr)
+	}
+	if !strings.Contains(stderr, branch) {
+		t.Fatalf("expected %s failure to be visible, got stderr=%q", branch, stderr)
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestRunPreservesGradleExitCodeWhenLogPruningFails(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(projectDir))
+	prefix := "build-brief-" + fmt.Sprintf("%08x", hash.Sum32()) + "-"
+	for i := 0; i < 21; i++ {
+		oldLogDir := filepath.Join(logDir, fmt.Sprintf("%sold-%02d.log", prefix, i))
+		if err := os.Mkdir(oldLogDir, 0o755); err != nil {
+			t.Fatalf("create old log directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(oldLogDir, "keep"), []byte("old log\n"), 0o644); err != nil {
+			t.Fatalf("write old log contents: %v", err)
+		}
+	}
+
+	scriptPath := appGradleCommand(t, "BUILD SUCCESSFUL in 1s\n", "", 0)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("expected Gradle exit code 0 despite pruning failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	assertPruningWarning(t, stderr.String())
+	if !strings.Contains(stdout.String(), "BUILD SUCCESSFUL in 1s") {
+		t.Fatalf("expected normal summary after pruning warning, got stdout=%q", stdout.String())
+	}
+}
+
+func TestRunPreservesNonzeroGradleExitCodeWhenLogPruningFails(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(projectDir))
+	prefix := "build-brief-" + fmt.Sprintf("%08x", hash.Sum32()) + "-"
+	for i := 0; i < 21; i++ {
+		oldLogDir := filepath.Join(logDir, fmt.Sprintf("%sold-%02d.log", prefix, i))
+		if err := os.Mkdir(oldLogDir, 0o755); err != nil {
+			t.Fatalf("create old log directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(oldLogDir, "keep"), []byte("old log\n"), 0o644); err != nil {
+			t.Fatalf("write old log contents: %v", err)
+		}
+	}
+
+	scriptPath := appGradleCommand(t, "> Task :test FAILED\nBUILD FAILED in 1s\n", "", 9)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 9 {
+		t.Fatalf("expected Gradle exit code 9 despite pruning failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	assertPruningWarning(t, stderr.String())
+	if !strings.Contains(stdout.String(), "BUILD FAILED in 1s") {
+		t.Fatalf("expected normal summary after pruning warning, got stdout=%q", stdout.String())
+	}
+}
+
+func TestRunContinuesAfterTokenEstimationFailureOnSuccess(t *testing.T) {
+	setAppTrackingEnv(t)
+	failRawTokenEstimation(t)
+
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "BUILD SUCCESSFUL in 1s\n", "", 0)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("expected Gradle exit code 0 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "warning: estimate raw tokens: token estimator unavailable") {
+		t.Fatalf("expected token estimation warning, got stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "BUILD SUCCESSFUL in 1s") {
+		t.Fatalf("expected normal summary after token estimation warning, got stdout=%q", stdout.String())
+	}
+
+	record := readLastTrackedRecord(t)
+	if !record.Success {
+		t.Fatalf("expected successful run to be tracked as successful, got %+v", record)
+	}
+	assertZeroTokenMetrics(t, record)
+}
+
+func TestRunContinuesAfterTokenEstimationFailureOnGradleFailure(t *testing.T) {
+	setAppTrackingEnv(t)
+	failRawTokenEstimation(t)
+
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "> Task :test FAILED\nBUILD FAILED in 1s\n", "", 9)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{
+		"--project-dir", projectDir,
+		"--gradle", scriptPath,
+		"--log-dir", logDir,
+		"test",
+	}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 9 {
+		t.Fatalf("expected exact Gradle exit code 9 despite token estimation failure, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "warning: estimate raw tokens: token estimator unavailable") {
+		t.Fatalf("expected token estimation warning, got stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "BUILD FAILED in 1s") {
+		t.Fatalf("expected normal failure summary after token estimation warning, got stdout=%q", stdout.String())
+	}
+
+	record := readLastTrackedRecord(t)
+	if record.Success {
+		t.Fatalf("expected failed run to be tracked as failed, got %+v", record)
+	}
+	assertZeroTokenMetrics(t, record)
+}
+
+func failRawTokenEstimation(t *testing.T) {
+	t.Helper()
+	original := estimateFileTokens
+	estimateFileTokens = func(string) (int, error) {
+		return 0, errors.New("token estimator unavailable")
+	}
+	t.Cleanup(func() {
+		estimateFileTokens = original
+	})
+}
+
+func setAppTrackingEnv(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
+func readLastTrackedRecord(t *testing.T) tracking.Record {
+	t.Helper()
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("resolve config dir: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "build-brief", "tracking.jsonl"))
+	if err != nil {
+		t.Fatalf("read tracking data: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatal("expected a tracked run")
+	}
+	var record tracking.Record
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &record); err != nil {
+		t.Fatalf("decode tracked run: %v", err)
+	}
+	return record
+}
+
+func assertZeroTokenMetrics(t *testing.T, record tracking.Record) {
+	t.Helper()
+	if record.RawTokens != 0 || record.EmittedTokens != 0 || record.SavedTokens != 0 || record.SavingsPct != 0 {
+		t.Fatalf("expected unavailable token metrics to remain zero, got %+v", record)
+	}
+}
+
+func assertPruningWarning(t *testing.T, stderr string) {
+	t.Helper()
+	if !strings.Contains(stderr, "build-brief: warning:") {
+		t.Fatalf("expected pruning failure to be labeled as a warning, got stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "prune raw log files") {
+		t.Fatalf("expected pruning failure to remain observable, got stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "continuing with Gradle result") {
+		t.Fatalf("expected pruning warning to indicate continuation, got stderr=%q", stderr)
+	}
+}
+
+func appGradleCommand(t *testing.T, stdout, stderr string, exitCode int) string {
+	t.Helper()
+	originalRunGradle := runGradle
+	runGradle = func(ctx context.Context, command gradle.Command, logDir string, opts runner.Options) (runner.Result, error) {
+		command.Args = []string{"-test.run=TestAppGradleHelper$"}
+		return runner.RunWithOptions(ctx, command, logDir, opts)
+	}
+	t.Cleanup(func() {
+		runGradle = originalRunGradle
+	})
+
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_HELPER", "1")
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_STDOUT", stdout)
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_STDERR", stderr)
+	t.Setenv("BUILD_BRIEF_APP_GRADLE_EXIT", strconv.Itoa(exitCode))
+	return os.Args[0]
+}
+
+func TestAppGradleHelper(t *testing.T) {
+	if os.Getenv("BUILD_BRIEF_APP_GRADLE_HELPER") != "1" {
+		return
+	}
+
+	_, _ = io.WriteString(os.Stdout, os.Getenv("BUILD_BRIEF_APP_GRADLE_STDOUT"))
+	_, _ = io.WriteString(os.Stderr, os.Getenv("BUILD_BRIEF_APP_GRADLE_STDERR"))
+	exitCode, err := strconv.Atoi(os.Getenv("BUILD_BRIEF_APP_GRADLE_EXIT"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid helper exit code: %v", err)
+		os.Exit(1)
+	}
+	os.Exit(exitCode)
+}
+
 func TestRunRawModeStreamsOutput(t *testing.T) {
 	projectDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho raw-line-1\necho raw-line-2\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "raw-line-1\nraw-line-2\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -339,10 +714,7 @@ func TestRunRawModeStreamsOutput(t *testing.T) {
 
 func TestRunHumanModePreservesInformationalTaskOutput(t *testing.T) {
 	projectDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '> Task :tasks'\necho \"Tasks runnable from root project 'sample'\"\necho 'assemble - Assembles the outputs of this project.'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "> Task :tasks\nTasks runnable from root project 'sample'\nassemble - Assembles the outputs of this project.\nBUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -371,10 +743,7 @@ func TestRunHumanModePreservesInformationalTaskOutput(t *testing.T) {
 
 func TestRunHumanModeHighlightsGeneratedOutputLocations(t *testing.T) {
 	projectDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots'\necho 'AgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "AgentPreview snapshots written to: /tmp/project/build/agentPreviewSnapshots\nAgentPreview report written to: /tmp/project/build/agentPreviewReports/capture-report.json\nBUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -411,10 +780,7 @@ func TestRunHumanModeUsesDefaultProjectConfig(t *testing.T) {
 	}`), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho 'Firebase result https://console.firebase.google.com/testlab'\necho 'BUILD SUCCESSFUL in 1s'\n"), 0o755); err != nil {
-		t.Fatalf("write fake gradle: %v", err)
-	}
+	scriptPath := appGradleCommand(t, "Firebase result https://console.firebase.google.com/testlab\nBUILD SUCCESSFUL in 1s\n", "", 0)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -498,8 +864,7 @@ func TestRunDoctorUnknownFlagExitsTwo(t *testing.T) {
 
 func writeExecutable(t *testing.T, path string) {
 	t.Helper()
-	mode := os.FileMode(0o755)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho should-not-run > marker\n"), mode); err != nil {
+	if err := os.WriteFile(path, []byte("portable executable placeholder\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

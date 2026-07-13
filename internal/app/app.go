@@ -36,7 +36,10 @@ type Options struct {
 }
 
 var (
-	currentDir = os.Getwd
+	currentDir         = os.Getwd
+	estimateFileTokens = tracking.EstimateFileTokens
+	runGradle          = runner.RunWithOptions
+	renderSummaryFn    = renderSummary
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -123,34 +126,44 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	})
 	trackingCommand := command.TrackingLine()
 
-	runResult, err := runner.RunWithOptions(ctx, command, opts.LogDir, runner.Options{
+	runResult, err := runGradle(ctx, command, opts.LogDir, runner.Options{
 		ProgressInterval: 30 * time.Second,
 		Progress: func(event runner.ProgressEvent) {
 			fmt.Fprintf(stderr, "build-brief: still running after %s (raw log: %s)\n", formatElapsed(event.Elapsed), event.RawLogPath)
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "build-brief: %v\n", err)
+		ancillaryError := runner.IsAncillaryError(err)
+		if ancillaryError {
+			fmt.Fprintf(stderr, "build-brief: warning: %v; continuing with Gradle result\n", err)
+		} else {
+			fmt.Fprintf(stderr, "build-brief: %v\n", err)
+		}
 		if runResult.RawLogPath != "" {
 			fmt.Fprintf(stderr, "Raw log: %s\n", runResult.RawLogPath)
 		}
-		if runResult.ExitCode > 0 {
-			return runResult.ExitCode
+		if !ancillaryError {
+			if runResult.ExitCode > 0 {
+				return runResult.ExitCode
+			}
+			return 1
 		}
-		return 1
 	}
 
-	rawTokens, err := tracking.EstimateFileTokens(runResult.RawLogPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "build-brief: estimate raw tokens: %v\n", err)
-		return 1
+	rawTokens := 0 // Token fields are ints; zero represents unavailable metrics.
+	tokenMetricsAvailable := true
+	if estimated, err := estimateFileTokens(runResult.RawLogPath); err != nil {
+		fmt.Fprintf(stderr, "build-brief: warning: estimate raw tokens: %v; continuing with zero token metrics\n", err)
+		tokenMetricsAvailable = false
+	} else {
+		rawTokens = estimated
 	}
 
 	switch opts.Mode {
 	case "raw":
 		if err := output.RenderRaw(stdout, runResult.RawLogPath); err != nil {
 			fmt.Fprintf(stderr, "build-brief: render raw output: %v\n", err)
-			return 1
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
@@ -168,21 +181,23 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: reduce log output: %v\n", err)
-			return 1
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		summary.RawOutputTokens = rawTokens
 
-		rendered, err := renderSummary(summary)
+		rendered, err := renderSummaryFn(summary)
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: render summary: %v\n", err)
-			return 1
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
-		summary.EmittedTokens = tracking.EstimateTokens(rendered)
-		summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
-		summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
+		if tokenMetricsAvailable {
+			summary.EmittedTokens = tracking.EstimateTokens(rendered)
+			summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
+			summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
+		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
-			return 1
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
@@ -697,6 +712,13 @@ func parseGainsArgs(args []string) (gainsOptions, error) {
 	}
 
 	return opts, nil
+}
+
+func wrapperFailureExitCode(gradleExitCode int) int {
+	if gradleExitCode != 0 {
+		return gradleExitCode
+	}
+	return 1
 }
 
 func renderSummary(summary reducer.Summary) (string, error) {
