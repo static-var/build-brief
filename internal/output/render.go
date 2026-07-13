@@ -117,6 +117,14 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if scan := summary.ArtifactHintScan; scan != nil && scan.Truncated {
+		line := fmt.Sprintf("Artifact hints: %d observed, %d retained, %d omitted", scan.Observed, scan.Retained, scan.Omitted)
+		line += " (truncated at the retention limit)"
+		if _, err := fmt.Fprintln(bw, line); err != nil {
+			return err
+		}
+	}
+
 	if len(summary.BuildScanURLs) > 0 {
 		label := "Build scan:"
 		if len(summary.BuildScanURLs) > 1 {

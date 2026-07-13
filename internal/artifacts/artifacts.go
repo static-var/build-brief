@@ -22,6 +22,14 @@ type Artifact struct {
 	SizeBytes int64  `json:"size_bytes"`
 }
 
+// ScanMetadata describes a bounded artifact scan. Discovered counts accepted
+// candidate events from the filesystem and non-standard hints; the filesystem
+// traversal emits each path once. Hints
+// under standard roots are classified as duplicates and never add another
+// discovery event, so standard-root scan metadata remains an exact unique-path
+// count even when a retained candidate is later evicted. Non-standard hints
+// share only the bounded retained-path ledger. Reported is the retained top-K
+// set and Skipped is Discovered-Reported.
 type ScanMetadata struct {
 	Discovered      int      `json:"discovered"`
 	Reported        int      `json:"reported"`
@@ -551,6 +559,11 @@ func addHintArtifact(hint, projectDir string, threshold time.Time, snapshot Snap
 	if !shouldReportHintState(artifact.Path, state, threshold, snapshot) {
 		return
 	}
+	if isStandardArtifactPath(artifact.Path) {
+		// Standard roots are already scanned. Do not turn a repeated log hint
+		// into a second discovery after the original candidate was evicted.
+		return
+	}
 	collector.add(artifact)
 }
 
@@ -570,7 +583,37 @@ func addAvailableHintArtifact(hint, projectDir string, collector *artifactCollec
 	if !ok {
 		return
 	}
+	if isStandardArtifactPath(artifact.Path) {
+		return
+	}
 	collector.add(artifact)
+}
+
+// isStandardArtifactPath reports whether a project-relative artifact path is
+// below one of the bounded build output roots scanned by this package.
+func isStandardArtifactPath(path string) bool {
+	parts := strings.Split(filepath.ToSlash(strings.Trim(path, "/")), "/")
+	for i, part := range parts {
+		if part != "build" {
+			continue
+		}
+		for _, root := range artifactRoots {
+			if i+1+len(root.parts) >= len(parts) {
+				continue
+			}
+			matches := true
+			for offset, rootPart := range root.parts {
+				if parts[i+1+offset] != rootPart {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func buildArtifact(path string, entry fs.DirEntry, projectDir string) (Artifact, SnapshotEntry, bool) {

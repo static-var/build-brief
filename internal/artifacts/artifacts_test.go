@@ -96,6 +96,23 @@ func TestFindGeneratedReportsArtifactScanTruncation(t *testing.T) {
 	}
 }
 
+func TestFindGeneratedDoesNotCountEvictedStandardRootHintAgain(t *testing.T) {
+	projectDir := t.TempDir()
+	for i := 0; i < maxArtifactsReported+1; i++ {
+		writeFile(t, filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%03d.jar", i)), "jar")
+	}
+
+	result := FindGeneratedWithMetadata(
+		projectDir,
+		time.Now().Add(-time.Hour),
+		Snapshot{},
+		[]string{"app/build/libs/artifact-020.jar"},
+	)
+	if result.Metadata.Discovered != maxArtifactsReported+1 || result.Metadata.Reported != maxArtifactsReported || result.Metadata.Skipped != 1 {
+		t.Fatalf("expected 21 unique artifacts despite repeated standard-root hint, got %+v", result.Metadata)
+	}
+}
+
 func TestArtifactCollectorSanitizesProjectDirFromScanError(t *testing.T) {
 	projectDir := t.TempDir()
 	path := filepath.Join(projectDir, "app", "build", "outputs", "apk")

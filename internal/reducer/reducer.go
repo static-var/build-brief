@@ -39,6 +39,9 @@ var (
 	compilerCaptureLines             = 3
 	maxJUnitReportFiles              = 100
 	maxJUnitScanErrors               = 8
+	maxArtifactHints                 = 64
+	maxArtifactHintBytes             = 64 * 1024
+	maxArtifactHintLength            = 4096
 	junitTimeSkew                    = time.Second
 )
 
@@ -71,6 +74,132 @@ type JUnitScanMetadata struct {
 
 type ArtifactScanMetadata = artifacts.ScanMetadata
 
+// ArtifactHintScanMetadata describes raw-log hint retention, not artifacts.
+// Observed counts normalized hint occurrences, including repeats. Retained is
+// a bounded top-value set passed to artifact enrichment; Omitted is the number
+// of observed occurrences not retained. It must not be used as an artifact
+// count: ArtifactScanMetadata counts artifact paths after bounded scan
+// deduplication and standard-root hint classification.
+type ArtifactHintScanMetadata struct {
+	Observed      int  `json:"observed"`
+	Retained      int  `json:"retained"`
+	Omitted       int  `json:"omitted"`
+	RetainedBytes int  `json:"retained_bytes"`
+	Truncated     bool `json:"truncated"`
+}
+
+type artifactHintCollector struct {
+	hints         []string
+	seen          map[string]struct{}
+	retainedBytes int
+	metadata      ArtifactHintScanMetadata
+}
+
+func newArtifactHintCollector() *artifactHintCollector {
+	return &artifactHintCollector{
+		hints: make([]string, 0, maxArtifactHints),
+		seen:  make(map[string]struct{}, maxArtifactHints),
+	}
+}
+
+func (c *artifactHintCollector) add(hint string) {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return
+	}
+	c.metadata.Observed++
+	if len(hint) > maxArtifactHintLength {
+		c.metadata.Truncated = true
+		return
+	}
+	if _, ok := c.seen[hint]; ok {
+		return
+	}
+
+	if len(c.hints) < maxArtifactHints && c.retainedBytes+len(hint) <= maxArtifactHintBytes {
+		c.retain(len(c.hints), hint)
+		return
+	}
+
+	worst := 0
+	for i := 1; i < len(c.hints); i++ {
+		if artifactHintLess(c.hints[worst], c.hints[i]) {
+			worst = i
+		}
+	}
+	if len(c.hints) == 0 || !artifactHintLess(hint, c.hints[worst]) {
+		c.metadata.Truncated = true
+		return
+	}
+	if c.retainedBytes-len(c.hints[worst])+len(hint) > maxArtifactHintBytes {
+		c.metadata.Truncated = true
+		return
+	}
+	delete(c.seen, c.hints[worst])
+	c.retainedBytes -= len(c.hints[worst])
+	c.retain(worst, hint)
+}
+
+func (c *artifactHintCollector) retain(index int, hint string) {
+	if index == len(c.hints) {
+		c.hints = append(c.hints, hint)
+	} else {
+		c.hints[index] = hint
+	}
+	c.seen[hint] = struct{}{}
+	c.retainedBytes += len(hint)
+}
+
+func (c *artifactHintCollector) finish() *ArtifactHintScanMetadata {
+	if c.metadata.Observed == 0 {
+		return nil
+	}
+	c.metadata.Retained = len(c.hints)
+	c.metadata.RetainedBytes = c.retainedBytes
+	c.metadata.Omitted = c.metadata.Observed - c.metadata.Retained
+	if c.metadata.Omitted > 0 {
+		c.metadata.Truncated = true
+	}
+	metadata := c.metadata
+	return &metadata
+}
+
+func artifactHintLess(left, right string) bool {
+	leftPriority := artifactHintPriority(left)
+	rightPriority := artifactHintPriority(right)
+	if leftPriority != rightPriority {
+		return leftPriority < rightPriority
+	}
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	return left < right
+}
+
+func artifactHintPriority(hint string) int {
+	lower := strings.ToLower(hint)
+	switch {
+	case strings.HasSuffix(lower, ".apk"):
+		return 0
+	case strings.HasSuffix(lower, ".aab"):
+		return 1
+	case strings.HasSuffix(lower, ".xcframework"):
+		return 2
+	case strings.HasSuffix(lower, ".framework"):
+		return 3
+	case strings.HasSuffix(lower, ".aar"):
+		return 4
+	case strings.HasSuffix(lower, ".jar"), strings.HasSuffix(lower, ".war"), strings.HasSuffix(lower, ".ear"):
+		return 5
+	case strings.HasSuffix(lower, ".klib"), strings.HasSuffix(lower, ".kexe"):
+		return 6
+	case strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".tar"), strings.HasSuffix(lower, ".tgz"), strings.HasSuffix(lower, ".tar.gz"):
+		return 7
+	default:
+		return 8
+	}
+}
+
 type Diagnostic struct {
 	ID         string   `json:"id"`
 	Category   string   `json:"category"`
@@ -82,43 +211,44 @@ type Diagnostic struct {
 }
 
 type Summary struct {
-	SchemaVersion             string                `json:"schema_version"`
-	Tool                      string                `json:"tool"`
-	Success                   bool                  `json:"success"`
-	ExitCode                  int                   `json:"exit_code"`
-	Duration                  string                `json:"duration"`
-	DurationMs                int64                 `json:"duration_ms"`
-	ProjectDir                string                `json:"project_dir"`
-	Executable                string                `json:"executable"`
-	Command                   []string              `json:"command"`
-	CommandLine               string                `json:"command_line"`
-	Source                    string                `json:"source"`
-	RawLogPath                string                `json:"raw_log_path"`
-	RawOutputTokens           int                   `json:"raw_output_tokens"`
-	EmittedTokens             int                   `json:"emitted_output_tokens"`
-	SavedTokens               int                   `json:"saved_output_tokens"`
-	SavingsPct                float64               `json:"savings_pct"`
-	BuildStatusLine           string                `json:"build_status_line"`
-	FailedTasks               []string              `json:"failed_tasks"`
-	FailedTests               []string              `json:"failed_tests"`
-	PassedTestCount           int                   `json:"passed_test_count,omitempty"`
-	FailedTestCount           int                   `json:"failed_test_count,omitempty"`
-	WarningCount              int                   `json:"warning_count"`
-	Warnings                  []string              `json:"warnings"`
-	ImportantLines            []string              `json:"important_lines"`
-	Diagnostics               []Diagnostic          `json:"diagnostics,omitempty"`
-	BuildScanURLs             []string              `json:"build_scan_urls,omitempty"`
-	ConfigCacheStatus         string                `json:"config_cache_status,omitempty"`
-	ConfigCacheProblems       []string              `json:"config_cache_problems,omitempty"`
-	ConfigCacheReportURL      string                `json:"config_cache_report_url,omitempty"`
-	ReportLines               []string              `json:"report_lines,omitempty"`
-	CustomMatches             []CustomMatchResult   `json:"custom_matches,omitempty"`
-	Artifacts                 []Artifact            `json:"artifacts,omitempty"`
-	JUnitScan                 *JUnitScanMetadata    `json:"junit_scan,omitempty"`
-	ArtifactScan              *ArtifactScanMetadata `json:"artifact_scan,omitempty"`
-	GeneratedClassFileCount   int                   `json:"generated_class_file_count,omitempty"`
-	GeneratedCodegenFileCount int                   `json:"generated_codegen_file_count,omitempty"`
-	TotalLines                int                   `json:"total_lines"`
+	SchemaVersion             string                    `json:"schema_version"`
+	Tool                      string                    `json:"tool"`
+	Success                   bool                      `json:"success"`
+	ExitCode                  int                       `json:"exit_code"`
+	Duration                  string                    `json:"duration"`
+	DurationMs                int64                     `json:"duration_ms"`
+	ProjectDir                string                    `json:"project_dir"`
+	Executable                string                    `json:"executable"`
+	Command                   []string                  `json:"command"`
+	CommandLine               string                    `json:"command_line"`
+	Source                    string                    `json:"source"`
+	RawLogPath                string                    `json:"raw_log_path"`
+	RawOutputTokens           int                       `json:"raw_output_tokens"`
+	EmittedTokens             int                       `json:"emitted_output_tokens"`
+	SavedTokens               int                       `json:"saved_output_tokens"`
+	SavingsPct                float64                   `json:"savings_pct"`
+	BuildStatusLine           string                    `json:"build_status_line"`
+	FailedTasks               []string                  `json:"failed_tasks"`
+	FailedTests               []string                  `json:"failed_tests"`
+	PassedTestCount           int                       `json:"passed_test_count,omitempty"`
+	FailedTestCount           int                       `json:"failed_test_count,omitempty"`
+	WarningCount              int                       `json:"warning_count"`
+	Warnings                  []string                  `json:"warnings"`
+	ImportantLines            []string                  `json:"important_lines"`
+	Diagnostics               []Diagnostic              `json:"diagnostics,omitempty"`
+	BuildScanURLs             []string                  `json:"build_scan_urls,omitempty"`
+	ConfigCacheStatus         string                    `json:"config_cache_status,omitempty"`
+	ConfigCacheProblems       []string                  `json:"config_cache_problems,omitempty"`
+	ConfigCacheReportURL      string                    `json:"config_cache_report_url,omitempty"`
+	ReportLines               []string                  `json:"report_lines,omitempty"`
+	CustomMatches             []CustomMatchResult       `json:"custom_matches,omitempty"`
+	Artifacts                 []Artifact                `json:"artifacts,omitempty"`
+	JUnitScan                 *JUnitScanMetadata        `json:"junit_scan,omitempty"`
+	ArtifactScan              *ArtifactScanMetadata     `json:"artifact_scan,omitempty"`
+	ArtifactHintScan          *ArtifactHintScanMetadata `json:"artifact_hint_scan,omitempty"`
+	GeneratedClassFileCount   int                       `json:"generated_class_file_count,omitempty"`
+	GeneratedCodegenFileCount int                       `json:"generated_codegen_file_count,omitempty"`
+	TotalLines                int                       `json:"total_lines"`
 }
 
 type junitTestSuite struct {
@@ -182,8 +312,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	for i := range customMatchSeen {
 		customMatchSeen[i] = make(map[string]struct{})
 	}
-	artifactHints := make([]string, 0)
-	artifactHintSeen := make(map[string]struct{})
+	artifactHintCollector := newArtifactHintCollector()
 	diagnosticEvidence := newDiagnosticEvidence()
 	invocationShape := gradle.AnalyzeArgs(command.Args)
 
@@ -295,11 +424,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		}
 
 		for _, hint := range artifacts.ExtractHints(text) {
-			if _, ok := artifactHintSeen[hint]; ok {
-				continue
-			}
-			artifactHintSeen[hint] = struct{}{}
-			artifactHints = append(artifactHints, hint)
+			artifactHintCollector.add(hint)
 		}
 
 		if opensContextCapture(text) {
@@ -333,7 +458,8 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 
 	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important, warnings)
-	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints, warnings)
+	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHintCollector.hints, warnings)
+	summary.ArtifactHintScan = artifactHintCollector.finish()
 	summary.Diagnostics = Diagnose(diagnosticEvidence, summary)
 
 	return summary, nil

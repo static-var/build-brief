@@ -1127,6 +1127,94 @@ func TestReduceRetainsArtifactTruncationWhenWarningsAreSaturated(t *testing.T) {
 	}
 }
 
+func TestReduceDoesNotDoubleCountEvictedStandardRootHint(t *testing.T) {
+	projectDir := t.TempDir()
+	snapshot := artifacts.Capture(projectDir)
+	startTime := time.Now()
+	for i := 0; i < 21; i++ {
+		writeGeneratedFile(t, filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%03d.jar", i)), "jar")
+	}
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         time.Second,
+		StartTime:        startTime,
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"Generated output: ./app/build/libs/artifact-020.jar",
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce repeated standard-root hint: %v", err)
+	}
+	if summary.ArtifactScan == nil || summary.ArtifactScan.Discovered != 21 || summary.ArtifactScan.Reported != 20 || summary.ArtifactScan.Skipped != 1 {
+		t.Fatalf("expected 21 unique artifacts despite repeated standard-root hint, got %+v", summary.ArtifactScan)
+	}
+}
+
+func TestReduceReportsBoundedArtifactHintRetention(t *testing.T) {
+	projectDir := t.TempDir()
+	const hintCount = 10_000
+	lines := make([]string, 0, hintCount+1)
+	for i := 0; i < hintCount; i++ {
+		lines = append(lines, fmt.Sprintf("Generated output: ./custom-output/artifact-%06d.jar", i))
+	}
+	lines = append(lines, "BUILD SUCCESSFUL in 1s")
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  time.Now(),
+		RawLogPath: writeTestLog(t, lines),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce many artifact hints: %v", err)
+	}
+
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal hint metadata: %v", err)
+	}
+	var shape struct {
+		ArtifactHintScan *struct {
+			Observed      int  `json:"observed"`
+			Retained      int  `json:"retained"`
+			Omitted       int  `json:"omitted"`
+			RetainedBytes int  `json:"retained_bytes"`
+			Truncated     bool `json:"truncated"`
+		} `json:"artifact_hint_scan"`
+	}
+	if err := json.Unmarshal(encoded, &shape); err != nil {
+		t.Fatalf("decode hint metadata: %v", err)
+	}
+	if shape.ArtifactHintScan == nil {
+		t.Fatalf("expected bounded artifact hint metadata, got %s", encoded)
+	}
+	if shape.ArtifactHintScan.Observed != hintCount || shape.ArtifactHintScan.Retained == 0 || shape.ArtifactHintScan.Omitted != hintCount-shape.ArtifactHintScan.Retained || !shape.ArtifactHintScan.Truncated {
+		t.Fatalf("unexpected artifact hint completeness metadata: %+v", shape.ArtifactHintScan)
+	}
+	if shape.ArtifactHintScan.Retained > 64 || shape.ArtifactHintScan.RetainedBytes > 64*1024 {
+		t.Fatalf("artifact hint retention exceeded bounds: %+v", shape.ArtifactHintScan)
+	}
+}
+
 func TestReduceFindsGeneratedArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	projectDir := t.TempDir()
 	staleArtifact := filepath.Join(projectDir, "legacy", "build", "libs", "legacy.jar")

@@ -310,6 +310,27 @@ func TestRenderHumanShowsScanTruncationWhenWarningsAreCapped(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsArtifactHintRetentionTruncation(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		ArtifactHintScan: &reducer.ArtifactHintScanMetadata{
+			Observed:  10_000,
+			Retained:  64,
+			Omitted:   9_936,
+			Truncated: true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render artifact hint metadata: %v", err)
+	}
+	if !strings.Contains(out.String(), "Artifact hints: 10000 observed, 64 retained, 9936 omitted") {
+		t.Fatalf("expected artifact hint truncation metadata, got %q", out.String())
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,
