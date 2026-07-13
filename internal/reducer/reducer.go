@@ -103,11 +103,15 @@ func newArtifactHintCollector() *artifactHintCollector {
 }
 
 func (c *artifactHintCollector) add(hint string) {
-	hint = strings.TrimSpace(hint)
-	if hint == "" {
+	if strings.TrimSpace(hint) == "" {
 		return
 	}
 	c.metadata.Observed++
+	if len(hint) > maxArtifactHintLength+64 {
+		c.metadata.Truncated = true
+		return
+	}
+	hint = artifacts.NormalizeHint(hint)
 	if len(hint) > maxArtifactHintLength {
 		c.metadata.Truncated = true
 		return
@@ -115,6 +119,7 @@ func (c *artifactHintCollector) add(hint string) {
 	if _, ok := c.seen[hint]; ok {
 		return
 	}
+	hint = strings.Clone(hint)
 
 	if len(c.hints) < maxArtifactHints && c.retainedBytes+len(hint) <= maxArtifactHintBytes {
 		c.retain(len(c.hints), hint)
@@ -187,13 +192,13 @@ func artifactHintPriority(hint string) int {
 		return 2
 	case strings.HasSuffix(lower, ".framework"):
 		return 3
-	case strings.HasSuffix(lower, ".aar"):
+	case strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".tar"), strings.HasSuffix(lower, ".tgz"), strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".war"), strings.HasSuffix(lower, ".ear"), strings.HasSuffix(lower, ".kexe"):
 		return 4
-	case strings.HasSuffix(lower, ".jar"), strings.HasSuffix(lower, ".war"), strings.HasSuffix(lower, ".ear"):
+	case strings.HasSuffix(lower, ".jar"):
 		return 5
-	case strings.HasSuffix(lower, ".klib"), strings.HasSuffix(lower, ".kexe"):
+	case strings.HasSuffix(lower, ".klib"):
 		return 6
-	case strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".tar"), strings.HasSuffix(lower, ".tgz"), strings.HasSuffix(lower, ".tar.gz"):
+	case strings.HasSuffix(lower, ".aar"):
 		return 7
 	default:
 		return 8
@@ -423,9 +428,13 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			}
 		}
 
-		for _, hint := range artifacts.ExtractHints(text) {
-			artifactHintCollector.add(hint)
-		}
+		// Stream every candidate from this line. ScanHints keeps only three
+		// regexp positions live; the collector owns the bounded retained state
+		// and reports exact observed/omitted counts without sacrificing late
+		// high-priority hints.
+		artifacts.ScanHints(text, 0, 0, func(raw string) {
+			artifactHintCollector.add(raw)
+		})
 
 		if opensContextCapture(text) {
 			captureContextRemaining = contextCaptureLines

@@ -113,6 +113,40 @@ func TestFindGeneratedDoesNotCountEvictedStandardRootHintAgain(t *testing.T) {
 	}
 }
 
+func TestFindGeneratedRetainsHintUnderExcludedBuildSrcRoot(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, "buildSrc", "build", "libs", "convention.jar")
+	writeFile(t, path, "jar")
+
+	result := FindGeneratedWithMetadata(projectDir, time.Now().Add(-time.Hour), Snapshot{}, []string{
+		"buildSrc/build/libs/convention.jar",
+	})
+
+	if !containsArtifact(result.Artifacts, "JAR", "buildSrc/build/libs/convention.jar") {
+		t.Fatalf("expected valid buildSrc hint despite excluded scan, got %+v", result.Artifacts)
+	}
+	if result.Metadata.Discovered != 1 || result.Metadata.Reported != 1 || result.Metadata.Skipped != 0 || result.Metadata.Truncated {
+		t.Fatalf("expected complete metadata for excluded-root hint, got %+v", result.Metadata)
+	}
+}
+
+func TestFindGeneratedRetainsHintUnderNestedBuildExcludedByBuildScan(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, "build", "nested", "build", "libs", "nested.jar")
+	writeFile(t, path, "jar")
+
+	result := FindGeneratedWithMetadata(projectDir, time.Now().Add(-time.Hour), Snapshot{}, []string{
+		"build/nested/build/libs/nested.jar",
+	})
+
+	if !containsArtifact(result.Artifacts, "JAR", "build/nested/build/libs/nested.jar") {
+		t.Fatalf("expected valid nested-build hint despite excluded scan, got %+v", result.Artifacts)
+	}
+	if result.Metadata.Discovered != 1 || result.Metadata.Reported != 1 || result.Metadata.Skipped != 0 || result.Metadata.Truncated {
+		t.Fatalf("expected complete metadata for nested excluded-root hint, got %+v", result.Metadata)
+	}
+}
+
 func TestArtifactCollectorSanitizesProjectDirFromScanError(t *testing.T) {
 	projectDir := t.TempDir()
 	path := filepath.Join(projectDir, "app", "build", "outputs", "apk")
@@ -182,6 +216,23 @@ func TestFindAvailableIncludesExistingArtifactsWithoutSnapshotDiff(t *testing.T)
 	}
 	if !containsArtifact(found, "JAR", "server/build/libs/server.jar") {
 		t.Fatalf("expected available jar artifact in %+v", found)
+	}
+}
+
+func TestExtractHintsBoundsOneLineManyHints(t *testing.T) {
+	const hintCount = 10_000
+	var line strings.Builder
+	line.Grow(hintCount * 36)
+	for i := 0; i < hintCount; i++ {
+		if i > 0 {
+			line.WriteByte(' ')
+		}
+		fmt.Fprintf(&line, "./custom-output/artifact-%06d.jar", i)
+	}
+
+	hints := ExtractHints(line.String())
+	if len(hints) > maxHintsPerLine {
+		t.Fatalf("expected per-line hint cap, got %d", len(hints))
 	}
 }
 

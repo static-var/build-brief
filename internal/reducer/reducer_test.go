@@ -320,6 +320,45 @@ func TestReduceFallsBackToAvailableArtifactsForWarmAssemble(t *testing.T) {
 	}
 }
 
+func TestReduceWarmFallbackRetainsHintUnderExcludedBuildSrcRoot(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, "buildSrc", "build", "libs", "convention.jar")
+	writeGeneratedFile(t, path, "jar")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat warm artifact: %v", err)
+	}
+	snapshot := artifacts.Capture(projectDir)
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", ":buildSrc:assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         time.Second,
+		StartTime:        info.ModTime().Add(2 * time.Second),
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"Generated output: ./buildSrc/build/libs/convention.jar",
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce warm excluded buildSrc artifact: %v", err)
+	}
+	if !containsArtifact(summary.Artifacts, "JAR", "buildSrc/build/libs/convention.jar") {
+		t.Fatalf("expected warm hint fallback under excluded buildSrc root, got %+v", summary.Artifacts)
+	}
+	if summary.ArtifactScan == nil || summary.ArtifactScan.Discovered != 1 || summary.ArtifactScan.Reported != 1 || summary.ArtifactScan.Skipped != 0 || summary.ArtifactScan.Truncated {
+		t.Fatalf("expected truthful warm fallback metadata, got %+v", summary.ArtifactScan)
+	}
+}
+
 func TestReduceWarmFallbackAppliesProjectScopeBeforeArtifactCap(t *testing.T) {
 	projectDir := t.TempDir()
 	for i := 0; i < 25; i++ {
@@ -1212,6 +1251,56 @@ func TestReduceReportsBoundedArtifactHintRetention(t *testing.T) {
 	}
 	if shape.ArtifactHintScan.Retained > 64 || shape.ArtifactHintScan.RetainedBytes > 64*1024 {
 		t.Fatalf("artifact hint retention exceeded bounds: %+v", shape.ArtifactHintScan)
+	}
+}
+
+func TestReduceBoundsOneLineArtifactHintExtractionAndKeepsPriority(t *testing.T) {
+	projectDir := t.TempDir()
+	apkPath := filepath.Join(projectDir, "custom-output", "late-release.apk")
+	writeGeneratedFile(t, apkPath, "apk")
+
+	const hintCount = 10_000
+	var line strings.Builder
+	line.Grow(hintCount * 40)
+	for i := 0; i < hintCount; i++ {
+		if i > 0 {
+			line.WriteByte(' ')
+		}
+		fmt.Fprintf(&line, "./custom-output/artifact-%06d.jar", i)
+	}
+	line.WriteString(" ./custom-output/late-release.apk")
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  time.Now(),
+		RawLogPath: writeTestLog(t, []string{line.String(), "BUILD SUCCESSFUL in 1s"}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce one-line many artifact hints: %v", err)
+	}
+	if summary.ArtifactHintScan == nil {
+		t.Fatal("expected one-line hint metadata")
+	}
+	if summary.ArtifactHintScan.Observed != hintCount+1 {
+		t.Fatalf("expected exact streamed hint count, got %+v", summary.ArtifactHintScan)
+	}
+	if summary.ArtifactHintScan.Retained == 0 || summary.ArtifactHintScan.Retained > maxArtifactHints || summary.ArtifactHintScan.RetainedBytes > maxArtifactHintBytes {
+		t.Fatalf("hint retention exceeded bounds: %+v", summary.ArtifactHintScan)
+	}
+	if summary.ArtifactHintScan.Omitted != summary.ArtifactHintScan.Observed-summary.ArtifactHintScan.Retained || !summary.ArtifactHintScan.Truncated {
+		t.Fatalf("expected truthful truncation metadata, got %+v", summary.ArtifactHintScan)
+	}
+	if !containsArtifact(summary.Artifacts, "APK", "custom-output/late-release.apk") {
+		t.Fatalf("expected late high-priority apk to survive hint retention, got %+v", summary.Artifacts)
 	}
 }
 

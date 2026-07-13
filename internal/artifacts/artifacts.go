@@ -13,6 +13,10 @@ import (
 const (
 	maxArtifactsReported = 20
 	maxScanErrors        = 8
+	maxScanCoverageRoots = 64
+	maxHintsPerLine      = 64
+	maxHintBytesPerLine  = 64 * 1024
+	maxHintLength        = 4096
 	artifactTimeSkew     = time.Second
 )
 
@@ -53,16 +57,18 @@ type AvailableResult struct {
 }
 
 type artifactCollector struct {
-	artifacts  []Artifact
-	projectDir string
-	scope      []string
-	metadata   ScanMetadata
+	artifacts     []Artifact
+	projectDir    string
+	scope         []string
+	coverageRoots []string
+	metadata      ScanMetadata
 }
 
 func newArtifactCollector(projectDir string) *artifactCollector {
 	return &artifactCollector{
-		artifacts:  make([]Artifact, 0, maxArtifactsReported),
-		projectDir: projectDir,
+		artifacts:     make([]Artifact, 0, maxArtifactsReported),
+		projectDir:    projectDir,
+		coverageRoots: make([]string, 0, maxScanCoverageRoots),
 	}
 }
 
@@ -130,6 +136,55 @@ func (c *artifactCollector) addError(path string, err error) {
 	}
 	scanError := sanitizeScanErrorText(c.projectDir, err.Error())
 	c.metadata.Errors = append(c.metadata.Errors, relativeScanPath(c.projectDir, path)+": "+scanError)
+}
+
+// addCoverage records only roots that can contain one of the supplied hints.
+// The root is recorded after a complete walk, so hint suppression never relies
+// on a path merely looking like a conventional Gradle output path.
+func (c *artifactCollector) addCoverage(rootDir string, hints []string) {
+	if len(hints) == 0 || len(c.coverageRoots) >= maxScanCoverageRoots {
+		return
+	}
+	root, ok := absoluteCleanPath(rootDir)
+	if !ok {
+		return
+	}
+	for _, hint := range hints {
+		path, ok := resolveArtifactHintPath(c.projectDir, hint)
+		if ok && pathWithin(root, path) {
+			c.coverageRoots = append(c.coverageRoots, root)
+			return
+		}
+	}
+}
+
+func (c *artifactCollector) covered(path string) bool {
+	absolute, ok := absoluteCleanPath(path)
+	if !ok {
+		return false
+	}
+	for _, root := range c.coverageRoots {
+		if pathWithin(root, absolute) {
+			return true
+		}
+	}
+	return false
+}
+
+func absoluteCleanPath(path string) (string, bool) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(absolute), true
+}
+
+func pathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func (c *artifactCollector) finish() ScanMetadata {
@@ -262,7 +317,7 @@ func FindGeneratedWithMetadata(projectDir string, startedAt time.Time, snapshot 
 			return nil
 		}
 		if buildDir, ok, skip := buildDirPath(path, entry); ok {
-			scanBuildDir(buildDir, projectDir, threshold, snapshot, collector, &classCount, &codegenCount)
+			scanBuildDir(buildDir, projectDir, threshold, snapshot, collector, hints, &classCount, &codegenCount)
 			if skip {
 				return filepath.SkipDir
 			}
@@ -308,7 +363,7 @@ func FindAvailableScopedWithMetadata(projectDir string, hints, projectPrefixes [
 			return nil
 		}
 		if buildDir, ok, skip := buildDirPath(path, entry); ok {
-			scanAvailableBuildDir(buildDir, projectDir, collector)
+			scanAvailableBuildDir(buildDir, projectDir, collector, hints)
 			if skip {
 				return filepath.SkipDir
 			}
@@ -332,24 +387,119 @@ func FindAvailableScopedWithMetadata(projectDir string, hints, projectPrefixes [
 	return AvailableResult{Artifacts: collector.artifacts, Metadata: metadata}
 }
 
-func ExtractHints(text string) []string {
-	seen := make(map[string]struct{})
-	hints := make([]string, 0)
-	for _, match := range rootedArtifactHintPattern.FindAllString(text, -1) {
-		addHint(&hints, seen, match)
+// HintScanMetadata describes a streamed line scan. A zero limit means the
+// scanner visits every match without building a match slice; non-zero limits
+// bound callback count or candidate bytes and report when more input remains.
+type HintScanMetadata struct {
+	Parsed      int
+	ParsedBytes int
+	Truncated   bool
+}
+
+type hintMatcher struct {
+	pattern *regexp.Regexp
+	offset  int
+	start   int
+	end     int
+	done    bool
+}
+
+func (m *hintMatcher) advance(text string) {
+	if m.done {
+		return
 	}
-	for _, match := range relativeArtifactHintPattern.FindAllString(text, -1) {
-		addHint(&hints, seen, match)
+	match := m.pattern.FindStringIndex(text[m.offset:])
+	if match == nil {
+		m.done = true
+		return
 	}
-	for _, groups := range quotedArtifactHintPattern.FindAllStringSubmatch(text, -1) {
-		if len(groups) > 1 {
-			addHint(&hints, seen, groups[1])
+	m.start = m.offset + match[0]
+	m.end = m.offset + match[1]
+	m.offset = m.end
+}
+
+// ScanHints streams raw candidate matches from one log line. It keeps
+// only three regexp positions live, so a large line cannot allocate an
+// unbounded FindAll result. Limits are applied before the callback; pass zero
+// for both limits when the caller needs complete, allocation-bounded parsing.
+func ScanHints(text string, maxCount, maxBytes int, visit func(string)) HintScanMetadata {
+	matchers := []hintMatcher{
+		{pattern: rootedArtifactHintPattern},
+		{pattern: relativeArtifactHintPattern},
+		{pattern: quotedArtifactHintPattern},
+	}
+	for i := range matchers {
+		matchers[i].advance(text)
+	}
+
+	metadata := HintScanMetadata{}
+	lastEnd := -1
+	for {
+		best := -1
+		for i := range matchers {
+			if matchers[i].done {
+				continue
+			}
+			if best < 0 || matchers[i].start < matchers[best].start ||
+				(matchers[i].start == matchers[best].start && matchers[i].end > matchers[best].end) {
+				best = i
+			}
 		}
+		if best < 0 {
+			break
+		}
+
+		matcher := &matchers[best]
+		start, end := matcher.start, matcher.end
+		matcher.advance(text)
+		if start < lastEnd {
+			continue
+		}
+		if maxCount > 0 && metadata.Parsed >= maxCount {
+			metadata.Truncated = true
+			break
+		}
+		candidateBytes := end - start
+		if maxBytes > 0 && metadata.ParsedBytes+candidateBytes > maxBytes {
+			metadata.Truncated = true
+			break
+		}
+		if visit != nil {
+			visit(text[start:end])
+		}
+		metadata.Parsed++
+		metadata.ParsedBytes += candidateBytes
+		lastEnd = end
 	}
+	return metadata
+}
+
+func ExtractHints(text string) []string {
+	seen := make(map[string]struct{}, maxHintsPerLine)
+	hints := make([]string, 0, maxHintsPerLine)
+	ScanHints(text, maxHintsPerLine, maxHintBytesPerLine, func(raw string) {
+		addBoundedHint(&hints, seen, raw)
+	})
 	if len(hints) == 0 {
 		return nil
 	}
 	return hints
+}
+
+func addBoundedHint(hints *[]string, seen map[string]struct{}, raw string) {
+	if len(raw) > maxHintLength+64 {
+		return
+	}
+	hint := normalizeArtifactHint(raw)
+	if hint == "" || len(hint) > maxHintLength {
+		return
+	}
+	if _, ok := seen[hint]; ok {
+		return
+	}
+	hint = strings.Clone(hint)
+	seen[hint] = struct{}{}
+	*hints = append(*hints, hint)
 }
 
 func ShouldSkipDir(entry fs.DirEntry) bool {
@@ -394,9 +544,9 @@ func captureBuildDir(buildDir, projectDir string, snapshot *Snapshot) {
 	})
 }
 
-func scanBuildDir(buildDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector, classCount, codegenCount *int) {
+func scanBuildDir(buildDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector, hints []string, classCount, codegenCount *int) {
 	for _, root := range artifactRoots {
-		scanArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, threshold, snapshot, collector)
+		scanArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, threshold, snapshot, collector, hints)
 	}
 	*classCount += countChangedFiles(filepath.Join(buildDir, "classes"), projectDir, threshold, snapshot.Captured, snapshot.ClassEntries, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
@@ -409,9 +559,9 @@ func scanBuildDir(buildDir, projectDir string, threshold time.Time, snapshot Sna
 	})
 }
 
-func scanAvailableBuildDir(buildDir, projectDir string, collector *artifactCollector) {
+func scanAvailableBuildDir(buildDir, projectDir string, collector *artifactCollector, hints []string) {
 	for _, root := range artifactRoots {
-		scanAvailableArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, collector)
+		scanAvailableArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, collector, hints)
 	}
 }
 
@@ -446,7 +596,7 @@ func captureArtifactRoot(rootDir, projectDir string, entries map[string]Snapshot
 	})
 }
 
-func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector) {
+func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector, hints []string) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -458,8 +608,10 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 		return
 	}
 
+	complete := true
 	_ = filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			complete = false
 			collector.addError(path, walkErr)
 			return nil
 		}
@@ -483,6 +635,9 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 		collector.add(artifact)
 		return nil
 	})
+	if complete {
+		collector.addCoverage(rootDir, hints)
+	}
 }
 
 func captureMatchingFiles(rootDir, projectDir string, entries map[string]SnapshotEntry, match func(path string) bool) {
@@ -559,9 +714,9 @@ func addHintArtifact(hint, projectDir string, threshold time.Time, snapshot Snap
 	if !shouldReportHintState(artifact.Path, state, threshold, snapshot) {
 		return
 	}
-	if isStandardArtifactPath(artifact.Path) {
-		// Standard roots are already scanned. Do not turn a repeated log hint
-		// into a second discovery after the original candidate was evicted.
+	if collector.covered(resolvedPath) {
+		// A complete scan already covered this path. Do not turn a repeated log
+		// hint into a second discovery after the original candidate was evicted.
 		return
 	}
 	collector.add(artifact)
@@ -583,37 +738,10 @@ func addAvailableHintArtifact(hint, projectDir string, collector *artifactCollec
 	if !ok {
 		return
 	}
-	if isStandardArtifactPath(artifact.Path) {
+	if collector.covered(resolvedPath) {
 		return
 	}
 	collector.add(artifact)
-}
-
-// isStandardArtifactPath reports whether a project-relative artifact path is
-// below one of the bounded build output roots scanned by this package.
-func isStandardArtifactPath(path string) bool {
-	parts := strings.Split(filepath.ToSlash(strings.Trim(path, "/")), "/")
-	for i, part := range parts {
-		if part != "build" {
-			continue
-		}
-		for _, root := range artifactRoots {
-			if i+1+len(root.parts) >= len(parts) {
-				continue
-			}
-			matches := true
-			for offset, rootPart := range root.parts {
-				if parts[i+1+offset] != rootPart {
-					matches = false
-					break
-				}
-			}
-			if matches {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func buildArtifact(path string, entry fs.DirEntry, projectDir string) (Artifact, SnapshotEntry, bool) {
@@ -687,7 +815,7 @@ func modifiedSince(modTimeUnixNano int64, threshold time.Time) bool {
 	return !time.Unix(0, modTimeUnixNano).Before(threshold)
 }
 
-func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCollector) {
+func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCollector, hints []string) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -699,8 +827,10 @@ func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCo
 		return
 	}
 
+	complete := true
 	_ = filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			complete = false
 			collector.addError(path, walkErr)
 			return nil
 		}
@@ -722,6 +852,9 @@ func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCo
 		collector.add(artifact)
 		return nil
 	})
+	if complete {
+		collector.addCoverage(rootDir, hints)
+	}
 }
 
 func sortArtifacts(artifacts []Artifact) {
@@ -807,16 +940,10 @@ func artifactPriority(artifact Artifact) int {
 	}
 }
 
-func addHint(hints *[]string, seen map[string]struct{}, raw string) {
-	hint := normalizeArtifactHint(raw)
-	if hint == "" {
-		return
-	}
-	if _, ok := seen[hint]; ok {
-		return
-	}
-	seen[hint] = struct{}{}
-	*hints = append(*hints, hint)
+// NormalizeHint applies the same path cleanup used by ExtractHints without
+// copying the source string. Callers retaining the result should clone it.
+func NormalizeHint(hint string) string {
+	return normalizeArtifactHint(hint)
 }
 
 func normalizeArtifactHint(hint string) string {
