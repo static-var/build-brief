@@ -50,8 +50,8 @@ if [[ -z "$tap_repo" || -z "$formula_file" || -z "$version" ]]; then
 fi
 
 if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
-  echo "publish-homebrew-tap: HOMEBREW_TAP_TOKEN is not set; skipping tap publish" >&2
-  exit 0
+  echo "publish-homebrew-tap: HOMEBREW_TAP_TOKEN is not set" >&2
+  exit 1
 fi
 
 if [[ ! -f "$formula_file" ]]; then
