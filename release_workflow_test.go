@@ -2,6 +2,8 @@ package buildbrief_test
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,11 +77,102 @@ func TestReleaseWorkflowGeneratesNotesForExistingAndDryRunTags(t *testing.T) {
 	if !strings.Contains(notes.run, "releases/generate-notes") {
 		t.Fatalf("unexpected notes generation command:\n%s", notes.run)
 	}
-	if !strings.Contains(notes.run, `-f tag_name="${{ steps.prepare.outputs.tag }}"`) {
-		t.Fatalf("notes generation must name the release tag, got:\n%s", notes.run)
+	if notes.env["RELEASE_TAG"] != "${{ steps.prepare.outputs.tag }}" || !strings.Contains(notes.run, `-f tag_name="$RELEASE_TAG"`) {
+		t.Fatalf("notes generation must pass the release tag through env, got env=%q run:\n%s", notes.env["RELEASE_TAG"], notes.run)
 	}
-	if !strings.Contains(notes.run, `-f target_commitish="${{ github.sha }}"`) {
-		t.Fatalf("notes generation must target the dispatched SHA when the tag is absent, got:\n%s", notes.run)
+	if notes.env["RELEASE_SHA"] != "${{ github.sha }}" || !strings.Contains(notes.run, `-f target_commitish="$RELEASE_SHA"`) {
+		t.Fatalf("notes generation must pass the dispatched SHA through env, got env=%q run:\n%s", notes.env["RELEASE_SHA"], notes.run)
+	}
+}
+
+func TestReleaseWorkflowDoesNotInterpolateExpressionsIntoShell(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+
+	for name, step := range workflow.steps {
+		for _, expression := range []string{"${{ inputs.", "${{ vars."} {
+			if strings.Contains(step.run, expression) {
+				t.Errorf("step %q interpolates %q into shell source; use env and quoted shell variables instead:\n%s", name, expression, step.run)
+			}
+		}
+	}
+
+	for stepName, expectedEnv := range map[string]map[string]string{
+		"Sync branch state": {
+			"RELEASE_REF_NAME": "${{ github.ref_name }}",
+		},
+		"Prepare release metadata": {
+			"RELEASE_BUMP":    "${{ inputs.bump }}",
+			"RELEASE_VERSION": "${{ inputs.version }}",
+		},
+		"Build release artifacts": {
+			"RELEASE_VERSION": "${{ steps.prepare.outputs.version }}",
+		},
+		"Generate Homebrew formula": {
+			"RELEASE_REPOSITORY": "${{ github.repository }}",
+			"RELEASE_VERSION":    "${{ steps.prepare.outputs.version }}",
+		},
+		"Validate Homebrew formula": {
+			"RELEASE_VERSION": "${{ steps.prepare.outputs.version }}",
+		},
+		"Commit version bump and changelog": {
+			"RELEASE_TAG": "${{ steps.prepare.outputs.tag }}",
+		},
+		"Create release tag": {
+			"RELEASE_TAG": "${{ steps.prepare.outputs.tag }}",
+		},
+		"Push release commit": {
+			"RELEASE_REF_NAME": "${{ github.ref_name }}",
+		},
+		"Push release tag": {
+			"RELEASE_TAG": "${{ steps.prepare.outputs.tag }}",
+		},
+		"Generate GitHub changelog notes": {
+			"RELEASE_NOTES_FILE": "${{ steps.prepare.outputs.notes_file }}",
+			"RELEASE_REPOSITORY": "${{ github.repository }}",
+			"RELEASE_SHA":        "${{ github.sha }}",
+			"RELEASE_TAG":        "${{ steps.prepare.outputs.tag }}",
+		},
+		"Publish GitHub release": {
+			"RELEASE_NOTES_FILE": "${{ steps.github-notes.outputs.notes_file }}",
+			"RELEASE_REPOSITORY": "${{ github.repository }}",
+			"RELEASE_TAG":        "${{ steps.prepare.outputs.tag }}",
+		},
+		"Publish Homebrew tap": {
+			"HOMEBREW_TAP_REPOSITORY": "${{ vars.HOMEBREW_TAP_REPOSITORY }}",
+			"HOMEBREW_TAP_BRANCH":     "${{ vars.HOMEBREW_TAP_BRANCH }}",
+			"RELEASE_VERSION":         "${{ steps.prepare.outputs.version }}",
+		},
+	} {
+		step := workflow.step(t, stepName)
+		for name, value := range expectedEnv {
+			if step.env[name] != value {
+				t.Errorf("step %q must wire %s through env, got %q", stepName, name, step.env[name])
+			}
+		}
+	}
+
+	prepare := workflow.step(t, "Prepare release metadata")
+	if !strings.Contains(prepare.run, `--bump "$RELEASE_BUMP"`) || !strings.Contains(prepare.run, `--version "$RELEASE_VERSION"`) {
+		t.Fatalf("prepare step must pass release inputs as quoted shell variables, got:\n%s", prepare.run)
+	}
+}
+
+func TestReleaseWorkflowQuotesMaliciousVersionBeforePrepareReleaseValidation(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "shell-injection-marker")
+	maliciousVersion := `1.2.3"; touch "` + marker + `"; #`
+	outputDir := t.TempDir()
+
+	command := exec.Command("bash", "-c", `scripts/prepare-release.sh --bump "$RELEASE_BUMP" --version "$RELEASE_VERSION" --output-dir "$RELEASE_OUTPUT_DIR"`)
+	command.Env = append(os.Environ(), "RELEASE_BUMP=patch", "RELEASE_VERSION="+maliciousVersion, "RELEASE_OUTPUT_DIR="+outputDir)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("malicious version must fail validation, output:\n%s", output)
+	}
+	if strings.Contains(string(output), "command not found") {
+		t.Fatalf("malicious version was parsed as shell syntax, output:\n%s", output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("malicious version escaped shell quoting; marker state error: %v", err)
 	}
 }
 
@@ -115,6 +208,7 @@ type releaseWorkflowStep struct {
 	ifCondition string
 	uses        string
 	run         string
+	env         map[string]string
 	with        map[string]string
 }
 
@@ -156,25 +250,37 @@ func parseReleaseWorkflow(t *testing.T, path string) releaseWorkflow {
 			continue
 		}
 		name := strings.TrimPrefix(line, "      - name: ")
-		step := releaseWorkflowStep{with: map[string]string{}}
+		step := releaseWorkflowStep{env: map[string]string{}, with: map[string]string{}}
+		inEnv := false
+		inRun := false
 		inWith := false
 		for index++; index < len(lines) && !(hasExactIndent(lines[index], 6) && strings.HasPrefix(lines[index], "      - name: ")); index++ {
 			key, value, ok := yamlScalarLine(lines[index], 8)
 			if ok {
+				inEnv = key == "env" && value == ""
+				inRun = key == "run" && value == "|"
 				inWith = key == "with" && value == ""
 				switch key {
 				case "if":
 					step.ifCondition = strings.TrimPrefix(strings.TrimSuffix(value, "}"), "${{ ")
+				case "run":
+					if value != "|" {
+						step.run = value + "\n"
+					}
 				case "uses":
 					step.uses = value
 				}
 				continue
 			}
+			envKey, envValue, envOK := yamlScalarLine(lines[index], 10)
+			if inEnv && envOK {
+				step.env[envKey] = envValue
+			}
 			withKey, withValue, withOK := yamlScalarLine(lines[index], 10)
 			if inWith && withOK {
 				step.with[withKey] = withValue
 			}
-			if hasExactIndent(lines[index], 10) || hasExactIndent(lines[index], 12) {
+			if inRun && (hasExactIndent(lines[index], 10) || hasExactIndent(lines[index], 12)) {
 				step.run += lines[index] + "\n"
 			}
 		}

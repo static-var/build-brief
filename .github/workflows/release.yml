@@ -51,10 +51,12 @@ jobs:
           fetch-depth: 0
 
       - name: Sync branch state
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
-          git fetch origin "${{ github.ref_name }}" --tags
-          git checkout "${{ github.ref_name }}"
-          git reset --hard "origin/${{ github.ref_name }}"
+          git fetch origin "$RELEASE_REF_NAME" --tags
+          git checkout "$RELEASE_REF_NAME"
+          git reset --hard "origin/$RELEASE_REF_NAME"
 
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -84,69 +86,91 @@ jobs:
 
       - name: Prepare release metadata
         id: prepare
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           chmod +x scripts/prepare-release.sh scripts/build-artifacts.sh scripts/generate-homebrew-formula.sh scripts/validate-homebrew-formula.sh scripts/publish-homebrew-tap.sh scripts/append-generated-release-notes.sh
           scripts/prepare-release.sh \
-            --bump "${{ inputs.bump }}" \
-            --version "${{ inputs.version }}" \
+            --bump "$RELEASE_BUMP" \
+            --version "$RELEASE_VERSION" \
             --output-dir .release
 
       - name: Run test suite
         run: go test ./...
 
       - name: Build release artifacts
-        run: scripts/build-artifacts.sh --version "${{ steps.prepare.outputs.version }}" --output-dir dist
+        env:
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
+        run: scripts/build-artifacts.sh --version "$RELEASE_VERSION" --output-dir dist
 
       - name: Generate Homebrew formula
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
         run: |
           scripts/generate-homebrew-formula.sh \
-            --version "${{ steps.prepare.outputs.version }}" \
-            --repo "${{ github.repository }}" \
+            --version "$RELEASE_VERSION" \
+            --repo "$RELEASE_REPOSITORY" \
             --artifact-dir dist \
             --output .release/build-brief.rb
 
       - name: Validate Homebrew formula
+        env:
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
         run: |
           scripts/validate-homebrew-formula.sh \
-            --version "${{ steps.prepare.outputs.version }}" \
+            --version "$RELEASE_VERSION" \
             --artifact-dir dist \
             --formula .release/build-brief.rb
 
       # Every release mutation below is explicitly gated; do not gate validation evidence or caches.
       - name: Commit version bump and changelog
         if: inputs.publish && steps.prepare.outputs.needs_commit == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
         run: |
           git add internal/app/version.go CHANGELOG.md
-          git commit -m "chore(release): ${{ steps.prepare.outputs.tag }}"
+          git commit -m "chore(release): $RELEASE_TAG"
 
       - name: Create release tag
         if: inputs.publish && steps.prepare.outputs.tag_exists != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
         run: |
-          git tag "${{ steps.prepare.outputs.tag }}"
+          git tag "$RELEASE_TAG"
 
       - name: Push release commit
         if: inputs.publish && steps.prepare.outputs.needs_commit == 'true'
-        run: git push origin "HEAD:${{ github.ref_name }}"
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: git push origin "HEAD:$RELEASE_REF_NAME"
 
       - name: Push release tag
         if: inputs.publish && steps.prepare.outputs.tag_exists != 'true'
-        run: git push origin "${{ steps.prepare.outputs.tag }}"
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        run: git push origin "$RELEASE_TAG"
 
       - name: Generate GitHub changelog notes
         id: github-notes
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_FILE: ${{ steps.prepare.outputs.notes_file }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
         run: |
           generated_notes_file=".release/github-generated-notes.md"
           combined_notes_file=".release/release-notes-with-github-changelog.md"
 
-          gh api "repos/${{ github.repository }}/releases/generate-notes" \
-            -f tag_name="${{ steps.prepare.outputs.tag }}" \
-            -f target_commitish="${{ github.sha }}" \
+          gh api "repos/$RELEASE_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$RELEASE_TAG" \
+            -f target_commitish="$RELEASE_SHA" \
             -q '.body' > "$generated_notes_file"
 
           scripts/append-generated-release-notes.sh \
-            --notes-file "${{ steps.prepare.outputs.notes_file }}" \
+            --notes-file "$RELEASE_NOTES_FILE" \
             --generated-file "$generated_notes_file" \
             --output "$combined_notes_file"
 
@@ -167,19 +191,22 @@ jobs:
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_FILE: ${{ steps.github-notes.outputs.notes_file }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
         run: |
-          if gh release view "${{ steps.prepare.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "${{ steps.prepare.outputs.tag }}" dist/* --repo "${{ github.repository }}" --clobber
-            gh release edit "${{ steps.prepare.outputs.tag }}" \
-              --repo "${{ github.repository }}" \
-              --title "build-brief ${{ steps.prepare.outputs.tag }}" \
-              --notes-file "${{ steps.github-notes.outputs.notes_file }}"
+          if gh release view "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --repo "$RELEASE_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --repo "$RELEASE_REPOSITORY" \
+              --title "build-brief $RELEASE_TAG" \
+              --notes-file "$RELEASE_NOTES_FILE"
           else
-            gh release create "${{ steps.prepare.outputs.tag }}" \
+            gh release create "$RELEASE_TAG" \
               dist/* \
-              --repo "${{ github.repository }}" \
-              --title "build-brief ${{ steps.prepare.outputs.tag }}" \
-              --notes-file "${{ steps.github-notes.outputs.notes_file }}"
+              --repo "$RELEASE_REPOSITORY" \
+              --title "build-brief $RELEASE_TAG" \
+              --notes-file "$RELEASE_NOTES_FILE"
           fi
 
       - name: Publish Homebrew tap
@@ -189,6 +216,7 @@ jobs:
           HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
           HOMEBREW_TAP_BRANCH: ${{ vars.HOMEBREW_TAP_BRANCH }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
         run: |
           tap_repo="${HOMEBREW_TAP_REPOSITORY:-${GITHUB_REPOSITORY_OWNER}/homebrew-tap}"
           tap_branch="${HOMEBREW_TAP_BRANCH:-main}"
@@ -196,4 +224,4 @@ jobs:
             --tap-repo "$tap_repo" \
             --branch "$tap_branch" \
             --formula-file .release/build-brief.rb \
-            --version "${{ steps.prepare.outputs.version }}"
+            --version "$RELEASE_VERSION"
