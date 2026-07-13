@@ -3,6 +3,7 @@ package gradle
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -32,13 +33,17 @@ func TestResolvePrefersWrapper(t *testing.T) {
 func TestResolveFallsBackToSystemGradle(t *testing.T) {
 	projectDir := t.TempDir()
 	binDir := t.TempDir()
-	gradlePath := filepath.Join(binDir, "gradle")
+	gradleName := "gradle"
+	if runtime.GOOS == "windows" {
+		gradleName += ".exe"
+	}
+	gradlePath := filepath.Join(binDir, gradleName)
 
 	if err := os.WriteFile(gradlePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write fake gradle: %v", err)
 	}
 
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", binDir)
 
 	command, err := Resolve(projectDir, "", "")
 	if err != nil {
