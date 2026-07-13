@@ -15,10 +15,9 @@ func TestRunKeepsRequiredRawLogFinalizationFailureFatal(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
 	t.Setenv("BUILD_BRIEF_TEST_LOG_DIR", logDir)
-	defer func() { _ = os.Chmod(logDir, 0o755) }()
-
 	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	script := "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\nchmod 0555 \"$BUILD_BRIEF_TEST_LOG_DIR\"\nexit 0\n"
+	// An existing directory at the final path makes rename(file, directory) fail for all users, including root.
+	script := "#!/bin/sh\necho 'BUILD SUCCESSFUL in 1s'\npartial=$(printf '%s\\n' \"$BUILD_BRIEF_TEST_LOG_DIR\"/*.partial.log)\nif [ ! -f \"$partial\" ]; then\n  echo \"expected partial raw log, got $partial\" >&2\n  exit 1\nfi\nfinal=${partial%.partial.log}.log\nmkdir \"$final\"\nexit 0\n"
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gradle: %v", err)
 	}
