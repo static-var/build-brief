@@ -1225,17 +1225,14 @@ func addEnrichmentWarning(summary *Summary, warnings *boundedStringCollector, me
 
 // findJUnitReportFiles evaluates freshness while walking, before applying the
 // report cap. Thus stale reports neither consume report capacity nor create
-// incomplete-scan metadata. The walk itself is bounded independently.
+// incomplete-scan metadata. Its candidate-work bound applies only to paths
+// that could be JUnit reports, so unrelated project entries cannot hide later
+// module reports.
 func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool) junitReportSelection {
 	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 	threshold := startedAt.Add(-junitTimeSkew)
-	walked := 0
+	candidates := 0
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
-		walked++
-		if walked > maxJUnitWalkEntries {
-			selection.walkTruncated = true
-			return fs.SkipAll
-		}
 		if walkErr != nil {
 			if isJUnitScanErrorPath(projectDir, path) {
 				addSelectionError(&selection, projectDir, path, walkErr)
@@ -1243,8 +1240,15 @@ func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool
 			return nil
 		}
 		if isJUnitReportPath(path, entry.Name()) {
+			candidates++
+			if candidates > maxJUnitWalkEntries {
+				selection.walkTruncated = true
+				return fs.SkipAll
+			}
 			if freshOnly {
-				info, err := entry.Info()
+				// readJUnitReport uses os.Open, which follows symlinks. Stat gives
+				// freshness the same target metadata and surfaces broken links.
+				info, err := os.Stat(path)
 				if err != nil {
 					addSelectionError(&selection, projectDir, path, err)
 					return nil

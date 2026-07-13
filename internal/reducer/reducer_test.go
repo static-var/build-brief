@@ -2,6 +2,7 @@ package reducer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -1043,24 +1044,160 @@ func TestReduceFindsFreshJUnitReportPastStaleReportsRegardlessOfWalkOrder(t *tes
 	}
 }
 
+func TestReduceUsesJUnitReportTargetMetadataForSymlinks(t *testing.T) {
+	t.Run("old link to fresh target is parsed", func(t *testing.T) {
+		projectDir := t.TempDir()
+		reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+		targetPath := filepath.Join(projectDir, "reports", "fresh.xml")
+		writeGeneratedFile(t, targetPath, `<testsuite><testcase name="fresh" classname="ExampleTest"/></testsuite>`)
+		linkPath := filepath.Join(reportDir, "TEST-fresh.xml")
+		if err := os.MkdirAll(reportDir, 0o755); err != nil {
+			t.Fatalf("mkdir report dir: %v", err)
+		}
+		if err := os.Symlink(targetPath, linkPath); err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			t.Fatalf("create JUnit report symlink: %v", err)
+		}
+		startTime := time.Now().Add(2 * time.Second)
+		linkInfo, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Fatalf("stat JUnit report symlink: %v", err)
+		}
+		if !linkInfo.ModTime().Before(startTime.Add(-junitTimeSkew)) {
+			t.Fatalf("expected an old JUnit symlink, got %v", linkInfo.ModTime())
+		}
+		if err := os.Chtimes(targetPath, startTime, startTime); err != nil {
+			t.Fatalf("freshen JUnit target: %v", err)
+		}
+
+		summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: projectDir}, runner.Result{ExitCode: 0, StartTime: startTime, RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL"})})
+		if err != nil {
+			t.Fatalf("reduce symlinked fresh JUnit report: %v", err)
+		}
+		if summary.JUnitScan == nil || summary.JUnitScan.Parsed != 1 || summary.PassedTestCount != 1 {
+			t.Fatalf("expected fresh target report to be parsed, got %+v", summary)
+		}
+	})
+
+	t.Run("fresh link to stale target is excluded", func(t *testing.T) {
+		projectDir := t.TempDir()
+		reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+		targetPath := filepath.Join(projectDir, "reports", "stale.xml")
+		writeGeneratedFile(t, targetPath, `<testsuite><testcase name="stale" classname="ExampleTest"/></testsuite>`)
+		stale := time.Now().Add(-2 * time.Second)
+		if err := os.Chtimes(targetPath, stale, stale); err != nil {
+			t.Fatalf("age JUnit target: %v", err)
+		}
+		if err := os.MkdirAll(reportDir, 0o755); err != nil {
+			t.Fatalf("mkdir report dir: %v", err)
+		}
+		if err := os.Symlink(targetPath, filepath.Join(reportDir, "TEST-stale.xml")); err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			t.Fatalf("create JUnit report symlink: %v", err)
+		}
+		startTime := time.Now()
+
+		summary, err := Reduce(gradle.Command{Args: []string{"assemble"}, ProjectDir: projectDir}, runner.Result{ExitCode: 0, StartTime: startTime, RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL"})})
+		if err != nil {
+			t.Fatalf("reduce symlinked stale JUnit report: %v", err)
+		}
+		if summary.JUnitScan != nil || summary.PassedTestCount != 0 {
+			t.Fatalf("expected stale target report to be excluded, got %+v", summary)
+		}
+	})
+}
+
+func TestReduceReportsBrokenJUnitReportSymlinkSelectionErrors(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	linkPath := filepath.Join(reportDir, "TEST-broken.xml")
+	if err := os.Symlink(filepath.Join(projectDir, "missing.xml"), linkPath); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatalf("create broken JUnit report symlink: %v", err)
+	}
+
+	summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: projectDir}, runner.Result{ExitCode: 1, StartTime: time.Now(), RawLogPath: writeTestLog(t, []string{"> Task :test FAILED", "FAILURE: Build failed with an exception.", "Execution failed for task ':test'.", "BUILD FAILED"})})
+	if err != nil {
+		t.Fatalf("reduce broken JUnit report symlink: %v", err)
+	}
+	if summary.JUnitScan == nil || summary.JUnitScan.ErrorCount != 1 || len(summary.JUnitScan.Errors) != 1 || !strings.Contains(summary.JUnitScan.Errors[0], "TEST-broken.xml") {
+		t.Fatalf("expected truthful bounded broken-link error, got %+v", summary.JUnitScan)
+	}
+}
+
+func TestReduceFindsFreshNestedJUnitReportPastUnrelatedEntries(t *testing.T) {
+	projectDir := t.TempDir()
+	paddingDir := filepath.Join(projectDir, "000-unrelated")
+	if err := os.MkdirAll(paddingDir, 0o755); err != nil {
+		t.Fatalf("mkdir padding directory: %v", err)
+	}
+	for i := 0; i <= maxJUnitWalkEntries; i++ {
+		if err := os.WriteFile(filepath.Join(paddingDir, fmt.Sprintf("entry-%05d", i)), nil, 0o644); err != nil {
+			t.Fatalf("write unrelated padding: %v", err)
+		}
+	}
+	startTime := time.Now()
+	freshPath := filepath.Join(projectDir, "999-module", "build", "test-results", "test", "TEST-fresh.xml")
+	writeGeneratedFile(t, freshPath, `<testsuite><testcase name="fresh" classname="ExampleTest"/></testsuite>`)
+	if err := os.Chtimes(freshPath, startTime, startTime); err != nil {
+		t.Fatalf("freshen nested JUnit report: %v", err)
+	}
+
+	summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: projectDir}, runner.Result{ExitCode: 0, StartTime: startTime, RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL"})})
+	if err != nil {
+		t.Fatalf("reduce nested JUnit report after unrelated entries: %v", err)
+	}
+	if summary.JUnitScan == nil || summary.JUnitScan.WalkTruncated || summary.JUnitScan.Parsed != 1 || summary.PassedTestCount != 1 {
+		t.Fatalf("expected nested report without walk truncation, got %+v", summary)
+	}
+}
+
+func TestReduceTruncatesAfterMoreThanMaxJUnitWalkCandidates(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	for i := 0; i <= maxJUnitWalkEntries; i++ {
+		writeGeneratedFile(t, filepath.Join(reportDir, fmt.Sprintf("TEST-%05d.xml", i)), `<testsuite><testcase name="candidate" classname="ExampleTest"/></testsuite>`)
+	}
+
+	summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: projectDir}, runner.Result{ExitCode: 0, RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL"})})
+	if err != nil {
+		t.Fatalf("reduce excess JUnit candidates: %v", err)
+	}
+	if summary.JUnitScan == nil || !summary.JUnitScan.WalkTruncated || !summary.JUnitScan.ReportingTruncated || summary.JUnitScan.Parsed != maxJUnitReportFiles {
+		t.Fatalf("expected candidate-bound truncation after parsing retained reports, got %+v", summary.JUnitScan)
+	}
+}
+
 func TestReduceDoesNotFallbackToEarlyStaleJUnitReportsWhenFreshWalkIsTruncated(t *testing.T) {
 	projectDir := t.TempDir()
 	stalePath := filepath.Join(projectDir, "000-stale", "build", "test-results", "test", "TEST-stale.xml")
 	writeGeneratedFile(t, stalePath, `<testsuite><testcase name="stale" classname="example.StaleTest"/></testsuite>`)
-	startTime := time.Now()
+	startTime := time.Now().Add(2 * time.Second)
 	stale := startTime.Add(-2 * time.Second)
 	if err := os.Chtimes(stalePath, stale, stale); err != nil {
 		t.Fatalf("age stale JUnit report: %v", err)
 	}
 
-	paddingDir := filepath.Join(projectDir, "100-padding")
+	paddingDir := filepath.Join(projectDir, "100-padding", "build", "test-results", "test")
 	if err := os.MkdirAll(paddingDir, 0o755); err != nil {
-		t.Fatalf("mkdir padding directory: %v", err)
+		t.Fatalf("mkdir JUnit candidate directory: %v", err)
 	}
 	for i := 0; i < maxJUnitWalkEntries; i++ {
-		path := filepath.Join(paddingDir, fmt.Sprintf("entry-%05d", i))
+		path := filepath.Join(paddingDir, fmt.Sprintf("TEST-padding-%05d.xml", i))
 		if err := os.WriteFile(path, nil, 0o644); err != nil {
-			t.Fatalf("write walk padding %s: %v", path, err)
+			t.Fatalf("write JUnit candidate %s: %v", path, err)
 		}
 	}
 	freshPath := filepath.Join(projectDir, "999-fresh", "build", "test-results", "test", "TEST-fresh.xml")
