@@ -214,6 +214,10 @@ func TestRunPrintsHelp(t *testing.T) {
 		"build-brief rewrite 'gradle test && gradle check'",
 		"build-brief gradle test",
 		"build-brief ./gradlew test",
+		"Relative --config and BUILD_BRIEF_CONFIG paths resolve from the effective",
+		"project directory: --project-dir, then BUILD_BRIEF_PROJECT_DIR, then the",
+		"current working directory. --project-dir takes precedence over",
+		"BUILD_BRIEF_PROJECT_DIR; absolute paths remain unchanged.",
 		"[gradle|./gradlew|PATH-TO-GRADLE]",
 		"In interactive terminals, use Up/Down to move, Space to toggle, and Enter to install.",
 		"Non-interactive stdin falls back to comma-separated numbers, '*' or 'all', or blank to cancel.",
@@ -235,6 +239,31 @@ func TestRunPrintsHelp(t *testing.T) {
 	} {
 		if strings.Contains(help, unexpected) {
 			t.Fatalf("expected help not to contain %q, got %q", unexpected, help)
+		}
+	}
+}
+
+func TestRunPrintsDoctorHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{"doctor", "--help"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+
+	help := stdout.String()
+	for _, expected := range []string{
+		"Relative --config and BUILD_BRIEF_CONFIG paths resolve from the effective",
+		"project directory: --project-dir, then BUILD_BRIEF_PROJECT_DIR, then the",
+		"current working directory. --project-dir takes precedence over",
+		"BUILD_BRIEF_PROJECT_DIR; absolute paths remain unchanged.",
+	} {
+		if !strings.Contains(help, expected) {
+			t.Fatalf("expected doctor help to contain %q, got %q", expected, help)
 		}
 	}
 }
@@ -802,6 +831,79 @@ func TestRunHumanModeUsesDefaultProjectConfig(t *testing.T) {
 	}
 }
 
+func TestRunBuildResolvesRelativeConfigAgainstEnvProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+	writeAppConfig(t, filepath.Join(projectDir, "custom.json"), validAppConfig)
+	t.Setenv("BUILD_BRIEF_PROJECT_DIR", projectDir)
+	t.Setenv("BUILD_BRIEF_CONFIG", "custom.json")
+
+	exitCode, stdout, stderr := runAppBuild(t)
+	assertAppBuildConfigResult(t, exitCode, stdout, stderr)
+}
+
+func TestRunBuildResolvesRelativeConfigAgainstCurrentDirWhenProjectDirUnset(t *testing.T) {
+	projectDir := t.TempDir()
+	writeAppConfig(t, filepath.Join(projectDir, "custom.json"), validAppConfig)
+	changeAppWorkingDir(t, projectDir)
+	t.Setenv("BUILD_BRIEF_PROJECT_DIR", "")
+	t.Setenv("BUILD_BRIEF_CONFIG", "")
+
+	exitCode, stdout, stderr := runAppBuild(t, "--config", "custom.json")
+	assertAppBuildConfigResult(t, exitCode, stdout, stderr)
+}
+
+func TestRunBuildProjectDirFlagOverridesEnvForRelativeConfig(t *testing.T) {
+	envProjectDir := t.TempDir()
+	flagProjectDir := t.TempDir()
+	writeAppConfig(t, filepath.Join(envProjectDir, "env.json"), invalidAppConfig)
+	writeAppConfig(t, filepath.Join(flagProjectDir, "custom.json"), validAppConfig)
+	t.Setenv("BUILD_BRIEF_PROJECT_DIR", envProjectDir)
+	t.Setenv("BUILD_BRIEF_CONFIG", "env.json")
+
+	exitCode, stdout, stderr := runAppBuild(t, "--project-dir", flagProjectDir, "--config", "custom.json")
+	assertAppBuildConfigResult(t, exitCode, stdout, stderr)
+}
+
+func TestRunDoctorResolvesRelativeConfigAgainstEnvProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
+	writeAppConfig(t, filepath.Join(projectDir, "custom.json"), validAppConfig)
+	t.Setenv("BUILD_BRIEF_PROJECT_DIR", projectDir)
+	t.Setenv("BUILD_BRIEF_CONFIG", "custom.json")
+
+	exitCode, stdout, stderr := runAppDoctor(t)
+	assertAppDoctorConfigResult(t, projectDir, exitCode, stdout, stderr)
+}
+
+func TestRunDoctorResolvesRelativeConfigAgainstCurrentDirWhenProjectDirUnset(t *testing.T) {
+	projectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
+	writeAppConfig(t, filepath.Join(projectDir, "custom.json"), validAppConfig)
+	changeAppWorkingDir(t, projectDir)
+	effectiveProjectDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get effective project directory: %v", err)
+	}
+	t.Setenv("BUILD_BRIEF_PROJECT_DIR", "")
+	t.Setenv("BUILD_BRIEF_CONFIG", "")
+
+	exitCode, stdout, stderr := runAppDoctor(t, "--config", "custom.json")
+	assertAppDoctorConfigResult(t, effectiveProjectDir, exitCode, stdout, stderr)
+}
+
+func TestRunDoctorProjectDirFlagOverridesEnvForRelativeConfig(t *testing.T) {
+	envProjectDir := t.TempDir()
+	flagProjectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(flagProjectDir, "gradlew"))
+	writeAppConfig(t, filepath.Join(envProjectDir, "env.json"), invalidAppConfig)
+	writeAppConfig(t, filepath.Join(flagProjectDir, "custom.json"), validAppConfig)
+	t.Setenv("BUILD_BRIEF_PROJECT_DIR", envProjectDir)
+	t.Setenv("BUILD_BRIEF_CONFIG", "env.json")
+
+	exitCode, stdout, stderr := runAppDoctor(t, "--project-dir", flagProjectDir, "--config", "custom.json")
+	assertAppDoctorConfigResult(t, flagProjectDir, exitCode, stdout, stderr)
+}
+
 func TestRunDoctorHealthyProject(t *testing.T) {
 	projectDir := t.TempDir()
 	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
@@ -860,6 +962,88 @@ func TestRunDoctorUnknownFlagExitsTwo(t *testing.T) {
 	if !strings.Contains(stderr.String(), "unknown doctor flag") {
 		t.Fatalf("expected usage error in stderr, got %q", stderr.String())
 	}
+}
+
+const validAppConfig = `{
+	"matches": [
+		{"name": "External result", "pattern": "https://example\\.test/[^\\s]+"}
+	]
+}`
+
+const invalidAppConfig = `{
+	"matches": [
+		{"name": "Broken", "pattern": "["}
+	]
+}`
+
+func runAppBuild(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	setAppTrackingEnv(t)
+	scriptPath := appGradleCommand(t, "External result https://example.test/result\nBUILD SUCCESSFUL in 1s\n", "", 0)
+	args = append(args, "--gradle", scriptPath, "test")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), args, strings.NewReader(""), &stdout, &stderr)
+	return exitCode, stdout.String(), stderr.String()
+}
+
+func runAppDoctor(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), append([]string{"doctor"}, args...), strings.NewReader(""), &stdout, &stderr)
+	return exitCode, stdout.String(), stderr.String()
+}
+
+func assertAppBuildConfigResult(t *testing.T, exitCode int, stdout, stderr string) {
+	t.Helper()
+	if exitCode != 0 {
+		t.Fatalf("expected build exit code 0, got %d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	}
+	for _, expected := range []string{"External result:", "https://example.test/result"} {
+		if !strings.Contains(stdout, expected) {
+			t.Fatalf("expected build output to contain %q, got %q", expected, stdout)
+		}
+	}
+}
+
+func assertAppDoctorConfigResult(t *testing.T, projectDir string, exitCode int, stdout, stderr string) {
+	t.Helper()
+	if exitCode != 0 {
+		t.Fatalf("expected doctor exit code 0, got %d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	}
+	for _, expected := range []string{
+		"PASS config: " + filepath.Join(projectDir, "custom.json"),
+		"custom matches: 1",
+	} {
+		if !strings.Contains(stdout, expected) {
+			t.Fatalf("expected doctor output to contain %q, got %q", expected, stdout)
+		}
+	}
+}
+
+func writeAppConfig(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+func changeAppWorkingDir(t *testing.T, path string) {
+	t.Helper()
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get current directory: %v", err)
+	}
+	if err := os.Chdir(path); err != nil {
+		t.Fatalf("change current directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Errorf("restore current directory: %v", err)
+		}
+	})
 }
 
 func writeExecutable(t *testing.T, path string) {
