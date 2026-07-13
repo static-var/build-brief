@@ -93,6 +93,50 @@ func (w *rawLogWriter) Err() error {
 	return w.err
 }
 
+type outputCaptureResult struct {
+	err                   error
+	timedOut              bool
+	startedByCancellation bool
+}
+
+func startOutputCapture(ctx context.Context, processDone <-chan struct{}, reader *os.File, destination io.Writer) <-chan outputCaptureResult {
+	copyDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(destination, reader)
+		copyDone <- err
+	}()
+
+	result := make(chan outputCaptureResult, 1)
+	go func() {
+		startedByCancellation := false
+		select {
+		case <-ctx.Done():
+			startedByCancellation = true
+		case <-processDone:
+		}
+
+		timer := time.NewTimer(commandWaitDelay)
+		defer timer.Stop()
+
+		select {
+		case err := <-copyDone:
+			result <- outputCaptureResult{
+				err:                   err,
+				startedByCancellation: startedByCancellation,
+			}
+		case <-timer.C:
+			_ = reader.Close()
+			result <- outputCaptureResult{
+				err:                   <-copyDone,
+				timedOut:              true,
+				startedByCancellation: startedByCancellation,
+			}
+		}
+	}()
+
+	return result
+}
+
 func Run(ctx context.Context, command gradle.Command, logDir string) (Result, error) {
 	return RunWithOptions(ctx, command, logDir, Options{})
 }
@@ -113,12 +157,21 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	}()
 	artifactSnapshot := artifacts.Capture(command.ProjectDir)
 
+	captureReader, captureWriter, err := os.Pipe()
+	if err != nil {
+		return Result{RawLogPath: rawLogPath, ArtifactSnapshot: artifactSnapshot}, fmt.Errorf("create output capture pipe: %w", err)
+	}
+	defer func() {
+		_ = captureReader.Close()
+		_ = captureWriter.Close()
+	}()
+
 	cmd := exec.CommandContext(runCtx, command.Executable, command.Args...)
 	cmd.Dir = command.ProjectDir
 	configureCommand(cmd)
 	// WaitDelay bounds cancellation and descendants that retain inherited
-	// output descriptors after the command exits. Wait still drains normally
-	// when those descriptors close, preserving all captured output.
+	// output descriptors after the command exits. The capture reader below
+	// applies the same bound while keeping truncation observable.
 	cmd.WaitDelay = commandWaitDelay
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -130,19 +183,26 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		return nil
 	}
 
-	// Keep one shared, comparable non-*os.File writer in both fields. exec.Cmd
-	// then gives stdout and stderr one pipe and one copy goroutine, so Wait
-	// drains inherited descriptors and reports copy/write failures.
+	// Both streams use one shared pipe writer. The reader below owns the one
+	// combined capture stream, preserving the current stdout/stderr ordering
+	// while keeping its lifecycle observable outside os/exec.
 	outputWriter := &rawLogWriter{
 		destination: rawLogFile,
 		onError:     cancel,
 	}
-	cmd.Stdout = outputWriter
-	cmd.Stderr = outputWriter
+	cmd.Stdout = captureWriter
+	cmd.Stderr = captureWriter
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		return Result{RawLogPath: rawLogPath, ArtifactSnapshot: artifactSnapshot}, fmt.Errorf("start gradle command: %w", err)
+	}
+
+	processDone := make(chan struct{})
+	captureResultCh := startOutputCapture(runCtx, processDone, captureReader, outputWriter)
+	var captureWriterCloseErr error
+	if err := captureWriter.Close(); err != nil {
+		captureWriterCloseErr = fmt.Errorf("close output capture: %w", err)
 	}
 
 	doneCh := make(chan struct{})
@@ -150,6 +210,8 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 	defer close(doneCh)
 
 	waitErr := cmd.Wait()
+	close(processDone)
+	captureResult := <-captureResultCh
 	duration := time.Since(startedAt)
 	exitCode := exitCodeFromWait(waitErr, cmd)
 
@@ -184,10 +246,23 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 		return result, closeErr
 	}
 
+	if captureWriterCloseErr != nil {
+		return result, captureWriterCloseErr
+	}
+
 	if waitErr != nil {
 		var exitErr *exec.ExitError
 		if !os.IsTimeout(waitErr) && !errors.As(waitErr, &exitErr) {
 			return result, fmt.Errorf("wait for gradle command: %w", waitErr)
+		}
+	}
+
+	if !captureResult.startedByCancellation {
+		if captureResult.timedOut {
+			return result, fmt.Errorf("capture gradle output: %w", exec.ErrWaitDelay)
+		}
+		if captureResult.err != nil {
+			return result, fmt.Errorf("capture gradle output: %w", captureResult.err)
 		}
 	}
 
