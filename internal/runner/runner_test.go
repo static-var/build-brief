@@ -120,7 +120,12 @@ func TestRunnerProcessHelper(t *testing.T) {
 		fmt.Fprintln(os.Stdout, "done")
 	case "cancel":
 		fmt.Fprintln(os.Stdout, "started")
-		select {}
+		// A zero-case select makes the Go test binary report a runtime deadlock
+		// and exit 2 before the parent can deliver CTRL_BREAK_EVENT. Sleep keeps
+		// this helper alive indefinitely without coordinating test timing.
+		for {
+			time.Sleep(time.Hour)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown runner helper mode %q\n", os.Args[len(os.Args)-1])
 		os.Exit(2)
