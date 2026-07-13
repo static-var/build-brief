@@ -199,6 +199,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
 			summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
 		}
+		if opts.CI && os.Getenv("GITHUB_ACTIONS") == "true" {
+			rendered = output.SanitizeGitHubHumanSummary(rendered)
+			if rendered != "" && !strings.HasSuffix(rendered, "\n") {
+				rendered += "\n"
+			}
+		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
 			return wrapperFailureExitCode(runResult.ExitCode)

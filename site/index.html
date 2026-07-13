@@ -169,10 +169,11 @@
       <code>--ci</code> rejects <code>--mode raw</code>.
     </p>
     <p class="section__lead fade-in">
-      With <code>GITHUB_ACTIONS=true</code>, failed builds add one generic error annotation;
-      partial failed summaries add at most one generic warning. Successful builds add none.
-      Annotations make no source-location claims. They do not upload raw logs: add a separate
-      workflow artifact-upload step when the retained log is needed after the job.
+      With <code>GITHUB_ACTIONS=true</code>, human-summary lines beginning with <code>::</code>
+      are neutralized. Failed builds add one generic error annotation; partial failed summaries
+      add at most one generic warning. Successful builds add none. Annotations use a bounded
+      synthetic tool-level location, not a source location. They do not upload raw logs: add a
+      separate workflow artifact-upload step when the retained log is needed after the job.
     </p>
   </div>
 </section>

@@ -13,17 +13,27 @@ import (
 // RenderGitHubAnnotations emits generic workflow commands only. Callers decide
 // whether the current environment is GitHub Actions.
 func RenderGitHubAnnotations(w io.Writer, summary reducer.Summary) error {
+	properties := githubAnnotationProperties()
 	if !summary.Success {
-		if _, err := fmt.Fprintf(w, "::error::%s\n", escapeGitHubWorkflowCommand("build-brief: Gradle build failed; see human summary and raw log")); err != nil {
+		if _, err := fmt.Fprintf(w, "::error %s::%s\n", properties, escapeGitHubWorkflowCommand("build-brief: Gradle build failed; see human summary and raw log")); err != nil {
 			return err
 		}
 	}
 	if !summary.Success && summaryPartial(summary) {
-		if _, err := fmt.Fprintf(w, "::warning::%s\n", escapeGitHubWorkflowCommand("build-brief: summary may be partial; see human summary and raw log")); err != nil {
+		if _, err := fmt.Fprintf(w, "::warning %s::%s\n", properties, escapeGitHubWorkflowCommand("build-brief: summary may be partial; see human summary and raw log")); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func githubAnnotationProperties() string {
+	return fmt.Sprintf("file=%s,line=%s,endLine=%s,title=%s",
+		escapeGitHubWorkflowCommandProperty("build-brief"),
+		escapeGitHubWorkflowCommandProperty("1"),
+		escapeGitHubWorkflowCommandProperty("1"),
+		escapeGitHubWorkflowCommandProperty("build-brief"),
+	)
 }
 
 func escapeGitHubWorkflowCommand(message string) string {
@@ -31,6 +41,28 @@ func escapeGitHubWorkflowCommand(message string) string {
 	message = strings.ReplaceAll(message, "\r", "%0D")
 	message = strings.ReplaceAll(message, "\n", "%0A")
 	return strings.ReplaceAll(message, ":", "%3A")
+}
+
+func escapeGitHubWorkflowCommandProperty(value string) string {
+	value = strings.ReplaceAll(value, "%", "%25")
+	value = strings.ReplaceAll(value, "\r", "%0D")
+	value = strings.ReplaceAll(value, "\n", "%0A")
+	value = strings.ReplaceAll(value, ":", "%3A")
+	return strings.ReplaceAll(value, ",", "%2C")
+}
+
+// SanitizeGitHubHumanSummary prevents untrusted summary content from becoming
+// workflow commands. GitHub-only rendering normalizes all line boundaries.
+func SanitizeGitHubHumanSummary(rendered string) string {
+	rendered = strings.ReplaceAll(rendered, "\r\n", "\n")
+	rendered = strings.ReplaceAll(rendered, "\r", "\n")
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "::") {
+			lines[i] = " " + line
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func summaryPartial(summary reducer.Summary) bool {

@@ -14,6 +14,12 @@ func TestEscapeGitHubWorkflowCommand(t *testing.T) {
 	}
 }
 
+func TestEscapeGitHubWorkflowCommandProperty(t *testing.T) {
+	if got, want := escapeGitHubWorkflowCommandProperty("100%,:\r\n"), "100%25%2C%3A%0D%0A"; got != want {
+		t.Fatalf("escaped property = %q, want %q", got, want)
+	}
+}
+
 func TestRenderGitHubAnnotationsEmitsGenericMessages(t *testing.T) {
 	summary := reducer.Summary{
 		Success:  false,
@@ -25,7 +31,7 @@ func TestRenderGitHubAnnotationsEmitsGenericMessages(t *testing.T) {
 		t.Fatalf("render GitHub annotations: %v", err)
 	}
 
-	if got, want := out.String(), "::error::build-brief%3A Gradle build failed; see human summary and raw log\n::warning::build-brief%3A summary may be partial; see human summary and raw log\n"; got != want {
+	if got, want := out.String(), "::error file=build-brief,line=1,endLine=1,title=build-brief::build-brief%3A Gradle build failed; see human summary and raw log\n::warning file=build-brief,line=1,endLine=1,title=build-brief::build-brief%3A summary may be partial; see human summary and raw log\n"; got != want {
 		t.Fatalf("unexpected annotations %q, want %q", got, want)
 	}
 }
@@ -41,10 +47,10 @@ func TestRenderGitHubAnnotationsCapsPartialWarningsAndSkipsSuccess(t *testing.T)
 	if err := RenderGitHubAnnotations(&out, partial); err != nil {
 		t.Fatalf("render partial annotation: %v", err)
 	}
-	if got, want := strings.Count(out.String(), "::warning::"), 1; got != want {
+	if got, want := strings.Count(out.String(), "::warning "), 1; got != want {
 		t.Fatalf("warning count = %d, want %d: %q", got, want, out.String())
 	}
-	if got := strings.Count(out.String(), "::error::"); got != 1 {
+	if got := strings.Count(out.String(), "::error "); got != 1 {
 		t.Fatalf("error count = %d, want 1: %q", got, out.String())
 	}
 
@@ -54,6 +60,13 @@ func TestRenderGitHubAnnotationsCapsPartialWarningsAndSkipsSuccess(t *testing.T)
 	}
 	if got := clean.String(); got != "" {
 		t.Fatalf("success annotations = %q, want empty", got)
+	}
+}
+
+func TestSanitizeGitHubHumanSummaryNeutralizesWorkflowCommandsAtAllLineBoundaries(t *testing.T) {
+	input := "::warning::untrusted\r::error::untrusted\r\n::stop-commands::pause\n::pause::resume\nplain\n"
+	if got, want := SanitizeGitHubHumanSummary(input), " ::warning::untrusted\n ::error::untrusted\n ::stop-commands::pause\n ::pause::resume\nplain\n"; got != want {
+		t.Fatalf("sanitized GitHub human summary = %q, want %q", got, want)
 	}
 }
 
@@ -107,6 +120,27 @@ func TestRenderHumanShowsInformationalReportOnSuccess(t *testing.T) {
 	}
 	if strings.Index(rendered, "> Task :tasks") > strings.Index(rendered, "BUILD SUCCESSFUL in 1s") {
 		t.Fatalf("expected report body before status, got %q", rendered)
+	}
+}
+
+func TestGitHubHumanSummarySanitizesSuccessInformationalReportCommands(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		ReportLines: []string{
+			"::warning::untrusted",
+			"::error::untrusted",
+			"::stop-commands::pause",
+			"::pause::resume",
+		},
+	}
+
+	var human bytes.Buffer
+	if err := RenderHuman(&human, summary); err != nil {
+		t.Fatalf("render human summary: %v", err)
+	}
+	if got, want := SanitizeGitHubHumanSummary(human.String()), " ::warning::untrusted\n ::error::untrusted\n ::stop-commands::pause\n ::pause::resume\n\nBUILD SUCCESSFUL in 1s\n"; got != want {
+		t.Fatalf("sanitized GitHub summary = %q, want %q", got, want)
 	}
 }
 

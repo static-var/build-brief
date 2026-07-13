@@ -76,11 +76,38 @@ func TestRunCIAnnotationsAreExplicitAndPreserveGradleExit(t *testing.T) {
 	if exitCode != 7 {
 		t.Fatalf("CI exit code = %d, want Gradle exit 7; stderr=%q", exitCode, stderr.String())
 	}
-	if got := strings.Count(stdout.String(), "::error::"); got != 1 {
+	if got := strings.Count(stdout.String(), "::error "); got != 1 {
 		t.Fatalf("error annotation count = %d, want 1: %q", got, stdout.String())
 	}
-	if strings.Contains(stdout.String(), "file=") || strings.Contains(stdout.String(), "line=") {
-		t.Fatalf("annotation must not claim a source location: %q", stdout.String())
+	if !strings.Contains(stdout.String(), "::error file=build-brief,line=1,endLine=1,title=build-brief::") {
+		t.Fatalf("annotation must use the bounded synthetic location: %q", stdout.String())
+	}
+}
+
+func TestRunCIGitHubSanitizesUntrustedHumanWorkflowCommands(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "BUILD SUCCESSFUL in 1s\n", "", 0)
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	original := renderSummaryFn
+	renderSummaryFn = func(reducer.Summary) (string, error) {
+		return "::warning::untrusted\n::error::untrusted\r::stop-commands::pause\r\n::pause::resume\nBUILD SUCCESSFUL\n", nil
+	}
+	t.Cleanup(func() { renderSummaryFn = original })
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--ci", "--project-dir", projectDir, "--gradle", scriptPath, "tasks"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("CI exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if got, want := stdout.String(), " ::warning::untrusted\n ::error::untrusted\n ::stop-commands::pause\n ::pause::resume\nBUILD SUCCESSFUL\n"; got != want {
+		t.Fatalf("GitHub CI output = %q, want %q", got, want)
+	}
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if strings.HasPrefix(line, "::") {
+			t.Fatalf("unintended workflow command line %q in %q", line, stdout.String())
+		}
 	}
 }
 
@@ -155,7 +182,7 @@ func TestRunDoesNotAutoDetectGitHubActions(t *testing.T) {
 	if exitCode != 7 {
 		t.Fatalf("non-CI exit code = %d, want 7", exitCode)
 	}
-	if strings.Contains(stdout.String(), "::error::") {
+	if strings.Contains(stdout.String(), "::error ") {
 		t.Fatalf("non-CI GitHub environment emitted annotation: %q", stdout.String())
 	}
 }
