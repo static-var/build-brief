@@ -40,8 +40,7 @@ func githubAnnotationProperties() string {
 func escapeGitHubWorkflowCommand(message string) string {
 	message = strings.ReplaceAll(message, "%", "%25")
 	message = strings.ReplaceAll(message, "\r", "%0D")
-	message = strings.ReplaceAll(message, "\n", "%0A")
-	return strings.ReplaceAll(message, ":", "%3A")
+	return strings.ReplaceAll(message, "\n", "%0A")
 }
 
 func escapeGitHubWorkflowCommandProperty(value string) string {

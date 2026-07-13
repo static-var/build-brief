@@ -9,9 +9,9 @@ import (
 	"build-brief/internal/reducer"
 )
 
-func TestEscapeGitHubWorkflowCommand(t *testing.T) {
-	if got, want := escapeGitHubWorkflowCommand("100%\r\nkey:value"), "100%25%0D%0Akey%3Avalue"; got != want {
-		t.Fatalf("escaped command = %q, want %q", got, want)
+func TestEscapeGitHubWorkflowCommandData(t *testing.T) {
+	if got, want := escapeGitHubWorkflowCommand("100%,:\r\n"), "100%25,:%0D%0A"; got != want {
+		t.Fatalf("escaped command data = %q, want %q", got, want)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestRenderGitHubAnnotationsEmitsGenericMessages(t *testing.T) {
 		t.Fatalf("render GitHub annotations: %v", err)
 	}
 
-	if got, want := out.String(), "::error file=build-brief,line=1,endLine=1,title=build-brief::build-brief%3A Gradle build failed; see human summary and raw log\n::warning file=build-brief,line=1,endLine=1,title=build-brief::build-brief%3A summary may be partial; see human summary and raw log\n"; got != want {
+	if got, want := out.String(), "::error file=build-brief,line=1,endLine=1,title=build-brief::build-brief: Gradle build failed; see human summary and raw log\n::warning file=build-brief,line=1,endLine=1,title=build-brief::build-brief: summary may be partial; see human summary and raw log\n"; got != want {
 		t.Fatalf("unexpected annotations %q, want %q", got, want)
 	}
 }
