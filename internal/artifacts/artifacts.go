@@ -619,15 +619,10 @@ func quotedPathBoundary(segment string) bool {
 	if segment == "" {
 		return false
 	}
-	if segment[0] != '/' && segment[0] != '\\' {
-		return true
+	if segment[0] == '/' || segment[0] == '\\' {
+		return false
 	}
-	for i := 1; i < len(segment); i++ {
-		if strings.ContainsRune(" \t,;:", rune(segment[i])) {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 func quotedPathStart(text string, start, end int) int {

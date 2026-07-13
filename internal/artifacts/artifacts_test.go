@@ -292,6 +292,11 @@ func TestExtractHintsQuotedSegmentSurfacesEachDistinctPath(t *testing.T) {
 	if len(hints) != 1 || !containsHint(hints, "/tmp/Fancy.xcframework") {
 		t.Fatalf("expected nested quoted framework path to remain one hint, got %v", hints)
 	}
+
+	hints = ExtractHints(`Artifact: "/tmp/My Fancy.xcframework/ios simulator/Fancy.framework/Fancy"`)
+	if len(hints) != 1 || !containsHint(hints, "/tmp/My Fancy.xcframework") {
+		t.Fatalf("expected nested quoted framework path with spaces to remain one hint, got %v", hints)
+	}
 }
 
 func TestExtractHintsSupportsPathsWithSpaces(t *testing.T) {
