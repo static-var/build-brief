@@ -8,11 +8,35 @@ import (
 )
 
 func TestPagesWorkflowPinsActionsToAuditedImmutableRevisions(t *testing.T) {
+	assertPagesWorkflowPins(t, readPagesWorkflow(t))
+}
+
+func TestPagesWorkflowPreservesDeploymentContract(t *testing.T) {
+	assertPagesWorkflowDeploymentContract(t, readPagesWorkflow(t))
+}
+
+func TestPagesWorkflowChecksAcceptCRLF(t *testing.T) {
+	workflow := strings.ReplaceAll(readPagesWorkflow(t), "\n", "\r\n")
+	assertPagesWorkflowPins(t, workflow)
+	assertPagesWorkflowDeploymentContract(t, workflow)
+}
+
+func readPagesWorkflow(t *testing.T) string {
+	t.Helper()
 	content, err := os.ReadFile(".github/workflows/pages.yml")
 	if err != nil {
 		t.Fatalf("read Pages workflow: %v", err)
 	}
+	return string(content)
+}
 
+func normalizeWorkflowLineEndings(workflow string) string {
+	return strings.ReplaceAll(workflow, "\r\n", "\n")
+}
+
+func assertPagesWorkflowPins(t *testing.T, workflow string) {
+	t.Helper()
+	workflow = normalizeWorkflowLineEndings(workflow)
 	expected := map[string]string{
 		"actions/checkout":              "34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1",
 		"actions/configure-pages":       "983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0",
@@ -21,7 +45,7 @@ func TestPagesWorkflowPinsActionsToAuditedImmutableRevisions(t *testing.T) {
 	}
 
 	usesLine := regexp.MustCompile(`(?m)^\s+uses:\s+([^@\s]+)@([^\s]+)(?:\s+#\s+(.+))?$`)
-	matches := usesLine.FindAllStringSubmatch(string(content), -1)
+	matches := usesLine.FindAllStringSubmatch(workflow, -1)
 	if len(matches) != len(expected) {
 		t.Fatalf("Pages workflow must contain exactly %d action uses, found %d", len(expected), len(matches))
 	}
@@ -46,12 +70,9 @@ func TestPagesWorkflowPinsActionsToAuditedImmutableRevisions(t *testing.T) {
 	}
 }
 
-func TestPagesWorkflowPreservesDeploymentContract(t *testing.T) {
-	content, err := os.ReadFile(".github/workflows/pages.yml")
-	if err != nil {
-		t.Fatalf("read Pages workflow: %v", err)
-	}
-	workflow := string(content)
+func assertPagesWorkflowDeploymentContract(t *testing.T, workflow string) {
+	t.Helper()
+	workflow = normalizeWorkflowLineEndings(workflow)
 	for _, required := range []string{
 		"branches:\n      - main",
 		"workflow_dispatch:",
