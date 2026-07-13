@@ -197,6 +197,158 @@ func TestAcquireLockFileBreaksStaleLock(t *testing.T) {
 	releaseLockFile(lockPath, lockFile)
 }
 
+func TestAcquireLockFileReleaseAllowsNextContender(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	first, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+	if err := releaseLockFile(lockPath, first); err != nil {
+		t.Fatalf("release first lock: %v", err)
+	}
+
+	second, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire lock after release: %v", err)
+	}
+	if err := releaseLockFile(lockPath, second); err != nil {
+		t.Fatalf("release second lock: %v", err)
+	}
+}
+
+func TestReleaseDoesNotRemoveReclaimedSuccessorLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	original, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire original lock: %v", err)
+	}
+	if original.token == "" {
+		t.Fatal("original lock has no ownership token")
+	}
+
+	// Simulate stale recovery replacing the original owner's path.
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatalf("remove original lock: %v", err)
+	}
+	successor, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire successor lock: %v", err)
+	}
+	defer releaseLockFile(lockPath, successor)
+	metadata, err := readLockMetadata(lockPath)
+	if err != nil {
+		t.Fatalf("read successor metadata: %v", err)
+	}
+	if metadata.Token != successor.token || successor.token == original.token {
+		t.Fatalf("unexpected ownership tokens: original=%q successor=%q metadata=%q", original.token, successor.token, metadata.Token)
+	}
+
+	if err := releaseLockFile(lockPath, original); err != nil {
+		t.Fatalf("release original lock: %v", err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("original release removed successor lock: %v", err)
+	}
+
+	third, err := acquireLockFile(lockPath, 100*time.Millisecond)
+	if err == nil {
+		releaseLockFile(lockPath, third)
+		t.Fatal("third contender acquired successor lock")
+	}
+}
+
+func TestAcquireLockFileDoesNotReclaimLiveOwnerOverAge(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write old live-owner lock: %v", err)
+	}
+
+	lockFile, err := acquireLockFile(lockPath, 100*time.Millisecond)
+	if err == nil {
+		releaseLockFile(lockPath, lockFile)
+		t.Fatal("acquired lock held by a live owner older than stale age")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("live-owner lock was reclaimed: %v", err)
+	}
+}
+
+func TestDelayedStaleObserverCannotRemoveSuccessorLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	stale := fmt.Sprintf("pid=%d\ncreated_at=%s\n", 999999, time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(stale), 0o600); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	observed := make(chan struct{})
+	resume := make(chan struct{})
+	result := make(chan struct {
+		reclaimed bool
+		err       error
+	}, 1)
+	go func() {
+		if !shouldBreakStaleLock(lockPath) {
+			result <- struct {
+				reclaimed bool
+				err       error
+			}{err: fmt.Errorf("observer did not see stale lock")}
+			return
+		}
+		close(observed)
+		<-resume
+		reclaimed, err := reclaimStaleLock(lockPath, time.Second)
+		result <- struct {
+			reclaimed bool
+			err       error
+		}{reclaimed, err}
+	}()
+	<-observed
+
+	successor, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire successor lock: %v", err)
+	}
+	defer releaseLockFile(lockPath, successor)
+	close(resume)
+
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("delayed stale reclamation: %v", got.err)
+	}
+	if got.reclaimed {
+		t.Fatal("delayed stale observer reclaimed a successor lock")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("successor lock was removed: %v", err)
+	}
+}
+
+func TestRemoveLockFileRetriesContendedRemoval(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	if err := os.WriteFile(lockPath, []byte("lock"), 0o600); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	attempts := 0
+	err := removeLockFile(lockPath, time.Second, func(path string) error {
+		attempts++
+		if attempts < 3 {
+			return os.ErrPermission
+		}
+		return os.Remove(path)
+	})
+	if err != nil {
+		t.Fatalf("remove contended lock: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected three removal attempts, got %d", attempts)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("expected lock to be removed, stat error: %v", err)
+	}
+}
+
 func TestRenderTextIncludesRecentHistory(t *testing.T) {
 	report := Report{
 		Summary: Summary{

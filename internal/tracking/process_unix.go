@@ -4,11 +4,18 @@ package tracking
 
 import "syscall"
 
-func processExists(pid int) bool {
+func processLiveness(pid int) (known, alive bool) {
 	if pid <= 0 {
-		return false
+		return false, false
 	}
 
 	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	switch err {
+	case nil, syscall.EPERM:
+		return true, true
+	case syscall.ESRCH:
+		return true, false
+	default:
+		return false, false
+	}
 }
