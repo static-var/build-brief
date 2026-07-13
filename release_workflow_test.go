@@ -1,6 +1,7 @@
 package buildbrief_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,16 +86,50 @@ func TestReleaseWorkflowGeneratesNotesForExistingAndDryRunTags(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowDoesNotInterpolateExpressionsIntoShell(t *testing.T) {
-	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+func TestReleaseWorkflowRunBlocksRejectGitHubExpressions(t *testing.T) {
+	content, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
 
-	for name, step := range workflow.steps {
-		for _, expression := range []string{"${{ inputs.", "${{ vars."} {
-			if strings.Contains(step.run, expression) {
-				t.Errorf("step %q interpolates %q into shell source; use env and quoted shell variables instead:\n%s", name, expression, step.run)
-			}
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+	expectedRunBlocks := 0
+	for _, step := range workflow.steps {
+		if step.run != "" {
+			expectedRunBlocks++
 		}
 	}
+	if blocks := parseWorkflowRunBlocks(string(content)); len(blocks) != expectedRunBlocks {
+		t.Fatalf("parsed %d run blocks; workflow has %d run steps", len(blocks), expectedRunBlocks)
+	}
+	if err := rejectGitHubExpressionsInRunBlocks(string(content)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsExpressionMutations(t *testing.T) {
+	for name, expression := range map[string]string{
+		"github event": "${{ github.event.issue.title }}",
+		"github actor": "${{ github.actor }}",
+		"input":        "${{ inputs.version }}",
+		"variable":     "${{ vars.RELEASE_CHANNEL }}",
+		"step output":  "${{ steps.prepare.outputs.tag }}",
+		"secret":       "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := rejectGitHubExpressionsInRunBlocks(workflowRunFixture(expression))
+			if err == nil {
+				t.Fatalf("run block containing %q was accepted", expression)
+			}
+			if !strings.Contains(err.Error(), expression) {
+				t.Fatalf("rejection must identify %q, got %v", expression, err)
+			}
+		})
+	}
+}
+
+func TestReleaseWorkflowWiresShellValuesThroughEnvironment(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
 
 	for stepName, expectedEnv := range map[string]map[string]string{
 		"Sync branch state": {
@@ -157,13 +192,20 @@ func TestReleaseWorkflowDoesNotInterpolateExpressionsIntoShell(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowQuotesMaliciousVersionBeforePrepareReleaseValidation(t *testing.T) {
+func TestReleaseWorkflowPrepareStepSafelyQuotesMaliciousVersion(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+	prepare := workflow.step(t, "Prepare release metadata")
+	worktree := addDetachedWorktree(t)
 	marker := filepath.Join(t.TempDir(), "shell-injection-marker")
 	maliciousVersion := `1.2.3"; touch "` + marker + `"; #`
-	outputDir := t.TempDir()
 
-	command := exec.Command("bash", "-c", `scripts/prepare-release.sh --bump "$RELEASE_BUMP" --version "$RELEASE_VERSION" --output-dir "$RELEASE_OUTPUT_DIR"`)
-	command.Env = append(os.Environ(), "RELEASE_BUMP=patch", "RELEASE_VERSION="+maliciousVersion, "RELEASE_OUTPUT_DIR="+outputDir)
+	command := exec.Command("bash", "-euo", "pipefail", "-c", prepare.run)
+	command.Dir = worktree
+	command.Env = append(os.Environ(),
+		"GITHUB_OUTPUT="+filepath.Join(worktree, "github-output"),
+		"RELEASE_BUMP=patch",
+		"RELEASE_VERSION="+maliciousVersion,
+	)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("malicious version must fail validation, output:\n%s", output)
@@ -191,6 +233,91 @@ func TestReleaseWorkflowKeepsValidationEvidenceAndCacheEnabledInDryRun(t *testin
 	if setupGo.with["cache"] != "true" {
 		t.Fatalf("Go action cache is intentional dry-run optimization and must remain enabled, got %q", setupGo.with["cache"])
 	}
+}
+
+func workflowRunFixture(expression string) string {
+	return "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: |\n          printf '%s\\n' \"" + expression + "\"\n"
+}
+
+func rejectGitHubExpressionsInRunBlocks(content string) error {
+	for _, block := range parseWorkflowRunBlocks(content) {
+		if expressionAt := strings.Index(block.source, "${{"); expressionAt >= 0 {
+			end := strings.Index(block.source[expressionAt:], "}}")
+			expression := block.source[expressionAt:]
+			if end >= 0 {
+				expression = expression[:end+2]
+			}
+			return fmt.Errorf("run block at line %d contains unsafe GitHub expression %q", block.line, expression)
+		}
+	}
+	return nil
+}
+
+type workflowRunBlock struct {
+	line   int
+	source string
+}
+
+func parseWorkflowRunBlocks(content string) []workflowRunBlock {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	var blocks []workflowRunBlock
+	for index := 0; index < len(lines); index++ {
+		indent, key, value, ok := yamlKeyLine(lines[index])
+		if !ok || key != "run" {
+			continue
+		}
+
+		block := workflowRunBlock{line: index + 1}
+		if isYAMLBlockScalar(value) {
+			for index++; index < len(lines); index++ {
+				if strings.TrimSpace(lines[index]) != "" && leadingSpaces(lines[index]) <= indent {
+					index--
+					break
+				}
+				block.source += lines[index] + "\n"
+			}
+		} else {
+			block.source = value
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+func yamlKeyLine(line string) (indent int, key, value string, ok bool) {
+	indent = leadingSpaces(line)
+	key, value, ok = strings.Cut(strings.TrimSpace(line), ":")
+	if !ok {
+		return 0, "", "", false
+	}
+	return indent, key, strings.TrimSpace(value), true
+}
+
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+func isYAMLBlockScalar(value string) bool {
+	return strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">")
+}
+
+func addDetachedWorktree(t *testing.T) string {
+	t.Helper()
+
+	repository, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("resolve repository path: %v", err)
+	}
+	worktree := filepath.Join(t.TempDir(), "release-workflow-test")
+	if output, err := exec.Command("git", "-C", repository, "worktree", "add", "--detach", worktree, "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("create isolated worktree: %v\n%s", err, output)
+	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("git", "-C", repository, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
+			t.Errorf("remove isolated worktree: %v\n%s", err, output)
+		}
+	})
+	return worktree
 }
 
 type releaseWorkflow struct {
