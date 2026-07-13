@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode"
 
 	"build-brief/internal/reducer"
 )
@@ -63,10 +64,17 @@ func TestRenderGitHubAnnotationsCapsPartialWarningsAndSkipsSuccess(t *testing.T)
 	}
 }
 
-func TestSanitizeGitHubHumanSummaryNeutralizesWorkflowCommandsAtAllLineBoundaries(t *testing.T) {
-	input := "::warning::untrusted\r::error::untrusted\r\n::stop-commands::pause\n::pause::resume\nplain\n"
-	if got, want := SanitizeGitHubHumanSummary(input), " ::warning::untrusted\n ::error::untrusted\n ::stop-commands::pause\n ::pause::resume\nplain\n"; got != want {
+func TestSanitizeGitHubHumanSummaryNeutralizesTrimStartWorkflowCommandsAtAllLineBoundaries(t *testing.T) {
+	input := "::warning::untrusted\r ::error::untrusted\r\n\t::add-mask::secret\n\u00a0::stop-commands::pause\n\u2003::pause::resume\nplain\n"
+	want := "| ::warning::untrusted\n|  ::error::untrusted\n| \t::add-mask::secret\n| \u00a0::stop-commands::pause\n| \u2003::pause::resume\nplain\n"
+	got := SanitizeGitHubHumanSummary(input)
+	if got != want {
 		t.Fatalf("sanitized GitHub human summary = %q, want %q", got, want)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "::") {
+			t.Fatalf("runner TrimStart would execute workflow command line %q", line)
+		}
 	}
 }
 
@@ -139,7 +147,7 @@ func TestGitHubHumanSummarySanitizesSuccessInformationalReportCommands(t *testin
 	if err := RenderHuman(&human, summary); err != nil {
 		t.Fatalf("render human summary: %v", err)
 	}
-	if got, want := SanitizeGitHubHumanSummary(human.String()), " ::warning::untrusted\n ::error::untrusted\n ::stop-commands::pause\n ::pause::resume\n\nBUILD SUCCESSFUL in 1s\n"; got != want {
+	if got, want := SanitizeGitHubHumanSummary(human.String()), "| ::warning::untrusted\n| ::error::untrusted\n| ::stop-commands::pause\n| ::pause::resume\n\nBUILD SUCCESSFUL in 1s\n"; got != want {
 		t.Fatalf("sanitized GitHub summary = %q, want %q", got, want)
 	}
 }

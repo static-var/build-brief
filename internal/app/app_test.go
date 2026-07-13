@@ -101,7 +101,7 @@ func TestRunCIGitHubSanitizesUntrustedHumanWorkflowCommands(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("CI exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
 	}
-	if got, want := stdout.String(), " ::warning::untrusted\n ::error::untrusted\n ::stop-commands::pause\n ::pause::resume\nBUILD SUCCESSFUL\n"; got != want {
+	if got, want := stdout.String(), "| ::warning::untrusted\n| ::error::untrusted\n| ::stop-commands::pause\n| ::pause::resume\nBUILD SUCCESSFUL\n"; got != want {
 		t.Fatalf("GitHub CI output = %q, want %q", got, want)
 	}
 	for _, line := range strings.Split(stdout.String(), "\n") {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode"
 
 	"build-brief/internal/reducer"
 )
@@ -52,14 +53,16 @@ func escapeGitHubWorkflowCommandProperty(value string) string {
 }
 
 // SanitizeGitHubHumanSummary prevents untrusted summary content from becoming
-// workflow commands. GitHub-only rendering normalizes all line boundaries.
+// workflow commands. GitHub-only rendering normalizes all line boundaries and
+// prefixes a non-whitespace sentinel because the runner trims leading Unicode
+// whitespace before parsing commands.
 func SanitizeGitHubHumanSummary(rendered string) string {
 	rendered = strings.ReplaceAll(rendered, "\r\n", "\n")
 	rendered = strings.ReplaceAll(rendered, "\r", "\n")
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "::") {
-			lines[i] = " " + line
+		if strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "::") {
+			lines[i] = "| " + line
 		}
 	}
 	return strings.Join(lines, "\n")
