@@ -159,6 +159,27 @@
 
 <hr class="divider">
 
+<section class="section-border">
+  <div class="wrap">
+    <p class="section__kicker fade-in">CI</p>
+    <h2 class="section__title fade-in">Explicit when you need it.</h2>
+    <p class="section__lead fade-in">
+      Use <code>build-brief --ci test</code> to opt into CI behavior. It is never
+      inferred from the environment and keeps the normal human summary and Gradle exit code.
+      <code>--ci</code> rejects <code>--mode raw</code>.
+    </p>
+    <p class="section__lead fade-in">
+      With <code>GITHUB_ACTIONS=true</code>, human-summary lines beginning with <code>::</code>
+      are neutralized. Failed builds add one generic error annotation; partial failed summaries
+      add at most one generic warning. Successful builds add none. Annotations use a bounded
+      synthetic tool-level location, not a source location. They do not upload raw logs: add a
+      separate workflow artifact-upload step when the retained log is needed after the job.
+    </p>
+  </div>
+</section>
+
+<hr class="divider">
+
 <!-- ======================================================= -->
 <!-- BEFORE / AFTER                                           -->
 <!-- ======================================================= -->
@@ -505,8 +526,7 @@
     <p class="section__kicker fade-in">Measurement</p>
     <h2 class="section__title fade-in">Know what you're saving.</h2>
     <p class="section__lead fade-in">
-      <code>build-brief gains</code> tracks cumulative token savings across every build.
-      For AI agents, these savings translate directly to <strong>context-window budget
+      <code>build-brief gains</code> tracks cumulative token savings across every build in a local JSONL history under your OS config directory; no gains data is transmitted. Entries older than 90 days are pruned when the next tracked run is recorded, so inactive history may remain until then or <code>build-brief gains --reset</code>. For AI agents, these savings translate directly to <strong>context-window budget
       reclaimed</strong> — capacity the agent can spend reasoning about your code
       instead of parsing Gradle task lifecycle output.
     </p>
@@ -543,6 +563,8 @@
 <span class="acc">build-brief Token Savings (Global Scope)</span>
 <span class="dim">============================================================</span>
 
+<span class="brt">Recorded period: </span>2026-03-01 to 2026-03-21 (21 days, 38 commands)
+
 <span class="brt">Total commands:  </span><span class="grn">38</span>
 <span class="brt">Raw tokens:      </span>80.9K
 <span class="brt">Emitted tokens:  </span>3.8K
@@ -557,7 +579,9 @@
   2  gradlew :androidApp:clean :…      6     <span class="grn">32.7K</span>   92.5%
   3  gradlew build                      9      <span class="grn">2.6K</span>   60.8%
   4  gradlew assembleDebug              2      <span class="grn">1.4K</span>   99.1%
-  5  gradle clean jvmTest               6       <span class="grn">848</span>   47.5%</div>
+  5  gradle clean jvmTest               6       <span class="grn">848</span>   47.5%
+
+<span class="dim">Local-only: Gains history stays on this machine. This report sends no gains data.</span></div>
       </div>
     </div>
   </div>

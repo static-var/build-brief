@@ -151,6 +151,30 @@ func TestCustomMatchLimitDocumentationMatchesExportedLimits(t *testing.T) {
 	}
 }
 
+func TestGainsDocumentationStatesLocalRetentionBehavior(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate config test file")
+	}
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	for _, path := range []string{filepath.Join(root, "README.md"), filepath.Join(root, "site", "index.html")} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, expected := range []string{
+			"no gains data is transmitted",
+			"Entries older than 90 days are pruned when the next tracked run is recorded",
+			"inactive history may remain until then",
+			"build-brief gains --reset",
+		} {
+			if !strings.Contains(string(content), expected) {
+				t.Fatalf("%s does not document %q", path, expected)
+			}
+		}
+	}
+}
+
 func TestLoadRejectsInvalidRegex(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "custom.json")
 	writeConfig(t, configPath, `{

@@ -33,6 +33,7 @@ type Options struct {
 	Install        bool
 	InstallForce   bool
 	Global         bool
+	CI             bool
 }
 
 var (
@@ -40,6 +41,7 @@ var (
 	estimateFileTokens = tracking.EstimateFileTokens
 	runGradle          = runner.RunWithOptions
 	renderSummaryFn    = renderSummary
+	recordRun          = tracking.RecordRun
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -165,16 +167,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			fmt.Fprintf(stderr, "build-brief: render raw output: %v\n", err)
 			return wrapperFailureExitCode(runResult.ExitCode)
 		}
-		trackRun(tracking.Record{
-			Timestamp:     timeNow(),
-			ProjectPath:   command.ProjectDir,
-			Command:       trackingCommand,
-			Mode:          opts.Mode,
-			Success:       runResult.ExitCode == 0,
-			RawTokens:     rawTokens,
-			EmittedTokens: rawTokens,
-			RawLogPath:    runResult.RawLogPath,
-		}, stderr)
+		if !opts.CI {
+			trackRun(tracking.Record{
+				Timestamp:     timeNow(),
+				ProjectPath:   command.ProjectDir,
+				Command:       trackingCommand,
+				Mode:          opts.Mode,
+				Success:       runResult.ExitCode == 0,
+				RawTokens:     rawTokens,
+				EmittedTokens: rawTokens,
+				RawLogPath:    runResult.RawLogPath,
+			}, stderr)
+		}
 	default:
 		summary, err := reducer.ReduceWithOptions(command, runResult, reducer.Options{
 			CustomMatches: customMatches,
@@ -195,23 +199,35 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			summary.SavedTokens = tracking.SavedTokens(summary.RawOutputTokens, summary.EmittedTokens)
 			summary.SavingsPct = tracking.SavingsPct(summary.RawOutputTokens, summary.EmittedTokens)
 		}
+		if opts.CI && os.Getenv("GITHUB_ACTIONS") == "true" {
+			rendered = output.SanitizeGitHubHumanSummary(rendered)
+			if rendered != "" && !strings.HasSuffix(rendered, "\n") {
+				rendered += "\n"
+			}
+		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
 			return wrapperFailureExitCode(runResult.ExitCode)
 		}
-		trackRun(tracking.Record{
-			Timestamp:     timeNow(),
-			ProjectPath:   command.ProjectDir,
-			Command:       trackingCommand,
-			Mode:          opts.Mode,
-			Success:       summary.Success,
-			RawTokens:     summary.RawOutputTokens,
-			EmittedTokens: summary.EmittedTokens,
-			RawLogPath:    summary.RawLogPath,
-			FailedTasks:   len(summary.FailedTasks),
-			PassedTests:   summary.PassedTestCount,
-			FailedTests:   summary.FailedTestCount,
-		}, stderr)
+		if opts.CI && os.Getenv("GITHUB_ACTIONS") == "true" {
+			// Workflow annotations supplement the human summary. Their output is best-effort.
+			_ = output.RenderGitHubAnnotations(stdout, summary)
+		}
+		if !opts.CI {
+			trackRun(tracking.Record{
+				Timestamp:     timeNow(),
+				ProjectPath:   command.ProjectDir,
+				Command:       trackingCommand,
+				Mode:          opts.Mode,
+				Success:       summary.Success,
+				RawTokens:     summary.RawOutputTokens,
+				EmittedTokens: summary.EmittedTokens,
+				RawLogPath:    summary.RawLogPath,
+				FailedTasks:   len(summary.FailedTasks),
+				PassedTests:   summary.PassedTestCount,
+				FailedTests:   summary.FailedTestCount,
+			}, stderr)
+		}
 	}
 
 	return runResult.ExitCode
@@ -403,6 +419,8 @@ func parseArgs(args []string) (Options, []string, error) {
 			opts.InstallForce = true
 		case arg == "--global":
 			opts.Global = true
+		case arg == "--ci":
+			opts.CI = true
 		case strings.HasPrefix(arg, "--mode="):
 			opts.Mode = strings.TrimPrefix(arg, "--mode=")
 		case arg == "--mode":
@@ -485,6 +503,10 @@ func normalizeMode(opts Options) (Options, error) {
 		return Options{}, fmt.Errorf("invalid mode %q (expected human or raw)", opts.Mode)
 	}
 
+	if opts.CI && opts.Mode == "raw" {
+		return Options{}, fmt.Errorf("--ci cannot be combined with --mode raw")
+	}
+
 	if opts.Global && opts.InstallForce {
 		return Options{}, fmt.Errorf("--install-force cannot be combined with --global (build-brief only updates existing global instruction files)")
 	}
@@ -525,6 +547,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Core flags:")
 	fmt.Fprintln(w, "  --mode [human|raw]        Output mode (default: human)")
+	fmt.Fprintln(w, "  --ci                      Explicit CI mode; cannot be combined with --mode raw")
 	fmt.Fprintln(w, "  --project-dir PATH        Project directory to run in")
 	fmt.Fprintln(w, "  --gradle PATH             Explicit gradle/gradlew path")
 	fmt.Fprintln(w, "  --gradle-user-home PATH   Shared Gradle user home for Gradle caches")
@@ -598,6 +621,9 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "      Emits structured savings data for tooling.")
 	fmt.Fprintln(w, "  build-brief gains --reset")
 	fmt.Fprintln(w, "      Clears recorded gains history.")
+	fmt.Fprintln(w, "      Gains history is local-only; no gains data is transmitted.")
+	fmt.Fprintln(w, "      Entries older than 90 days are pruned when the next tracked run is recorded.")
+	fmt.Fprintln(w, "      Inactive history may remain until then or --reset.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment overrides:")
 	fmt.Fprintln(w, "  BUILD_BRIEF_MODE")
@@ -754,7 +780,7 @@ func formatElapsed(duration time.Duration) string {
 func trackRun(record tracking.Record, stderr io.Writer) {
 	record.SavedTokens = tracking.SavedTokens(record.RawTokens, record.EmittedTokens)
 	record.SavingsPct = tracking.SavingsPct(record.RawTokens, record.EmittedTokens)
-	if err := tracking.RecordRun(record); err != nil {
+	if err := recordRun(record); err != nil {
 		fmt.Fprintf(stderr, "build-brief: track gains: %v\n", err)
 	}
 }

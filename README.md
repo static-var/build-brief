@@ -62,6 +62,18 @@ build-brief --help
 
 If you want to keep the original command shape explicit, prefer `build-brief gradle ...` for a PATH-resolved Gradle binary and `build-brief ./gradlew ...` for a project-local wrapper.
 
+## Explicit CI mode
+
+Use `--ci` when a job needs CI behavior; it is never inferred from the environment:
+
+```bash
+build-brief --ci test
+```
+
+`--ci` keeps the normal human summary and Gradle exit code. It rejects `--mode raw` with usage exit 2. In GitHub Actions only (`GITHUB_ACTIONS=true`), untrusted human-summary lines neutralize every legacy `##[` opener, including embedded forms, and Unicode-trimmed modern `::` commands, across LF, CRLF, or CR boundaries. Intentional tool annotations remain exact. A failed build adds one generic `::error` annotation; a partial failed summary adds at most one generic `::warning`. Successful builds add none. These annotations use the bounded synthetic tool-level location `build-brief:1`, not a source location. CI runs do not persist gains history, although token metrics are still calculated for the run.
+
+Raw logs remain local files. GitHub annotations do not upload them: add a separate artifact-upload step if the workflow needs the raw log after the job.
+
 Example successful test run:
 
 ```text
@@ -160,13 +172,15 @@ build-brief gains --format json
 build-brief gains --reset
 ```
 
-The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting.
+The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting. Gains history is stored only in a local JSONL file under the OS config directory (`build-brief/tracking.jsonl`); no gains data is transmitted. Entries older than 90 days are pruned when the next tracked run is recorded, so inactive history may remain until then or `build-brief gains --reset`.
 
 Example text output:
 
 ```text
 build-brief Token Savings (Global Scope)
 ============================================================
+
+Recorded period: 2026-03-01 to 2026-03-21 (21 days, 38 commands)
 
 Total commands:  38
 Raw tokens:      80.9K
@@ -189,6 +203,8 @@ Recent Commands
 03-21 13:02 ▲ gradle clean test              67.2% (90)
 03-21 13:02 ▲ gradle clean jvmTest           35.8% (82)
 03-21 13:02 ▲ gradle clean test              49.2% (62)
+
+Local-only: Gains history stays on this machine. This report sends no gains data.
 ```
 
 Example JSON output:
