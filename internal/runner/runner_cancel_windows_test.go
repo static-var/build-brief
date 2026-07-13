@@ -43,4 +43,11 @@ func TestRunTerminatesProcessOnCancel(t *testing.T) {
 	if info.IsDir() {
 		t.Fatalf("expected raw log file, got directory: %s", result.RawLogPath)
 	}
+	content, readErr := os.ReadFile(result.RawLogPath)
+	if readErr != nil {
+		t.Fatalf("read cancellation log: %v", readErr)
+	}
+	if got := string(content); got != "started\n" {
+		t.Fatalf("expected helper to start before cancellation, got %q", got)
+	}
 }
