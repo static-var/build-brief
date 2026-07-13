@@ -1,9 +1,14 @@
 package buildbrief_test
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestReleaseWorkflowDryRunGatesReleaseMutations(t *testing.T) {
@@ -75,11 +80,211 @@ func TestReleaseWorkflowGeneratesNotesForExistingAndDryRunTags(t *testing.T) {
 	if !strings.Contains(notes.run, "releases/generate-notes") {
 		t.Fatalf("unexpected notes generation command:\n%s", notes.run)
 	}
-	if !strings.Contains(notes.run, `-f tag_name="${{ steps.prepare.outputs.tag }}"`) {
-		t.Fatalf("notes generation must name the release tag, got:\n%s", notes.run)
+	if notes.env["RELEASE_TAG"] != "${{ steps.prepare.outputs.tag }}" || !strings.Contains(notes.run, `-f tag_name="$RELEASE_TAG"`) {
+		t.Fatalf("notes generation must pass the release tag through env, got env=%q run:\n%s", notes.env["RELEASE_TAG"], notes.run)
 	}
-	if !strings.Contains(notes.run, `-f target_commitish="${{ github.sha }}"`) {
-		t.Fatalf("notes generation must target the dispatched SHA when the tag is absent, got:\n%s", notes.run)
+	if notes.env["RELEASE_SHA"] != "${{ github.sha }}" || !strings.Contains(notes.run, `-f target_commitish="$RELEASE_SHA"`) {
+		t.Fatalf("notes generation must pass the dispatched SHA through env, got env=%q run:\n%s", notes.env["RELEASE_SHA"], notes.run)
+	}
+}
+
+func TestReleaseWorkflowRunBlocksRejectGitHubExpressions(t *testing.T) {
+	content, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+
+	blocks, err := parseWorkflowRunBlocks(string(content))
+	if err != nil {
+		t.Fatalf("parse release workflow run scalars: %v", err)
+	}
+	const expectedRunScalars = 15
+	if len(blocks) != expectedRunScalars {
+		t.Fatalf("parsed %d run scalars; want %d", len(blocks), expectedRunScalars)
+	}
+	if err := rejectGitHubExpressionsInRunBlocks(string(content)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsExpressionMutations(t *testing.T) {
+	for name, expression := range map[string]string{
+		"github event": "${{ github.event.issue.title }}",
+		"github actor": "${{ github.actor }}",
+		"input":        "${{ inputs.version }}",
+		"variable":     "${{ vars.RELEASE_CHANNEL }}",
+		"step output":  "${{ steps.prepare.outputs.tag }}",
+		"secret":       "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := rejectGitHubExpressionsInRunBlocks(workflowRunFixture(expression))
+			if err == nil {
+				t.Fatalf("run block containing %q was accepted", expression)
+			}
+			if !strings.Contains(err.Error(), expression) {
+				t.Fatalf("rejection must identify %q, got %v", expression, err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsValidYAMLMutations(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"spaced literal": "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run : |\n          printf '%s\\n' \\\"${{ github.event.issue.title }}\\\"\n",
+		"quoted key":     "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        \"run\": |\n          printf '%s\\n' \\\"${{ github.actor }}\\\"\n",
+		"unnamed step":   "jobs:\n  release:\n    steps:\n      - run: |-\n          printf '%s\\n' \\\"${{ inputs.version }}\\\"\n",
+		"folded scalar":  "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: >+\n          printf '%s\\n' \\\"${{ vars.RELEASE_CHANNEL }}\\\"\n",
+		"flow mapping":   "jobs:\n  release:\n    steps:\n      - { name: mutation fixture, run: 'printf %s \\\"${{ steps.prepare.outputs.tag }}\\\"' }\n",
+		"literal scalar": "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: |2-\n            printf '%s\\n' \\\"${{ secrets.HOMEBREW_TAP_TOKEN }}\\\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := rejectGitHubExpressionsInRunBlocks(fixture); err == nil {
+				t.Fatal("run scalar containing a GitHub expression was accepted")
+			}
+		})
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsInvalidYAML(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"duplicate key": "jobs:\n  release:\n    steps:\n      - name: fixture\n        run: echo safe\n        run: echo '${{ github.actor }}'\n",
+		"syntax error":  "jobs:\n  release:\n    steps:\n      - run: [\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := rejectGitHubExpressionsInRunBlocks(fixture); err == nil {
+				t.Fatal("invalid YAML was accepted")
+			}
+		})
+	}
+}
+
+// These fixtures are accepted by actionlint v1.7.11, which does not resolve aliases in run keys or values.
+func TestWorkflowRunBlockParserRejectsActionlintValidAliasedExpressionMutations(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"alias value": "name: Alias value\non: push\njobs:\n  release:\n    runs-on: ubuntu-latest\n    env:\n      COMMAND: &unsafe 'printf %s \"${{ github.actor }}\"'\n    steps:\n      - run: *unsafe\n",
+		"alias key":   "name: Alias key\non: push\nenv:\n  RUN_KEY: &run run\n  COMMAND: &unsafe 'printf %s \"${{ github.actor }}\"'\njobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - ? *run\n        : *unsafe\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := rejectGitHubExpressionsInRunBlocks(fixture)
+			if err == nil || !strings.Contains(err.Error(), "${{ github.actor }}") {
+				t.Fatalf("aliased expression was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsAliasedRunKeyDuplicate(t *testing.T) {
+	fixture := "env:\n  SAFE: &safe echo-safe\n  UNSAFE: &unsafe echo-unsafe\njobs:\n  release:\n    steps:\n      - name: mutation fixture\n        &run run: *safe\n        *run: *unsafe\n"
+	if err := rejectGitHubExpressionsInRunBlocks(fixture); err == nil || !strings.Contains(err.Error(), "duplicate YAML key \"run\"") {
+		t.Fatalf("alias-derived duplicate run key was accepted: %v", err)
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsAliasCyclesAndNonScalarRunNodes(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"cycle":            "jobs:\n  release:\n    steps:\n      - &cycle\n        name: mutation fixture\n        nested: *cycle\n",
+		"non-scalar value": "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: [echo safe]\n",
+		"non-scalar key":   "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        ? [run]\n        : echo safe\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseWorkflowRunBlocks(fixture)
+			if err == nil {
+				t.Fatal("unsafe YAML node was accepted")
+			}
+			if name == "cycle" && !strings.Contains(err.Error(), "cyclic YAML alias") {
+				t.Fatalf("cycle was rejected for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
+func TestReleaseWorkflowWiresShellValuesThroughEnvironment(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+
+	for stepName, expectedEnv := range map[string]map[string]string{
+		"Sync branch state": {
+			"RELEASE_REF_NAME": "${{ github.ref_name }}",
+		},
+		"Prepare release metadata": {
+			"RELEASE_BUMP":    "${{ inputs.bump }}",
+			"RELEASE_VERSION": "${{ inputs.version }}",
+		},
+		"Build release artifacts": {
+			"RELEASE_VERSION": "${{ steps.prepare.outputs.version }}",
+		},
+		"Generate Homebrew formula": {
+			"RELEASE_REPOSITORY": "${{ github.repository }}",
+			"RELEASE_VERSION":    "${{ steps.prepare.outputs.version }}",
+		},
+		"Validate Homebrew formula": {
+			"RELEASE_VERSION": "${{ steps.prepare.outputs.version }}",
+		},
+		"Commit version bump and changelog": {
+			"RELEASE_TAG": "${{ steps.prepare.outputs.tag }}",
+		},
+		"Create release tag": {
+			"RELEASE_TAG": "${{ steps.prepare.outputs.tag }}",
+		},
+		"Push release commit": {
+			"RELEASE_REF_NAME": "${{ github.ref_name }}",
+		},
+		"Push release tag": {
+			"RELEASE_TAG": "${{ steps.prepare.outputs.tag }}",
+		},
+		"Generate GitHub changelog notes": {
+			"RELEASE_NOTES_FILE": "${{ steps.prepare.outputs.notes_file }}",
+			"RELEASE_REPOSITORY": "${{ github.repository }}",
+			"RELEASE_SHA":        "${{ github.sha }}",
+			"RELEASE_TAG":        "${{ steps.prepare.outputs.tag }}",
+		},
+		"Publish GitHub release": {
+			"RELEASE_NOTES_FILE": "${{ steps.github-notes.outputs.notes_file }}",
+			"RELEASE_REPOSITORY": "${{ github.repository }}",
+			"RELEASE_TAG":        "${{ steps.prepare.outputs.tag }}",
+		},
+		"Publish Homebrew tap": {
+			"HOMEBREW_TAP_REPOSITORY": "${{ vars.HOMEBREW_TAP_REPOSITORY }}",
+			"HOMEBREW_TAP_BRANCH":     "${{ vars.HOMEBREW_TAP_BRANCH }}",
+			"RELEASE_VERSION":         "${{ steps.prepare.outputs.version }}",
+		},
+	} {
+		step := workflow.step(t, stepName)
+		for name, value := range expectedEnv {
+			if step.env[name] != value {
+				t.Errorf("step %q must wire %s through env, got %q", stepName, name, step.env[name])
+			}
+		}
+	}
+
+	prepare := workflow.step(t, "Prepare release metadata")
+	if !strings.Contains(prepare.run, `--bump "$RELEASE_BUMP"`) || !strings.Contains(prepare.run, `--version "$RELEASE_VERSION"`) {
+		t.Fatalf("prepare step must pass release inputs as quoted shell variables, got:\n%s", prepare.run)
+	}
+}
+
+func TestReleaseWorkflowPrepareStepSafelyQuotesMaliciousVersion(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+	prepare := workflow.step(t, "Prepare release metadata")
+	worktree := addDetachedWorktree(t)
+	marker := filepath.Join(t.TempDir(), "shell-injection-marker")
+	maliciousVersion := `1.2.3"; touch "` + marker + `"; #`
+
+	command := exec.Command("bash", "-euo", "pipefail", "-c", prepare.run)
+	command.Dir = worktree
+	command.Env = append(os.Environ(),
+		"GITHUB_OUTPUT="+filepath.Join(worktree, "github-output"),
+		"RELEASE_BUMP=patch",
+		"RELEASE_VERSION="+maliciousVersion,
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("malicious version must fail validation, output:\n%s", output)
+	}
+	if strings.Contains(string(output), "command not found") {
+		t.Fatalf("malicious version was parsed as shell syntax, output:\n%s", output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("malicious version escaped shell quoting; marker state error: %v", err)
 	}
 }
 
@@ -100,6 +305,142 @@ func TestReleaseWorkflowKeepsValidationEvidenceAndCacheEnabledInDryRun(t *testin
 	}
 }
 
+func workflowRunFixture(expression string) string {
+	return "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: |\n          printf '%s\\n' \"" + expression + "\"\n"
+}
+
+func rejectGitHubExpressionsInRunBlocks(content string) error {
+	blocks, err := parseWorkflowRunBlocks(content)
+	if err != nil {
+		return err
+	}
+	for _, block := range blocks {
+		if expressionAt := strings.Index(block.source, "${{"); expressionAt >= 0 {
+			end := strings.Index(block.source[expressionAt:], "}}")
+			expression := block.source[expressionAt:]
+			if end >= 0 {
+				expression = expression[:end+2]
+			}
+			return fmt.Errorf("run scalar at line %d contains unsafe GitHub expression %q", block.line, expression)
+		}
+	}
+	return nil
+}
+
+type workflowRunBlock struct {
+	line   int
+	source string
+}
+
+func parseWorkflowRunBlocks(content string) ([]workflowRunBlock, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &document); err != nil {
+		return nil, fmt.Errorf("parse workflow YAML: %w", err)
+	}
+
+	var blocks []workflowRunBlock
+	if err := collectWorkflowRunBlocks(&document, &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+func collectWorkflowRunBlocks(node *yaml.Node, blocks *[]workflowRunBlock) error {
+	return collectResolvedWorkflowRunBlocks(node, blocks, map[*yaml.Node]bool{})
+}
+
+func collectResolvedWorkflowRunBlocks(node *yaml.Node, blocks *[]workflowRunBlock, ancestors map[*yaml.Node]bool) error {
+	resolved, err := resolveYAMLAlias(node)
+	if err != nil {
+		return err
+	}
+
+	switch resolved.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode, yaml.MappingNode:
+		if ancestors[resolved] {
+			return fmt.Errorf("cyclic YAML alias reference at line %d", node.Line)
+		}
+		ancestors[resolved] = true
+		defer delete(ancestors, resolved)
+	}
+
+	switch resolved.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range resolved.Content {
+			if err := collectResolvedWorkflowRunBlocks(child, blocks, ancestors); err != nil {
+				return err
+			}
+		}
+	case yaml.MappingNode:
+		if len(resolved.Content)%2 != 0 {
+			return fmt.Errorf("invalid YAML mapping at line %d", resolved.Line)
+		}
+		keys := make(map[string]struct{}, len(resolved.Content)/2)
+		for index := 0; index < len(resolved.Content); index += 2 {
+			key, value := resolved.Content[index], resolved.Content[index+1]
+			resolvedKey, err := resolveYAMLAlias(key)
+			if err != nil {
+				return err
+			}
+			if resolvedKey.Kind != yaml.ScalarNode {
+				return fmt.Errorf("YAML mapping key at line %d must resolve to a scalar", key.Line)
+			}
+			if _, duplicate := keys[resolvedKey.Value]; duplicate {
+				return fmt.Errorf("duplicate YAML key %q at line %d", resolvedKey.Value, key.Line)
+			}
+			keys[resolvedKey.Value] = struct{}{}
+			if resolvedKey.Value == "run" {
+				resolvedValue, err := resolveYAMLAlias(value)
+				if err != nil {
+					return err
+				}
+				if resolvedValue.Kind != yaml.ScalarNode {
+					return fmt.Errorf("run value at line %d must resolve to a scalar", value.Line)
+				}
+				*blocks = append(*blocks, workflowRunBlock{line: key.Line, source: resolvedValue.Value})
+			}
+			if err := collectResolvedWorkflowRunBlocks(value, blocks, ancestors); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func resolveYAMLAlias(node *yaml.Node) (*yaml.Node, error) {
+	aliases := map[*yaml.Node]bool{}
+	for node.Kind == yaml.AliasNode {
+		if aliases[node] {
+			return nil, fmt.Errorf("cyclic YAML alias reference at line %d", node.Line)
+		}
+		aliases[node] = true
+		if node.Alias == nil {
+			return nil, fmt.Errorf("YAML alias at line %d has no target", node.Line)
+		}
+		node = node.Alias
+	}
+	return node, nil
+}
+
+func addDetachedWorktree(t *testing.T) string {
+	t.Helper()
+
+	repository, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("resolve repository path: %v", err)
+	}
+	worktree := filepath.Join(t.TempDir(), "release-workflow-test")
+	if output, err := exec.Command("git", "-C", repository, "worktree", "add", "--detach", worktree, "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("create isolated worktree: %v\n%s", err, output)
+	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("git", "-C", repository, "worktree", "remove", "--force", worktree).CombinedOutput(); err != nil {
+			t.Errorf("remove isolated worktree: %v\n%s", err, output)
+		}
+	})
+	return worktree
+}
+
 type releaseWorkflow struct {
 	inputs map[string]releaseWorkflowInput
 	steps  map[string]releaseWorkflowStep
@@ -115,6 +456,7 @@ type releaseWorkflowStep struct {
 	ifCondition string
 	uses        string
 	run         string
+	env         map[string]string
 	with        map[string]string
 }
 
@@ -156,25 +498,37 @@ func parseReleaseWorkflow(t *testing.T, path string) releaseWorkflow {
 			continue
 		}
 		name := strings.TrimPrefix(line, "      - name: ")
-		step := releaseWorkflowStep{with: map[string]string{}}
+		step := releaseWorkflowStep{env: map[string]string{}, with: map[string]string{}}
+		inEnv := false
+		inRun := false
 		inWith := false
 		for index++; index < len(lines) && !(hasExactIndent(lines[index], 6) && strings.HasPrefix(lines[index], "      - name: ")); index++ {
 			key, value, ok := yamlScalarLine(lines[index], 8)
 			if ok {
+				inEnv = key == "env" && value == ""
+				inRun = key == "run" && value == "|"
 				inWith = key == "with" && value == ""
 				switch key {
 				case "if":
 					step.ifCondition = strings.TrimPrefix(strings.TrimSuffix(value, "}"), "${{ ")
+				case "run":
+					if value != "|" {
+						step.run = value + "\n"
+					}
 				case "uses":
 					step.uses = value
 				}
 				continue
 			}
+			envKey, envValue, envOK := yamlScalarLine(lines[index], 10)
+			if inEnv && envOK {
+				step.env[envKey] = envValue
+			}
 			withKey, withValue, withOK := yamlScalarLine(lines[index], 10)
 			if inWith && withOK {
 				step.with[withKey] = withValue
 			}
-			if hasExactIndent(lines[index], 10) || hasExactIndent(lines[index], 12) {
+			if inRun && (hasExactIndent(lines[index], 10) || hasExactIndent(lines[index], 12)) {
 				step.run += lines[index] + "\n"
 			}
 		}

@@ -361,6 +361,57 @@ func TestRemoveLockFileRetriesContendedRemoval(t *testing.T) {
 	}
 }
 
+func TestWriteRecordsFailuresCleanOwnedTempAndPreserveHistory(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		fail func(t *testing.T)
+	}{
+		{
+			name: "write",
+			fail: func(t *testing.T) {
+				original := encodeTrackingRecord
+				encodeTrackingRecord = func(*json.Encoder, Record) error { return fmt.Errorf("write failed") }
+				t.Cleanup(func() { encodeTrackingRecord = original })
+			},
+		},
+		{
+			name: "rename",
+			fail: func(t *testing.T) {
+				original := renameTrackingFile
+				renameTrackingFile = func(string, string) error { return fmt.Errorf("rename failed") }
+				t.Cleanup(func() { renameTrackingFile = original })
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tracking.jsonl")
+			const history = "existing history\n"
+			if err := os.WriteFile(path, []byte(history), 0o600); err != nil {
+				t.Fatalf("seed history: %v", err)
+			}
+			test.fail(t)
+
+			if err := writeRecords(path, []Record{{Timestamp: time.Now(), Command: "gradlew test"}}); err == nil {
+				t.Fatal("write records succeeded")
+			}
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read preserved history: %v", err)
+			}
+			if string(contents) != history {
+				t.Fatalf("history changed after failure: %q", contents)
+			}
+			ownedTemps, err := filepath.Glob(path + ".tmp-*")
+			if err != nil {
+				t.Fatalf("find owned temps: %v", err)
+			}
+			if len(ownedTemps) != 0 {
+				t.Fatalf("owned temps remain after failure: %v", ownedTemps)
+			}
+		})
+	}
+}
+
 func TestRenderTextIncludesRecentHistory(t *testing.T) {
 	report := Report{
 		Summary: Summary{
