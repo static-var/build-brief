@@ -35,10 +35,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -58,12 +58,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -73,6 +73,9 @@ jobs:
 
       - name: Run go vet
         run: go vet ./...
+
+      - name: Check Go module tidiness
+        run: go mod tidy -diff
 
       - name: Verify Go modules
         run: go mod verify
@@ -93,19 +96,28 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
         run: |
+          empty_tree="$(git hash-object -t tree /dev/null)"
           case "$EVENT_NAME" in
             pull_request)
               git diff --check "$BASE_SHA...$HEAD_SHA"
               ;;
             push)
               if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-                git diff --check "$CURRENT_SHA^" "$CURRENT_SHA"
+                if git rev-parse --verify "$CURRENT_SHA^" >/dev/null 2>&1; then
+                  git diff --check "$CURRENT_SHA^" "$CURRENT_SHA"
+                else
+                  git diff --check "$empty_tree" "$CURRENT_SHA"
+                fi
               else
                 git diff --check "$BEFORE_SHA" "$CURRENT_SHA"
               fi
               ;;
             workflow_dispatch)
-              git diff --check HEAD^ HEAD
+              if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+                git diff --check HEAD^ HEAD
+              else
+                git diff --check "$empty_tree" HEAD
+              fi
               ;;
             *)
               echo "unsupported event: $EVENT_NAME" >&2
