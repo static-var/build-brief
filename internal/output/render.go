@@ -126,13 +126,8 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 
 	if scan := summary.JUnitScan; scan != nil {
 		line := fmt.Sprintf("JUnit reports: %d discovered, %d parsed, %d skipped", scan.Discovered, scan.Parsed, scan.Skipped)
-		if scan.FileBytesTruncated {
-			line += " (file byte limit reached)"
-		} else if scan.ReportingTruncated || (scan.Truncated && !scan.WalkTruncated) {
-			line += " (truncated at the reporting limit)"
-		}
-		if scan.WalkTruncated {
-			line += " (walk limit reached)"
+		for _, reason := range scan.IncompletenessReasons() {
+			line += " (" + reason + ")"
 		}
 		if scan.ErrorsTruncated {
 			line += " (error details truncated)"

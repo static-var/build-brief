@@ -1163,6 +1163,71 @@ func TestReduceReportsJUnitScanTruncation(t *testing.T) {
 	}
 }
 
+func TestJUnitScanIncompleteWarningComposesAllActiveReasons(t *testing.T) {
+	tests := []struct {
+		name     string
+		scan     JUnitScanMetadata
+		expected string
+	}{
+		{name: "file byte", scan: JUnitScanMetadata{FileBytesTruncated: true, Truncated: true}, expected: " (file byte limit reached)"},
+		{name: "reporting", scan: JUnitScanMetadata{ReportingTruncated: true, Truncated: true}, expected: " (truncated at the reporting limit)"},
+		{name: "walk", scan: JUnitScanMetadata{WalkTruncated: true, Truncated: true}, expected: " (walk limit reached)"},
+		{name: "file byte and reporting", scan: JUnitScanMetadata{FileBytesTruncated: true, ReportingTruncated: true, Truncated: true}, expected: " (file byte limit reached) (truncated at the reporting limit)"},
+		{name: "file byte and walk", scan: JUnitScanMetadata{FileBytesTruncated: true, WalkTruncated: true, Truncated: true}, expected: " (file byte limit reached) (walk limit reached)"},
+		{name: "reporting and walk", scan: JUnitScanMetadata{ReportingTruncated: true, WalkTruncated: true, Truncated: true}, expected: " (truncated at the reporting limit) (walk limit reached)"},
+		{name: "all", scan: JUnitScanMetadata{FileBytesTruncated: true, ReportingTruncated: true, WalkTruncated: true, Truncated: true}, expected: " (file byte limit reached) (truncated at the reporting limit) (walk limit reached)"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := junitScanIncompleteWarning(&test.scan)
+			const prefix = "JUnit report scan incomplete: discovered 0, parsed 0, skipped 0"
+			if got != prefix+test.expected {
+				t.Errorf("warning = %q, want %q", got, prefix+test.expected)
+			}
+		})
+	}
+}
+
+func TestJUnitScanMetadataJSONIncludesEachActiveIncompletenessReason(t *testing.T) {
+	tests := []struct {
+		name string
+		scan JUnitScanMetadata
+	}{
+		{name: "file byte", scan: JUnitScanMetadata{FileBytesTruncated: true, Truncated: true}},
+		{name: "reporting", scan: JUnitScanMetadata{ReportingTruncated: true, Truncated: true}},
+		{name: "walk", scan: JUnitScanMetadata{WalkTruncated: true, Truncated: true}},
+		{name: "file byte and reporting", scan: JUnitScanMetadata{FileBytesTruncated: true, ReportingTruncated: true, Truncated: true}},
+		{name: "file byte and walk", scan: JUnitScanMetadata{FileBytesTruncated: true, WalkTruncated: true, Truncated: true}},
+		{name: "reporting and walk", scan: JUnitScanMetadata{ReportingTruncated: true, WalkTruncated: true, Truncated: true}},
+		{name: "all", scan: JUnitScanMetadata{FileBytesTruncated: true, ReportingTruncated: true, WalkTruncated: true, Truncated: true}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := json.Marshal(test.scan)
+			if err != nil {
+				t.Fatalf("marshal JUnit scan metadata: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatalf("decode JUnit scan metadata: %v", err)
+			}
+			for field, expected := range map[string]bool{
+				"file_bytes_truncated": test.scan.FileBytesTruncated,
+				"reporting_truncated":  test.scan.ReportingTruncated,
+				"walk_truncated":       test.scan.WalkTruncated,
+				"truncated":            true,
+			} {
+				_, present := fields[field]
+				if present != expected {
+					t.Errorf("JSON field %q present = %t, want %t: %s", field, present, expected, encoded)
+				}
+			}
+		})
+	}
+}
+
 func TestReduceReportsMalformedAndUnreadableJUnitReports(t *testing.T) {
 	projectDir := t.TempDir()
 	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")

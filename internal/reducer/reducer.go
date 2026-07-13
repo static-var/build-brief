@@ -93,6 +93,28 @@ type JUnitScanMetadata struct {
 	Truncated          bool     `json:"truncated"`
 }
 
+func (metadata JUnitScanMetadata) IncompletenessReasons() []string {
+	reasons := make([]string, 0, 3)
+	if metadata.FileBytesTruncated {
+		reasons = append(reasons, "file byte limit reached")
+	}
+	if metadata.ReportingTruncated || (metadata.Truncated && !metadata.FileBytesTruncated && !metadata.WalkTruncated) {
+		reasons = append(reasons, "truncated at the reporting limit")
+	}
+	if metadata.WalkTruncated {
+		reasons = append(reasons, "walk limit reached")
+	}
+	return reasons
+}
+
+func junitScanIncompleteWarning(metadata *JUnitScanMetadata) string {
+	message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
+	for _, reason := range metadata.IncompletenessReasons() {
+		message += " (" + reason + ")"
+	}
+	return message
+}
+
 type RawInputMetadata struct {
 	Partial        bool  `json:"partial"`
 	TruncatedLines int   `json:"truncated_lines"`
@@ -1102,18 +1124,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 		summary.JUnitScan = metadata
 	}
 	if summary.JUnitScan != nil && (metadata.Truncated || metadata.WalkTruncated || metadata.ErrorCount > 0) {
-		message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
-		switch {
-		case metadata.FileBytesTruncated && selection.truncated:
-			message += " (file byte and reporting limits reached)"
-		case metadata.FileBytesTruncated:
-			message += " (file byte limit reached)"
-		case selection.truncated:
-			message += " (truncated at the reporting limit)"
-		case selection.walkTruncated:
-			message += " (walk limit reached)"
-		}
-		addEnrichmentWarning(summary, warnings, message)
+		addEnrichmentWarning(summary, warnings, junitScanIncompleteWarning(metadata))
 	}
 
 	if passedCount > 0 || failedCount > 0 {
