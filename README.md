@@ -160,13 +160,15 @@ build-brief gains --format json
 build-brief gains --reset
 ```
 
-The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting.
+The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting. Gains history is stored only in a local JSONL file under the OS config directory (`build-brief/tracking.jsonl`), retained for up to 90 days, and removed by `build-brief gains --reset`. The gains report sends no gains data.
 
 Example text output:
 
 ```text
 build-brief Token Savings (Global Scope)
 ============================================================
+
+Recorded period: 2026-03-01 to 2026-03-21 (21 days, 38 commands)
 
 Total commands:  38
 Raw tokens:      80.9K
@@ -189,6 +191,8 @@ Recent Commands
 03-21 13:02 ▲ gradle clean test              67.2% (90)
 03-21 13:02 ▲ gradle clean jvmTest           35.8% (82)
 03-21 13:02 ▲ gradle clean test              49.2% (62)
+
+Local-only: Gains history stays on this machine. This report sends no gains data.
 ```
 
 Example JSON output:

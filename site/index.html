@@ -505,8 +505,7 @@
     <p class="section__kicker fade-in">Measurement</p>
     <h2 class="section__title fade-in">Know what you're saving.</h2>
     <p class="section__lead fade-in">
-      <code>build-brief gains</code> tracks cumulative token savings across every build.
-      For AI agents, these savings translate directly to <strong>context-window budget
+      <code>build-brief gains</code> tracks cumulative token savings across every build in a local JSONL history under your OS config directory. History is retained for up to 90 days and <code>build-brief gains --reset</code> removes it. For AI agents, these savings translate directly to <strong>context-window budget
       reclaimed</strong> — capacity the agent can spend reasoning about your code
       instead of parsing Gradle task lifecycle output.
     </p>
@@ -543,6 +542,8 @@
 <span class="acc">build-brief Token Savings (Global Scope)</span>
 <span class="dim">============================================================</span>
 
+<span class="brt">Recorded period: </span>2026-03-01 to 2026-03-21 (21 days, 38 commands)
+
 <span class="brt">Total commands:  </span><span class="grn">38</span>
 <span class="brt">Raw tokens:      </span>80.9K
 <span class="brt">Emitted tokens:  </span>3.8K
@@ -557,7 +558,9 @@
   2  gradlew :androidApp:clean :…      6     <span class="grn">32.7K</span>   92.5%
   3  gradlew build                      9      <span class="grn">2.6K</span>   60.8%
   4  gradlew assembleDebug              2      <span class="grn">1.4K</span>   99.1%
-  5  gradle clean jvmTest               6       <span class="grn">848</span>   47.5%</div>
+  5  gradle clean jvmTest               6       <span class="grn">848</span>   47.5%
+
+<span class="dim">Local-only: Gains history stays on this machine. This report sends no gains data.</span></div>
       </div>
     </div>
   </div>
