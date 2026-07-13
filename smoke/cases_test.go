@@ -43,6 +43,12 @@ func TestCasesFixtureSchemaRejectsCR(t *testing.T) {
 	assertCasesFixtureRejected(t, content)
 }
 
+func TestCasesFixtureSchemaRejectsMissingFinalNewline(t *testing.T) {
+	content := strings.TrimSuffix(casesFixtureContents(t), "\n")
+
+	assertCasesFixtureRejected(t, content)
+}
+
 func TestCasesFixtureSchemaRejectsMultilineField(t *testing.T) {
 	content := strings.Replace(casesFixtureContents(t), "cannot find symbol", "\"cannot\nfind symbol\"", 1)
 
@@ -57,7 +63,10 @@ func validateCasesFixture(r io.Reader) error {
 		if err != nil && err != io.EOF {
 			return err
 		}
-		if len(raw) == 0 && err == io.EOF {
+		if err == io.EOF {
+			if len(raw) > 0 {
+				return fmt.Errorf("line %d: record must end with newline", line+1)
+			}
 			break
 		}
 		line++
