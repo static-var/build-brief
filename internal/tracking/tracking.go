@@ -625,19 +625,30 @@ func releaseLockFile(lockPath string, handle *lockHandle) error {
 	if err != nil {
 		return errors.Join(err, handle.file.Close())
 	}
+	return errors.Join(handle.file.Close(), releaseLockOwnershipUnderGuard(lockPath, handle.token, guard))
+}
 
-	closeErr := handle.file.Close()
+// releaseLockOwnership removes a lock only when it still belongs to token.
+func releaseLockOwnership(lockPath, token string) error {
+	guard, err := acquireReclaimGuard(lockPath, time.Now().Add(lockTimeout))
+	if err != nil {
+		return err
+	}
+	return releaseLockOwnershipUnderGuard(lockPath, token, guard)
+}
+
+func releaseLockOwnershipUnderGuard(lockPath, token string, guard *os.File) error {
 	metadata, readErr := readLockMetadata(lockPath)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
-			return errors.Join(closeErr, releaseReclaimGuard(guard))
+			return releaseReclaimGuard(guard)
 		}
-		return errors.Join(closeErr, readErr, releaseReclaimGuard(guard))
+		return errors.Join(readErr, releaseReclaimGuard(guard))
 	}
-	if metadata.Token != handle.token {
-		return errors.Join(closeErr, releaseReclaimGuard(guard))
+	if metadata.Token != token {
+		return releaseReclaimGuard(guard)
 	}
-	return errors.Join(closeErr, removeLockFile(lockPath, lockTimeout, os.Remove), releaseReclaimGuard(guard))
+	return errors.Join(removeLockFile(lockPath, lockTimeout, os.Remove), releaseReclaimGuard(guard))
 }
 
 // removeLockFile retries a failed removal because Windows does not permit

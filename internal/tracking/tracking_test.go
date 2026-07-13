@@ -226,15 +226,25 @@ func TestReleaseDoesNotRemoveReclaimedSuccessorLock(t *testing.T) {
 		t.Fatal("original lock has no ownership token")
 	}
 
-	// Simulate stale recovery replacing the original owner's path.
-	if err := os.Remove(lockPath); err != nil {
-		t.Fatalf("remove original lock: %v", err)
+	// The old process and its lock handle have ended, but its token callback is
+	// delayed. Stale reclamation, rather than this test, must create the successor.
+	if err := original.file.Close(); err != nil {
+		t.Fatalf("close original owner handle: %v", err)
 	}
+	stale := fmt.Sprintf("pid=%d\ncreated_at=%s\ntoken=%s\n", 999999, time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano), original.token)
+	if err := os.WriteFile(lockPath, []byte(stale), 0o600); err != nil {
+		t.Fatalf("write stale original lock: %v", err)
+	}
+
 	successor, err := acquireLockFile(lockPath, time.Second)
 	if err != nil {
-		t.Fatalf("acquire successor lock: %v", err)
+		t.Fatalf("reclaim and acquire successor lock: %v", err)
 	}
-	defer releaseLockFile(lockPath, successor)
+	t.Cleanup(func() {
+		if err := releaseLockFile(lockPath, successor); err != nil {
+			t.Errorf("release successor lock: %v", err)
+		}
+	})
 	metadata, err := readLockMetadata(lockPath)
 	if err != nil {
 		t.Fatalf("read successor metadata: %v", err)
@@ -243,8 +253,8 @@ func TestReleaseDoesNotRemoveReclaimedSuccessorLock(t *testing.T) {
 		t.Fatalf("unexpected ownership tokens: original=%q successor=%q metadata=%q", original.token, successor.token, metadata.Token)
 	}
 
-	if err := releaseLockFile(lockPath, original); err != nil {
-		t.Fatalf("release original lock: %v", err)
+	if err := releaseLockOwnership(lockPath, original.token); err != nil {
+		t.Fatalf("release delayed original token: %v", err)
 	}
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("original release removed successor lock: %v", err)
@@ -252,7 +262,9 @@ func TestReleaseDoesNotRemoveReclaimedSuccessorLock(t *testing.T) {
 
 	third, err := acquireLockFile(lockPath, 100*time.Millisecond)
 	if err == nil {
-		releaseLockFile(lockPath, third)
+		if releaseErr := releaseLockFile(lockPath, third); releaseErr != nil {
+			t.Errorf("release third lock: %v", releaseErr)
+		}
 		t.Fatal("third contender acquired successor lock")
 	}
 }
