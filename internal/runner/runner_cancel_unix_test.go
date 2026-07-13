@@ -12,6 +12,13 @@ import (
 	"build-brief/internal/gradle"
 )
 
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
 func TestRunGracefullyInterruptsProcessGroup(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
