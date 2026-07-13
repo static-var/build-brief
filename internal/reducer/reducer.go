@@ -89,6 +89,7 @@ type JUnitScanMetadata struct {
 	ErrorsTruncated    bool     `json:"errors_truncated,omitempty"`
 	FileBytesTruncated bool     `json:"file_bytes_truncated,omitempty"`
 	WalkTruncated      bool     `json:"walk_truncated,omitempty"`
+	ReportingTruncated bool     `json:"reporting_truncated,omitempty"`
 	Truncated          bool     `json:"truncated"`
 }
 
@@ -1037,13 +1038,14 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	}
 	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(invocation))
 	metadata := &JUnitScanMetadata{
-		Discovered:      selection.discovered,
-		Errors:          append([]string(nil), selection.errors...),
-		ErrorCount:      selection.errorCount,
-		ErrorBytes:      selection.errorBytes,
-		ErrorsTruncated: selection.errorsTruncated,
-		WalkTruncated:   selection.walkTruncated,
-		Truncated:       selection.truncated,
+		Discovered:         selection.discovered,
+		Errors:             append([]string(nil), selection.errors...),
+		ErrorCount:         selection.errorCount,
+		ErrorBytes:         selection.errorBytes,
+		ErrorsTruncated:    selection.errorsTruncated,
+		WalkTruncated:      selection.walkTruncated,
+		ReportingTruncated: selection.truncated,
+		Truncated:          selection.truncated || selection.walkTruncated,
 	}
 	passedCount := 0
 	failedCount := 0
@@ -1106,9 +1108,9 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 			message += " (file byte and reporting limits reached)"
 		case metadata.FileBytesTruncated:
 			message += " (file byte limit reached)"
-		case metadata.Truncated:
+		case selection.truncated:
 			message += " (truncated at the reporting limit)"
-		case metadata.WalkTruncated:
+		case selection.walkTruncated:
 			message += " (walk limit reached)"
 		}
 		addEnrichmentWarning(summary, warnings, message)

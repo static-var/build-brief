@@ -1089,8 +1089,27 @@ func TestReduceDoesNotFallbackToEarlyStaleJUnitReportsWhenFreshWalkIsTruncated(t
 	if summary.JUnitScan == nil || !summary.JUnitScan.WalkTruncated || summary.JUnitScan.Discovered != 0 || summary.JUnitScan.Parsed != 0 {
 		t.Fatalf("expected walk-only JUnit scan metadata, got %+v", summary.JUnitScan)
 	}
-	if !contains(summary.Warnings, "JUnit report scan incomplete: discovered 0, parsed 0, skipped 0 (walk limit reached)") {
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal walk-only JUnit scan metadata: %v", err)
+	}
+	var compatibility struct {
+		JUnitScan *struct {
+			Truncated bool `json:"truncated"`
+		} `json:"junit_scan"`
+	}
+	if err := json.Unmarshal(encoded, &compatibility); err != nil {
+		t.Fatalf("decode legacy walk-only JUnit scan metadata: %v", err)
+	}
+	if compatibility.JUnitScan == nil || !compatibility.JUnitScan.Truncated {
+		t.Fatalf("expected legacy truncated flag for walk-only JUnit scan, got %s", encoded)
+	}
+	walkWarning := "JUnit report scan incomplete: discovered 0, parsed 0, skipped 0 (walk limit reached)"
+	if !contains(summary.Warnings, walkWarning) {
 		t.Fatalf("expected walk truncation warning, got %v", summary.Warnings)
+	}
+	if contains(summary.Warnings, "truncated at the reporting limit") {
+		t.Fatalf("walk-only truncation must not be labeled as a reporting limit, got %v", summary.Warnings)
 	}
 	if summary.Reducer == nil || !summary.Reducer.Partial {
 		t.Fatalf("expected partial reducer metadata, got %+v", summary.Reducer)

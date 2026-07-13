@@ -397,14 +397,15 @@ func TestRenderHumanDisclosesJUnitErrorsAndTruncation(t *testing.T) {
 		Success:         true,
 		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
 		JUnitScan: &reducer.JUnitScanMetadata{
-			Discovered:      101,
-			Parsed:          100,
-			Skipped:         1,
-			Errors:          []string{"module/build/test-results/test/TEST-bad.xml: XML syntax error"},
-			ErrorCount:      2,
-			ErrorsTruncated: true,
-			WalkTruncated:   true,
-			Truncated:       true,
+			Discovered:         101,
+			Parsed:             100,
+			Skipped:            1,
+			Errors:             []string{"module/build/test-results/test/TEST-bad.xml: XML syntax error"},
+			ErrorCount:         2,
+			ErrorsTruncated:    true,
+			WalkTruncated:      true,
+			ReportingTruncated: true,
+			Truncated:          true,
 		},
 	}
 
@@ -421,6 +422,28 @@ func TestRenderHumanDisclosesJUnitErrorsAndTruncation(t *testing.T) {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("expected JUnit disclosure %q, got %q", expected, out.String())
 		}
+	}
+}
+
+func TestRenderHumanLabelsWalkOnlyJUnitTruncationCorrectly(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		JUnitScan: &reducer.JUnitScanMetadata{
+			WalkTruncated: true,
+			Truncated:     true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render walk-only JUnit truncation: %v", err)
+	}
+	if !strings.Contains(out.String(), "(walk limit reached)") {
+		t.Fatalf("expected walk limit reason, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "truncated at the reporting limit") {
+		t.Fatalf("walk-only truncation must not be labeled as a reporting limit, got %q", out.String())
 	}
 }
 
