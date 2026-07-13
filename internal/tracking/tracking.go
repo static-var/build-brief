@@ -454,16 +454,32 @@ func withTrackingLock(path string, fn func() error) (err error) {
 func acquireLockFile(lockPath string, timeout time.Duration) (*os.File, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(file, "pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
-			return file, nil
-		}
-		if !os.IsExist(err) {
+		guard, err := acquireReclaimGuard(lockPath, deadline)
+		if err != nil {
 			return nil, err
 		}
-		if shouldBreakStaleLock(lockPath) {
-			_ = os.Remove(lockPath)
+
+		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			writeErr := writeLockMetadata(file)
+			guardErr := releaseReclaimGuard(guard)
+			if writeErr == nil && guardErr == nil {
+				return file, nil
+			}
+			cleanupErr := releaseLockFile(lockPath, file)
+			return nil, errors.Join(writeErr, guardErr, cleanupErr)
+		}
+		if !os.IsExist(err) {
+			guardErr := releaseReclaimGuard(guard)
+			return nil, errors.Join(err, guardErr)
+		}
+
+		reclaimed, reclaimErr := reclaimStaleLockUnderGuard(lockPath)
+		guardErr := releaseReclaimGuard(guard)
+		if reclaimErr != nil || guardErr != nil {
+			return nil, errors.Join(reclaimErr, guardErr)
+		}
+		if reclaimed {
 			continue
 		}
 		if time.Now().After(deadline) {
@@ -471,6 +487,53 @@ func acquireLockFile(lockPath string, timeout time.Duration) (*os.File, error) {
 		}
 		time.Sleep(lockPollInterval)
 	}
+}
+
+// reclaimStaleLock serializes stale-lock verification and removal with every
+// lock creator. A successor cannot be created between the final verification
+// and removal because creators must hold the same reclaim guard.
+func reclaimStaleLock(lockPath string, timeout time.Duration) (bool, error) {
+	guard, err := acquireReclaimGuard(lockPath, time.Now().Add(timeout))
+	if err != nil {
+		return false, err
+	}
+	reclaimed, reclaimErr := reclaimStaleLockUnderGuard(lockPath)
+	guardErr := releaseReclaimGuard(guard)
+	return reclaimed, errors.Join(reclaimErr, guardErr)
+}
+
+func reclaimStaleLockUnderGuard(lockPath string) (bool, error) {
+	if !shouldBreakStaleLock(lockPath) {
+		return false, nil
+	}
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("remove stale tracking lock %s: %w", lockPath, err)
+	}
+	return true, nil
+}
+
+func acquireReclaimGuard(lockPath string, deadline time.Time) (*os.File, error) {
+	guard, err := os.OpenFile(reclaimGuardPath(lockPath), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockReclaimGuard(guard, deadline); err != nil {
+		return nil, errors.Join(err, guard.Close())
+	}
+	return guard, nil
+}
+
+func releaseReclaimGuard(guard *os.File) error {
+	return errors.Join(unlockReclaimGuard(guard), guard.Close())
+}
+
+func reclaimGuardPath(lockPath string) string {
+	return lockPath + ".reclaim"
+}
+
+func writeLockMetadata(file *os.File) error {
+	_, err := fmt.Fprintf(file, "pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func shouldBreakStaleLock(lockPath string) bool {

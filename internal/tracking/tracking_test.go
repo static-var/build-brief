@@ -197,6 +197,75 @@ func TestAcquireLockFileBreaksStaleLock(t *testing.T) {
 	releaseLockFile(lockPath, lockFile)
 }
 
+func TestAcquireLockFileReleaseAllowsNextContender(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	first, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+	if err := releaseLockFile(lockPath, first); err != nil {
+		t.Fatalf("release first lock: %v", err)
+	}
+
+	second, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire lock after release: %v", err)
+	}
+	if err := releaseLockFile(lockPath, second); err != nil {
+		t.Fatalf("release second lock: %v", err)
+	}
+}
+
+func TestDelayedStaleObserverCannotRemoveSuccessorLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	stale := fmt.Sprintf("pid=%d\ncreated_at=%s\n", 999999, time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(stale), 0o600); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	observed := make(chan struct{})
+	resume := make(chan struct{})
+	result := make(chan struct {
+		reclaimed bool
+		err       error
+	}, 1)
+	go func() {
+		if !shouldBreakStaleLock(lockPath) {
+			result <- struct {
+				reclaimed bool
+				err       error
+			}{err: fmt.Errorf("observer did not see stale lock")}
+			return
+		}
+		close(observed)
+		<-resume
+		reclaimed, err := reclaimStaleLock(lockPath, time.Second)
+		result <- struct {
+			reclaimed bool
+			err       error
+		}{reclaimed, err}
+	}()
+	<-observed
+
+	successor, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire successor lock: %v", err)
+	}
+	defer releaseLockFile(lockPath, successor)
+	close(resume)
+
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("delayed stale reclamation: %v", got.err)
+	}
+	if got.reclaimed {
+		t.Fatal("delayed stale observer reclaimed a successor lock")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("successor lock was removed: %v", err)
+	}
+}
+
 func TestRemoveLockFileRetriesContendedRemoval(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
 	if err := os.WriteFile(lockPath, []byte("lock"), 0o600); err != nil {
