@@ -160,7 +160,7 @@ build-brief gains --format json
 build-brief gains --reset
 ```
 
-The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting. Gains history is stored only in a local JSONL file under the OS config directory (`build-brief/tracking.jsonl`), retained for up to 90 days, and removed by `build-brief gains --reset`. The gains report sends no gains data.
+The savings numbers use the built-in chars-divided-by-4 heuristic. They are useful for rough feedback and trend tracking, not billing-grade accounting. Gains history is stored only in a local JSONL file under the OS config directory (`build-brief/tracking.jsonl`); no gains data is transmitted. Entries older than 90 days are pruned when the next tracked run is recorded, so inactive history may remain until then or `build-brief gains --reset`.
 
 Example text output:
 

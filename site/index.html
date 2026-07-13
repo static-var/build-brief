@@ -505,7 +505,7 @@
     <p class="section__kicker fade-in">Measurement</p>
     <h2 class="section__title fade-in">Know what you're saving.</h2>
     <p class="section__lead fade-in">
-      <code>build-brief gains</code> tracks cumulative token savings across every build in a local JSONL history under your OS config directory. History is retained for up to 90 days and <code>build-brief gains --reset</code> removes it. For AI agents, these savings translate directly to <strong>context-window budget
+      <code>build-brief gains</code> tracks cumulative token savings across every build in a local JSONL history under your OS config directory; no gains data is transmitted. Entries older than 90 days are pruned when the next tracked run is recorded, so inactive history may remain until then or <code>build-brief gains --reset</code>. For AI agents, these savings translate directly to <strong>context-window budget
       reclaimed</strong> — capacity the agent can spend reasoning about your code
       instead of parsing Gradle task lifecycle output.
     </p>
