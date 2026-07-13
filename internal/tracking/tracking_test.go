@@ -197,6 +197,31 @@ func TestAcquireLockFileBreaksStaleLock(t *testing.T) {
 	releaseLockFile(lockPath, lockFile)
 }
 
+func TestRemoveLockFileRetriesContendedRemoval(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	if err := os.WriteFile(lockPath, []byte("lock"), 0o600); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	attempts := 0
+	err := removeLockFile(lockPath, time.Second, func(path string) error {
+		attempts++
+		if attempts < 3 {
+			return os.ErrPermission
+		}
+		return os.Remove(path)
+	})
+	if err != nil {
+		t.Fatalf("remove contended lock: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected three removal attempts, got %d", attempts)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("expected lock to be removed, stat error: %v", err)
+	}
+}
+
 func TestRenderTextIncludesRecentHistory(t *testing.T) {
 	report := Report{
 		Summary: Summary{

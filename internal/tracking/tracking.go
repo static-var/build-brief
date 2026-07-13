@@ -3,6 +3,7 @@ package tracking
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -437,13 +438,15 @@ func loadRecords(path string) ([]Record, error) {
 	return records, scanner.Err()
 }
 
-func withTrackingLock(path string, fn func() error) error {
+func withTrackingLock(path string, fn func() error) (err error) {
 	lockPath := path + ".lock"
 	lockFile, err := acquireLockFile(lockPath, lockTimeout)
 	if err != nil {
 		return err
 	}
-	defer releaseLockFile(lockPath, lockFile)
+	defer func() {
+		err = errors.Join(err, releaseLockFile(lockPath, lockFile))
+	}()
 
 	return fn()
 }
@@ -529,11 +532,28 @@ func fileOlderThan(path string, age time.Duration) bool {
 	return time.Since(info.ModTime()) >= age
 }
 
-func releaseLockFile(lockPath string, file *os.File) {
+func releaseLockFile(lockPath string, file *os.File) error {
+	var closeErr error
 	if file != nil {
-		_ = file.Close()
+		closeErr = file.Close()
 	}
-	_ = os.Remove(lockPath)
+	return errors.Join(closeErr, removeLockFile(lockPath, lockTimeout, os.Remove))
+}
+
+// removeLockFile retries a failed removal because Windows does not permit
+// deleting a file while a competing stale-lock check has it open.
+func removeLockFile(lockPath string, timeout time.Duration, remove func(string) error) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := remove(lockPath)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("remove tracking lock %s: %w", lockPath, err)
+		}
+		time.Sleep(lockPollInterval)
+	}
 }
 
 func writeRecords(path string, records []Record) error {
