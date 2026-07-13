@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	retentionDays    = 90
-	recentLimit      = 15
-	lockTimeout      = 5 * time.Second
-	lockPollInterval = 25 * time.Millisecond
-	staleLockAge     = 30 * time.Second
+	retentionDays        = 90
+	localGainsDisclosure = "Local-only: Gains history stays on this machine. This report sends no gains data."
+	recentLimit          = 15
+	lockTimeout          = 5 * time.Second
+	lockPollInterval     = 25 * time.Millisecond
+	staleLockAge         = 30 * time.Second
 )
 
 type Record struct {
@@ -61,9 +62,16 @@ type CommandAggregate struct {
 }
 
 type Report struct {
-	ScopeProject string   `json:"scope_project,omitempty"`
-	Summary      Summary  `json:"summary"`
-	Recent       []Record `json:"recent,omitempty"`
+	ScopeProject   string   `json:"scope_project,omitempty"`
+	Summary        Summary  `json:"summary"`
+	Recent         []Record `json:"recent,omitempty"`
+	recordedPeriod period
+}
+
+type period struct {
+	start time.Time
+	end   time.Time
+	count int
 }
 
 type lockMetadata struct {
@@ -178,8 +186,9 @@ func LoadReport(projectPath string, history bool) (Report, error) {
 	}
 
 	report := Report{
-		ScopeProject: projectPath,
-		Summary:      summarize(filtered),
+		ScopeProject:   projectPath,
+		Summary:        summarize(filtered),
+		recordedPeriod: periodFor(filtered),
 	}
 
 	if history {
@@ -211,7 +220,10 @@ func Reset() error {
 func RenderText(w io.Writer, report Report, history bool) error {
 	report = sanitizeReport(report)
 	if report.Summary.TotalCommands == 0 {
-		_, err := fmt.Fprintln(w, "No gains data yet.")
+		if _, err := fmt.Fprintln(w, "No gains data yet."); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(w, localGainsDisclosure)
 		return err
 	}
 
@@ -234,6 +246,12 @@ func RenderText(w io.Writer, report Report, history bool) error {
 		return err
 	}
 
+	if _, err := fmt.Fprintf(w, "Recorded period: %s\n", report.recordedPeriod.String()); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(w, "Total commands:  %s\n", formatCount(report.Summary.TotalCommands)); err != nil {
 		return err
 	}
@@ -306,7 +324,8 @@ func RenderText(w io.Writer, report Report, history bool) error {
 		}
 	}
 
-	return nil
+	_, err := fmt.Fprintln(w, "\n"+localGainsDisclosure)
+	return err
 }
 
 func RenderJSON(w io.Writer, report Report) error {
@@ -331,6 +350,48 @@ func FormatTokens(tokens int) string {
 	default:
 		return fmt.Sprintf("%s%d", sign, int(value))
 	}
+}
+
+func periodFor(records []Record) period {
+	var result period
+	for _, record := range records {
+		if record.Timestamp.IsZero() {
+			continue
+		}
+		date := record.Timestamp.Local()
+		date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.Local)
+		if result.count == 0 || date.Before(result.start) {
+			result.start = date
+		}
+		if result.count == 0 || date.After(result.end) {
+			result.end = date
+		}
+		result.count++
+	}
+	return result
+}
+
+func (value period) String() string {
+	if value.count == 0 {
+		return "unavailable"
+	}
+
+	start := time.Date(value.start.Year(), value.start.Month(), value.start.Day(), 0, 0, 0, 0, time.UTC)
+	end := time.Date(value.end.Year(), value.end.Month(), value.end.Day(), 0, 0, 0, 0, time.UTC)
+	days := int(end.Sub(start).Hours()/24) + 1
+	dayLabel := "days"
+	if days == 1 {
+		dayLabel = "day"
+	}
+	commandLabel := "commands"
+	if value.count == 1 {
+		commandLabel = "command"
+	}
+	dates := value.start.Format("2006-01-02")
+	if !value.start.Equal(value.end) {
+		dates += " to " + value.end.Format("2006-01-02")
+	}
+	return fmt.Sprintf("%s (%d %s, %d %s)", dates, days, dayLabel, value.count, commandLabel)
 }
 
 func summarize(records []Record) Summary {

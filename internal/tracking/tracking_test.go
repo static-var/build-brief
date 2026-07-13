@@ -414,6 +414,113 @@ func TestRenderTextIncludesRecentHistory(t *testing.T) {
 	}
 }
 
+func TestRenderTextShowsLocalRecordedPeriodAndDisclosure(t *testing.T) {
+	local := time.Local
+	day := func(day, hour int) time.Time {
+		return time.Date(2026, time.March, day, hour, 0, 0, 0, local)
+	}
+
+	tests := []struct {
+		name    string
+		records []Record
+		want    string
+	}{
+		{
+			name:    "missing timestamps are unavailable",
+			records: []Record{{Command: "gradlew test", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90}},
+			want:    "Recorded period: unavailable",
+		},
+		{
+			name: "single local calendar day",
+			records: []Record{
+				{Timestamp: day(15, 22), Command: "gradlew test", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+				{Timestamp: day(15, 1), Command: "gradlew check", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+			},
+			want: "Recorded period: 2026-03-15 (1 day, 2 commands)",
+		},
+		{
+			name: "mixed clock order uses inclusive local dates",
+			records: []Record{
+				{Timestamp: day(5, 1), Command: "gradlew test", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+				{Timestamp: day(2, 23), Command: "gradlew check", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+				{Timestamp: day(4, 12), Command: "gradlew build", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+			},
+			want: "Recorded period: 2026-03-02 to 2026-03-05 (4 days, 3 commands)",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := Report{Summary: summarize(test.records), recordedPeriod: periodFor(test.records)}
+			var out bytes.Buffer
+			if err := RenderText(&out, report, false); err != nil {
+				t.Fatalf("render text: %v", err)
+			}
+			if !strings.Contains(out.String(), test.want) {
+				t.Fatalf("expected %q in %q", test.want, out.String())
+			}
+			if !strings.Contains(out.String(), localGainsDisclosure) {
+				t.Fatalf("expected local-only disclosure in %q", out.String())
+			}
+		})
+	}
+}
+
+func TestRenderTextEmptyReportRetainsMessageAndDisclosure(t *testing.T) {
+	var out bytes.Buffer
+	if err := RenderText(&out, Report{}, false); err != nil {
+		t.Fatalf("render empty report: %v", err)
+	}
+	if got, want := out.String(), "No gains data yet.\n"+localGainsDisclosure+"\n"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestLoadReportPeriodRespectsProjectAndRawFilters(t *testing.T) {
+	setTrackingEnv(t)
+	local := time.Local
+	records := []Record{
+		{Timestamp: time.Date(2026, time.March, 1, 9, 0, 0, 0, local), ProjectPath: "/tmp/project-a", Command: "gradlew raw", Mode: "raw", RawTokens: 100, EmittedTokens: 100},
+		{Timestamp: time.Date(2026, time.March, 2, 9, 0, 0, 0, local), ProjectPath: "/tmp/project-b", Command: "gradlew other", Mode: "human", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+		{Timestamp: time.Date(2026, time.March, 3, 9, 0, 0, 0, local), ProjectPath: "/tmp/project-a", Command: "gradlew test", Mode: "human", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90},
+	}
+	path, err := dbPath()
+	if err != nil {
+		t.Fatalf("db path: %v", err)
+	}
+	if err := writeRecords(path, records); err != nil {
+		t.Fatalf("seed records: %v", err)
+	}
+
+	report, err := LoadReport("/tmp/project-a", false)
+	if err != nil {
+		t.Fatalf("load project report: %v", err)
+	}
+	var out bytes.Buffer
+	if err := RenderText(&out, report, false); err != nil {
+		t.Fatalf("render text: %v", err)
+	}
+	if !strings.Contains(out.String(), "Recorded period: 2026-03-03 (1 day, 1 command)") {
+		t.Fatalf("unexpected filtered period: %q", out.String())
+	}
+}
+
+func TestRenderJSONContractDoesNotIncludeRecordedPeriodOrDisclosure(t *testing.T) {
+	report := Report{
+		Summary:        summarize([]Record{{Command: "gradlew test", RawTokens: 100, EmittedTokens: 10, SavedTokens: 90, SavingsPct: 90}}),
+		recordedPeriod: periodFor([]Record{{Timestamp: time.Now()}}),
+	}
+	var out bytes.Buffer
+	if err := RenderJSON(&out, report); err != nil {
+		t.Fatalf("render json: %v", err)
+	}
+	for _, unexpected := range []string{"recorded_period", "Recorded period", localGainsDisclosure} {
+		if strings.Contains(out.String(), unexpected) {
+			t.Fatalf("json contract changed with %q: %s", unexpected, out.String())
+		}
+	}
+}
+
 func TestRenderJSONOmitsTimeFields(t *testing.T) {
 	report := Report{
 		Summary: Summary{
