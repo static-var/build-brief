@@ -214,6 +214,8 @@ func TestRunPrintsHelp(t *testing.T) {
 		"build-brief rewrite 'gradle test && gradle check'",
 		"build-brief gradle test",
 		"build-brief ./gradlew test",
+		"Relative --config and BUILD_BRIEF_CONFIG paths resolve from --project-dir,",
+		"or the current working directory when --project-dir is omitted. Absolute paths remain unchanged.",
 		"[gradle|./gradlew|PATH-TO-GRADLE]",
 		"In interactive terminals, use Up/Down to move, Space to toggle, and Enter to install.",
 		"Non-interactive stdin falls back to comma-separated numbers, '*' or 'all', or blank to cancel.",
@@ -235,6 +237,29 @@ func TestRunPrintsHelp(t *testing.T) {
 	} {
 		if strings.Contains(help, unexpected) {
 			t.Fatalf("expected help not to contain %q, got %q", unexpected, help)
+		}
+	}
+}
+
+func TestRunPrintsDoctorHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run(context.Background(), []string{"doctor", "--help"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+
+	help := stdout.String()
+	for _, expected := range []string{
+		"Relative --config and BUILD_BRIEF_CONFIG paths resolve from --project-dir,",
+		"or the current working directory when --project-dir is omitted. Absolute paths remain unchanged.",
+	} {
+		if !strings.Contains(help, expected) {
+			t.Fatalf("expected doctor help to contain %q, got %q", expected, help)
 		}
 	}
 }

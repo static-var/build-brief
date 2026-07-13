@@ -127,7 +127,10 @@ matches in the brief:
 ```
 
 You can also point to a config file with `--config PATH` or
-`BUILD_BRIEF_CONFIG`. Invalid regex patterns fail fast before Gradle starts.
+`BUILD_BRIEF_CONFIG`. Relative paths from either source resolve from
+`--project-dir`, or from the current working directory when `--project-dir` is
+omitted. Absolute paths remain unchanged. Invalid regex patterns fail fast
+before Gradle starts.
 
 ## Build Brief Doctor
 
