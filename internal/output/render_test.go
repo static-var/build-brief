@@ -392,6 +392,90 @@ func TestRenderHumanShowsEnrichmentScanMetadataAndWarnings(t *testing.T) {
 	}
 }
 
+func TestRenderHumanDisclosesJUnitErrorsAndTruncation(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		JUnitScan: &reducer.JUnitScanMetadata{
+			Discovered:         101,
+			Parsed:             100,
+			Skipped:            1,
+			Errors:             []string{"module/build/test-results/test/TEST-bad.xml: XML syntax error"},
+			ErrorCount:         2,
+			ErrorsTruncated:    true,
+			WalkTruncated:      true,
+			ReportingTruncated: true,
+			Truncated:          true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render JUnit disclosure: %v", err)
+	}
+	for _, expected := range []string{
+		"JUnit reports: 101 discovered, 100 parsed, 1 skipped (truncated at the reporting limit) (walk limit reached) (error details truncated)",
+		"JUnit report scan errors: 2 total",
+		"TEST-bad.xml: XML syntax error",
+		"additional scan errors omitted",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("expected JUnit disclosure %q, got %q", expected, out.String())
+		}
+	}
+}
+
+func TestRenderHumanComposesAllActiveJUnitIncompletenessReasons(t *testing.T) {
+	tests := []struct {
+		name     string
+		scan     reducer.JUnitScanMetadata
+		expected string
+	}{
+		{name: "file byte", scan: reducer.JUnitScanMetadata{FileBytesTruncated: true, Truncated: true}, expected: "(file byte limit reached)"},
+		{name: "reporting", scan: reducer.JUnitScanMetadata{ReportingTruncated: true, Truncated: true}, expected: "(truncated at the reporting limit)"},
+		{name: "walk", scan: reducer.JUnitScanMetadata{WalkTruncated: true, Truncated: true}, expected: "(walk limit reached)"},
+		{name: "file byte and reporting", scan: reducer.JUnitScanMetadata{FileBytesTruncated: true, ReportingTruncated: true, Truncated: true}, expected: "(file byte limit reached) (truncated at the reporting limit)"},
+		{name: "file byte and walk", scan: reducer.JUnitScanMetadata{FileBytesTruncated: true, WalkTruncated: true, Truncated: true}, expected: "(file byte limit reached) (walk limit reached)"},
+		{name: "reporting and walk", scan: reducer.JUnitScanMetadata{ReportingTruncated: true, WalkTruncated: true, Truncated: true}, expected: "(truncated at the reporting limit) (walk limit reached)"},
+		{name: "all", scan: reducer.JUnitScanMetadata{FileBytesTruncated: true, ReportingTruncated: true, WalkTruncated: true, Truncated: true}, expected: "(file byte limit reached) (truncated at the reporting limit) (walk limit reached)"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			summary := reducer.Summary{Success: true, BuildStatusLine: "BUILD SUCCESSFUL in 1s", JUnitScan: &test.scan}
+			var out bytes.Buffer
+			if err := RenderHuman(&out, summary); err != nil {
+				t.Fatalf("render JUnit incompleteness: %v", err)
+			}
+			if !strings.Contains(out.String(), "JUnit reports: 0 discovered, 0 parsed, 0 skipped "+test.expected) {
+				t.Fatalf("expected %q, got %q", test.expected, out.String())
+			}
+		})
+	}
+}
+
+func TestRenderHumanLabelsWalkOnlyJUnitTruncationCorrectly(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		JUnitScan: &reducer.JUnitScanMetadata{
+			WalkTruncated: true,
+			Truncated:     true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render walk-only JUnit truncation: %v", err)
+	}
+	if !strings.Contains(out.String(), "(walk limit reached)") {
+		t.Fatalf("expected walk limit reason, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "truncated at the reporting limit") {
+		t.Fatalf("walk-only truncation must not be labeled as a reporting limit, got %q", out.String())
+	}
+}
+
 func TestRenderHumanShowsScanTruncationWhenWarningsAreCapped(t *testing.T) {
 	warnings := make([]string, 8)
 	for i := range warnings {

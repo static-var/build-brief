@@ -4,10 +4,7 @@ package tracking
 
 import "syscall"
 
-const (
-	processQueryLimitedInformation = 0x1000
-	errorInvalidParameter          = syscall.Errno(87)
-)
+const errorInvalidParameter = syscall.Errno(87)
 
 func processLiveness(pid int) (known, alive bool) {
 	if pid <= 0 {

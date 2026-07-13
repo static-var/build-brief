@@ -52,6 +52,7 @@ var (
 	contextCaptureLines              = 2
 	compilerCaptureLines             = 3
 	maxJUnitReportFiles              = 100
+	maxJUnitWalkEntries              = 10_000
 	maxJUnitScanErrors               = 8
 	maxJUnitScanErrorBytes           = 64 * 1024
 	maxJUnitFileBytes                = 1 << 20
@@ -87,7 +88,31 @@ type JUnitScanMetadata struct {
 	ErrorBytes         int64    `json:"error_bytes,omitempty"`
 	ErrorsTruncated    bool     `json:"errors_truncated,omitempty"`
 	FileBytesTruncated bool     `json:"file_bytes_truncated,omitempty"`
+	WalkTruncated      bool     `json:"walk_truncated,omitempty"`
+	ReportingTruncated bool     `json:"reporting_truncated,omitempty"`
 	Truncated          bool     `json:"truncated"`
+}
+
+func (metadata JUnitScanMetadata) IncompletenessReasons() []string {
+	reasons := make([]string, 0, 3)
+	if metadata.FileBytesTruncated {
+		reasons = append(reasons, "file byte limit reached")
+	}
+	if metadata.ReportingTruncated || (metadata.Truncated && !metadata.FileBytesTruncated && !metadata.WalkTruncated) {
+		reasons = append(reasons, "truncated at the reporting limit")
+	}
+	if metadata.WalkTruncated {
+		reasons = append(reasons, "walk limit reached")
+	}
+	return reasons
+}
+
+func junitScanIncompleteWarning(metadata *JUnitScanMetadata) string {
+	message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
+	for _, reason := range metadata.IncompletenessReasons() {
+		message += " (" + reason + ")"
+	}
+	return message
 }
 
 type RawInputMetadata struct {
@@ -97,14 +122,19 @@ type RawInputMetadata struct {
 }
 
 type ReducerCollectionMetadata struct {
-	Observed      int   `json:"observed"`
-	Retained      int   `json:"retained"`
-	Omitted       int   `json:"omitted"`
-	ObservedBytes int64 `json:"observed_bytes"`
-	RetainedBytes int64 `json:"retained_bytes"`
-	OmittedBytes  int64 `json:"omitted_bytes"`
-	Truncated     bool  `json:"truncated"`
+	Observed       int    `json:"observed"`
+	Retained       int    `json:"retained"`
+	Omitted        int    `json:"omitted"`
+	ObservedBytes  int64  `json:"observed_bytes"`
+	RetainedBytes  int64  `json:"retained_bytes"`
+	OmittedBytes   int64  `json:"omitted_bytes"`
+	CountPrecision string `json:"count_precision,omitempty"`
+	Truncated      bool   `json:"truncated"`
 }
+
+// CountPrecision describes collection count completeness. "exact" means the
+// observed, omitted, and byte totals are exact; "lower_bound" means each is a
+// minimum after the fixed auxiliary deduplication state was exhausted.
 
 type ReducerMetadata struct {
 	Partial       bool                                 `json:"partial"`
@@ -183,10 +213,6 @@ func (c *boundedStringCollector) add(value string) bool {
 	return true
 }
 
-func (c *boundedStringCollector) markTruncated() {
-	c.truncated = true
-}
-
 func (c *boundedStringCollector) metadata() ReducerCollectionMetadata {
 	metadata := ReducerCollectionMetadata{
 		Observed:      c.observed,
@@ -199,6 +225,91 @@ func (c *boundedStringCollector) metadata() ReducerCollectionMetadata {
 	}
 	if metadata.Omitted > 0 || metadata.OmittedBytes > 0 {
 		metadata.Truncated = true
+	}
+	return metadata
+}
+
+// buildScanURLCollector retains URLs and a separately bounded set of rejected
+// URLs. This deduplicates over-cap repeats exactly until auxiliary state fills.
+// Once it fills, totals remain stable lower bounds rather than counting an
+// indistinguishable repeat as a new URL.
+type buildScanURLCollector struct {
+	values        []string
+	retained      map[string]struct{}
+	omitted       map[string]struct{}
+	maxCount      int
+	maxBytes      int64
+	retainedBytes int64
+	omittedBytes  int64
+	observed      int
+	observedBytes int64
+	exact         bool
+	truncated     bool
+}
+
+func newBuildScanURLCollector(maxCount, maxBytes int) *buildScanURLCollector {
+	return &buildScanURLCollector{
+		values:   make([]string, 0, maxCount),
+		retained: make(map[string]struct{}, maxCount),
+		omitted:  make(map[string]struct{}, maxCount),
+		maxCount: maxCount,
+		maxBytes: int64(maxBytes),
+		exact:    true,
+	}
+}
+
+func (c *buildScanURLCollector) add(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if _, ok := c.retained[value]; ok {
+		return false
+	}
+	if _, ok := c.omitted[value]; ok {
+		return false
+	}
+	if !c.exact {
+		return false
+	}
+
+	c.observed++
+	c.observedBytes += int64(len(value))
+	if len(c.values) < c.maxCount && c.retainedBytes+int64(len(value)) <= c.maxBytes {
+		value = strings.Clone(value)
+		c.values = append(c.values, value)
+		c.retained[value] = struct{}{}
+		c.retainedBytes += int64(len(value))
+		return true
+	}
+
+	c.truncated = true
+	if len(c.omitted) < c.maxCount && c.omittedBytes+int64(len(value)) <= c.maxBytes {
+		value = strings.Clone(value)
+		c.omitted[value] = struct{}{}
+		c.omittedBytes += int64(len(value))
+		return false
+	}
+
+	// This URL is certainly distinct from all remembered URLs. Do not retain
+	// it: that would make later repeats indistinguishable from new URLs.
+	c.exact = false
+	return false
+}
+
+func (c *buildScanURLCollector) metadata() ReducerCollectionMetadata {
+	metadata := ReducerCollectionMetadata{
+		Observed:       c.observed,
+		Retained:       len(c.values),
+		Omitted:        c.observed - len(c.values),
+		ObservedBytes:  c.observedBytes,
+		RetainedBytes:  c.retainedBytes,
+		OmittedBytes:   c.observedBytes - c.retainedBytes,
+		Truncated:      c.truncated,
+		CountPrecision: "exact",
+	}
+	if !c.exact {
+		metadata.CountPrecision = "lower_bound"
 	}
 	return metadata
 }
@@ -516,7 +627,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	failedTests := newBoundedStringCollector(maxFailedTests, maxSummaryCollectionBytes, true)
 	warnings := newBoundedStringCollector(maxWarnings, maxSummaryCollectionBytes, true)
 	important := newBoundedStringCollector(maxImportantLines, maxSummaryCollectionBytes, true)
-	buildScanURLs := newBoundedStringCollector(maxBuildScanURLs, maxSummaryCollectionBytes, true)
+	buildScanURLs := newBuildScanURLCollector(maxBuildScanURLs, maxSummaryCollectionBytes)
 	configCacheProblems := newBoundedStringCollector(maxConfigCacheLines, maxSummaryCollectionBytes, true)
 	reportLines := newBoundedStringCollector(maxReportLines, maxSummaryCollectionBytes, false)
 	customMatches := make([]*boundedStringCollector, len(customRules))
@@ -589,20 +700,16 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			important.add(text)
 		}
 
-		lineURLs, lineURLsTruncated := extractURLs(text)
-		if isBuildScanMarkerLine(text) {
-			if lineURLsTruncated {
-				buildScanURLs.markTruncated()
-			}
-			if len(lineURLs) > 0 {
-				addUniqueBuildScanURLs(buildScanURLs, lineURLs)
-				captureBuildScanURLRemaining = 0
-			} else {
-				captureBuildScanURLRemaining = 3
-			}
-		} else if captureBuildScanURLRemaining > 0 {
-			if len(lineURLs) > 0 {
-				addUniqueBuildScanURLs(buildScanURLs, lineURLs)
+		isBuildScanMarker := isBuildScanMarkerLine(text)
+		if isBuildScanMarker || captureBuildScanURLRemaining > 0 {
+			foundBuildScanURL := scanBuildScanURLs(text, buildScanURLs)
+			if isBuildScanMarker {
+				if foundBuildScanURL {
+					captureBuildScanURLRemaining = 0
+				} else {
+					captureBuildScanURLRemaining = 3
+				}
+			} else if foundBuildScanURL {
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining--
@@ -732,7 +839,7 @@ func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
 	return results
 }
 
-func syncSummaryCollections(summary *Summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) {
+func syncSummaryCollections(summary *Summary, failedTasks, failedTests, warnings, important *boundedStringCollector, buildScanURLs *buildScanURLCollector, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) {
 	summary.FailedTasks = failedTasks.values
 	summary.FailedTests = failedTests.values
 	summary.Warnings = warnings.values
@@ -752,7 +859,7 @@ func finishRawInputMetadata(metadata RawInputMetadata) *RawInputMetadata {
 	return &metadata
 }
 
-func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandArgs *boundedStringCollector, commandArgsTruncated, customRulesTruncated bool, customRulesObserved int, customRulesBytes, customRulesRetainedBytes int64, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) *ReducerMetadata {
+func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandArgs *boundedStringCollector, commandArgsTruncated, customRulesTruncated bool, customRulesObserved int, customRulesBytes, customRulesRetainedBytes int64, failedTasks, failedTests, warnings, important *boundedStringCollector, buildScanURLs *buildScanURLCollector, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) *ReducerMetadata {
 	metadata := &ReducerMetadata{Collections: make(map[string]ReducerCollectionMetadata)}
 	partialFields := make(map[string]struct{})
 	if rawInput != nil {
@@ -764,7 +871,7 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 	addReducerCollectionMetadata(metadata, partialFields, "failed_tests", failedTests)
 	addReducerCollectionMetadata(metadata, partialFields, "warnings", warnings)
 	addReducerCollectionMetadata(metadata, partialFields, "important_lines", important)
-	addReducerCollectionMetadata(metadata, partialFields, "build_scan_urls", buildScanURLs)
+	addBuildScanCollectionMetadata(metadata, partialFields, buildScanURLs)
 	addReducerCollectionMetadata(metadata, partialFields, "config_cache_problems", configCacheProblems)
 	addReducerCollectionMetadata(metadata, partialFields, "report_lines", reportLines)
 	for i, collector := range customMatches {
@@ -786,7 +893,7 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 			Truncated:     true,
 		}
 	}
-	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.ErrorCount > 0) {
+	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.WalkTruncated || summary.JUnitScan.ErrorCount > 0) {
 		for _, field := range []string{"junit_scan", "failed_tests", "passed_test_count", "failed_test_count", "important_lines"} {
 			partialFields[field] = struct{}{}
 		}
@@ -820,6 +927,15 @@ func addReducerCollectionMetadata(metadata *ReducerMetadata, partialFields map[s
 	}
 	metadata.Collections[name] = collection
 	partialFields[name] = struct{}{}
+}
+
+func addBuildScanCollectionMetadata(metadata *ReducerMetadata, partialFields map[string]struct{}, collector *buildScanURLCollector) {
+	collection := collector.metadata()
+	if !collection.Truncated {
+		return
+	}
+	metadata.Collections["build_scan_urls"] = collection
+	partialFields["build_scan_urls"] = struct{}{}
 }
 
 func enrichWithArtifacts(projectDir string, result runner.Result, invocation semanticInvocation, summary *Summary, hints []string, warnings *boundedStringCollector) {
@@ -934,6 +1050,7 @@ type junitReportSelection struct {
 	errorCount      int
 	errorBytes      int64
 	errorsTruncated bool
+	walkTruncated   bool
 	truncated       bool
 }
 
@@ -943,12 +1060,14 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	}
 	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(invocation))
 	metadata := &JUnitScanMetadata{
-		Discovered:      selection.discovered,
-		Errors:          append([]string(nil), selection.errors...),
-		ErrorCount:      selection.errorCount,
-		ErrorBytes:      selection.errorBytes,
-		ErrorsTruncated: selection.errorsTruncated,
-		Truncated:       selection.truncated,
+		Discovered:         selection.discovered,
+		Errors:             append([]string(nil), selection.errors...),
+		ErrorCount:         selection.errorCount,
+		ErrorBytes:         selection.errorBytes,
+		ErrorsTruncated:    selection.errorsTruncated,
+		WalkTruncated:      selection.walkTruncated,
+		ReportingTruncated: selection.truncated,
+		Truncated:          selection.truncated || selection.walkTruncated,
 	}
 	passedCount := 0
 	failedCount := 0
@@ -1001,20 +1120,11 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	if metadata.Skipped < 0 {
 		metadata.Skipped = 0
 	}
-	if metadata.Discovered > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
+	if metadata.Parsed > 0 || metadata.ErrorCount > 0 || metadata.WalkTruncated || metadata.Truncated {
 		summary.JUnitScan = metadata
 	}
-	if metadata.Truncated || metadata.ErrorCount > 0 {
-		message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
-		switch {
-		case metadata.FileBytesTruncated && selection.truncated:
-			message += " (file byte and reporting limits reached)"
-		case metadata.FileBytesTruncated:
-			message += " (file byte limit reached)"
-		case metadata.Truncated:
-			message += " (truncated at the reporting limit)"
-		}
-		addEnrichmentWarning(summary, warnings, message)
+	if summary.JUnitScan != nil && (metadata.Truncated || metadata.WalkTruncated || metadata.ErrorCount > 0) {
+		addEnrichmentWarning(summary, warnings, junitScanIncompleteWarning(metadata))
 	}
 
 	if passedCount > 0 || failedCount > 0 {
@@ -1113,8 +1223,15 @@ func addEnrichmentWarning(summary *Summary, warnings *boundedStringCollector, me
 	}
 }
 
-func findJUnitReportFiles(projectDir string) junitReportSelection {
+// findJUnitReportFiles evaluates freshness while walking, before applying the
+// report cap. Thus stale reports neither consume report capacity nor create
+// incomplete-scan metadata. Its candidate-work bound applies only to paths
+// that could be JUnit reports, so unrelated project entries cannot hide later
+// module reports.
+func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool) junitReportSelection {
 	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
+	threshold := startedAt.Add(-junitTimeSkew)
+	candidates := 0
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if isJUnitScanErrorPath(projectDir, path) {
@@ -1123,6 +1240,23 @@ func findJUnitReportFiles(projectDir string) junitReportSelection {
 			return nil
 		}
 		if isJUnitReportPath(path, entry.Name()) {
+			candidates++
+			if candidates > maxJUnitWalkEntries {
+				selection.walkTruncated = true
+				return fs.SkipAll
+			}
+			if freshOnly {
+				// readJUnitReport uses os.Open, which follows symlinks. Stat gives
+				// freshness the same target metadata and surfaces broken links.
+				info, err := os.Stat(path)
+				if err != nil {
+					addSelectionError(&selection, projectDir, path, err)
+					return nil
+				}
+				if info.ModTime().Before(threshold) {
+					return nil
+				}
+			}
 			selection.discovered++
 			if len(selection.files) < maxJUnitReportFiles {
 				selection.files = append(selection.files, path)
@@ -1131,52 +1265,27 @@ func findJUnitReportFiles(projectDir string) junitReportSelection {
 			}
 			return nil
 		}
-		if entry.IsDir() {
-			if artifacts.ShouldSkipDir(entry) {
-				return filepath.SkipDir
-			}
-			return nil
+		if entry.IsDir() && artifacts.ShouldSkipDir(entry) {
+			return filepath.SkipDir
 		}
 		return nil
 	})
-
 	return selection
 }
 
 func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) junitReportSelection {
-	selection := findJUnitReportFiles(projectDir)
-	if len(selection.files) == 0 {
-		return selection
-	}
 	if startedAt.IsZero() {
-		if allowFallback {
-			return selection
+		if !allowFallback {
+			return junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 		}
-		selection.files = nil
-		return selection
+		return findJUnitReportFiles(projectDir, startedAt, false)
 	}
 
-	threshold := startedAt.Add(-junitTimeSkew)
-	fresh := make([]string, 0, len(selection.files))
-	for _, path := range selection.files {
-		info, err := os.Stat(path)
-		if err != nil {
-			addSelectionError(&selection, projectDir, path, err)
-			continue
-		}
-		if !info.ModTime().Before(threshold) {
-			fresh = append(fresh, path)
-		}
-	}
-	if len(fresh) > 0 {
-		selection.files = fresh
+	selection := findJUnitReportFiles(projectDir, startedAt, true)
+	if len(selection.files) > 0 || !allowFallback || selection.truncated || selection.walkTruncated || selection.errorCount > 0 {
 		return selection
 	}
-	if allowFallback {
-		return selection
-	}
-	selection.files = nil
-	return selection
+	return findJUnitReportFiles(projectDir, startedAt, false)
 }
 
 func addSelectionError(selection *junitReportSelection, projectDir, path string, err error) {
@@ -1197,33 +1306,30 @@ func addSelectionError(selection *junitReportSelection, projectDir, path string,
 	selection.errorBytes += int64(len(message))
 }
 
-func addUniqueBuildScanURLs(items *boundedStringCollector, values []string) {
-	for _, value := range values {
-		if isBuildScanURL(value) {
-			items.add(value)
+// scanBuildScanURLs streams URL candidates and retains only build scans. This
+// keeps unrelated links from consuming the build-scan capacity and leaves the
+// collector as the sole bounded state owner and truncation authority.
+func scanBuildScanURLs(text string, items *buildScanURLCollector) bool {
+	found := false
+	for offset := 0; offset < len(text); {
+		match := urlPattern.FindStringIndex(text[offset:])
+		if match == nil {
+			break
 		}
+		start, end := offset+match[0], offset+match[1]
+		url := strings.TrimRight(text[start:end], ".,;:")
+		if isBuildScanURL(url) {
+			items.add(url)
+			found = true
+		}
+		offset = end
 	}
+	return found
 }
 
 func isBuildScanURL(value string) bool {
 	lower := strings.ToLower(value)
 	return strings.Contains(lower, "/s/")
-}
-
-func extractURLs(text string) ([]string, bool) {
-	matches := urlPattern.FindAllString(text, maxBuildScanURLs+1)
-	if len(matches) == 0 {
-		return nil, false
-	}
-
-	urls := make([]string, 0, len(matches))
-	for _, match := range matches {
-		url := strings.TrimRight(match, ".,;:")
-		if url != "" {
-			urls = append(urls, url)
-		}
-	}
-	return urls, len(matches) > maxBuildScanURLs
 }
 
 func isBuildScanMarkerLine(text string) bool {
