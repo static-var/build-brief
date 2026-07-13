@@ -320,6 +320,61 @@ func TestReduceFallsBackToAvailableArtifactsForWarmAssemble(t *testing.T) {
 	}
 }
 
+func TestReduceUsesFullArgsForLateSemanticTasks(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGeneratedFile(t, filepath.Join(projectDir, "app", "build", "outputs", "apk", "debug", "app-debug.apk"), "apk")
+	writeGeneratedFile(t, filepath.Join(projectDir, "other", "build", "outputs", "apk", "debug", "other-debug.apk"), "apk")
+	writeGeneratedFile(t, filepath.Join(projectDir, "build", "test-results", "test", "TEST-example.xml"), `<testsuite><testcase name="passes" classname="example.Test"></testcase></testsuite>`)
+	snapshot := artifacts.Capture(projectDir)
+
+	lateArgs := func(task string) []string {
+		args := make([]string, maxCommandArgs+1)
+		for i := range args {
+			args[i] = "--stacktrace"
+		}
+		return append(args, task)
+	}
+	reduce := func(t *testing.T, task string) Summary {
+		t.Helper()
+		logLines := []string{"BUILD SUCCESSFUL in 1s"}
+		if task == "tasks" {
+			logLines = []string{"informational report", "BUILD SUCCESSFUL in 1s"}
+		}
+		summary, err := Reduce(gradle.Command{
+			Executable: "/tmp/gradlew",
+			Args:       lateArgs(task),
+			ProjectDir: projectDir,
+			Source:     gradle.SourceWrapper,
+		}, runner.Result{
+			ExitCode:         0,
+			Duration:         time.Second,
+			StartTime:        time.Now(),
+			ArtifactSnapshot: snapshot,
+			RawLogPath:       writeTestLog(t, logLines),
+		})
+		if err != nil {
+			t.Fatalf("reduce late %s command: %v", task, err)
+		}
+		if len(summary.Command) != maxCommandArgs+1 || contains(summary.Command, task) {
+			t.Fatalf("expected late task to stay outside bounded command metadata, got %v", summary.Command)
+		}
+		return summary
+	}
+
+	if summary := reduce(t, "test"); summary.JUnitScan == nil || summary.JUnitScan.Parsed != 1 || summary.PassedTestCount != 1 {
+		t.Fatalf("expected late test task to enable JUnit fallback, got %+v", summary)
+	}
+	if summary := reduce(t, "assemble"); !containsArtifact(summary.Artifacts, "APK", "app/build/outputs/apk/debug/app-debug.apk") {
+		t.Fatalf("expected late assemble task to enable artifact fallback, got %+v", summary.Artifacts)
+	}
+	if summary := reduce(t, ":app:assembleDebug"); !containsArtifact(summary.Artifacts, "APK", "app/build/outputs/apk/debug/app-debug.apk") || containsArtifact(summary.Artifacts, "APK", "other/build/outputs/apk/debug/other-debug.apk") {
+		t.Fatalf("expected late scoped assemble task to select only app artifacts, got %+v", summary.Artifacts)
+	}
+	if summary := reduce(t, "tasks"); !contains(summary.ReportLines, "informational report") {
+		t.Fatalf("expected late informational task to preserve report lines, got %+v", summary.ReportLines)
+	}
+}
+
 func TestReduceWarmFallbackRetainsHintUnderExcludedBuildSrcRoot(t *testing.T) {
 	projectDir := t.TempDir()
 	path := filepath.Join(projectDir, "buildSrc", "build", "libs", "convention.jar")

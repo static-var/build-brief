@@ -390,6 +390,22 @@ type junitFailure struct {
 	Body    string `xml:",chardata"`
 }
 
+// semanticInvocation contains task semantics derived from the complete,
+// unbounded invocation. It is intentionally distinct from Summary.Command,
+// which is redacted and bounded output metadata.
+type semanticInvocation struct {
+	TaskSelectors       []string
+	IsPureInformational bool
+}
+
+func analyzeSemanticInvocation(args []string) semanticInvocation {
+	shape := gradle.AnalyzeArgs(args)
+	return semanticInvocation{
+		TaskSelectors:       shape.TaskSelectors,
+		IsPureInformational: shape.IsPureInformational,
+	}
+}
+
 func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	return ReduceWithOptions(command, result, Options{})
 }
@@ -454,6 +470,7 @@ func readLogLines(reader *bufio.Reader, visit func([]byte, bool, int64) error) e
 }
 
 func ReduceWithOptions(command gradle.Command, result runner.Result, opts Options) (Summary, error) {
+	invocation := analyzeSemanticInvocation(command.Args)
 	sanitizedArgs := gradle.SanitizeArgs(command.Args)
 	commandArgs := newBoundedStringCollector(maxCommandArgs, maxSummaryCollectionBytes, false)
 	for _, arg := range sanitizedArgs {
@@ -512,9 +529,6 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	commandArgsTruncated := commandArgs.truncated
 	artifactHintCollector := newArtifactHintCollector()
 	diagnosticEvidence := newDiagnosticEvidence()
-	// Classification must consider every sanitized argument; only the echoed
-	// command is bounded for schema-safe output.
-	invocationShape := gradle.AnalyzeArgs(sanitizedArgs)
 	rawInput := RawInputMetadata{}
 
 	file, err := os.Open(result.RawLogPath)
@@ -562,7 +576,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			summary.BuildStatusLine = strings.Clone(text)
 		}
 
-		if invocationShape.IsPureInformational && shouldPreserveReportLine(text) {
+		if invocation.IsPureInformational && shouldPreserveReportLine(text) {
 			reportLines.add(text)
 		}
 
@@ -658,8 +672,8 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	syncSummaryCollections(&summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
 
-	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important, warnings)
-	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHintCollector.hints, warnings)
+	enrichWithJUnitResults(command.ProjectDir, result, invocation, &summary, failedTests, important, warnings)
+	enrichWithArtifacts(command.ProjectDir, result, invocation, &summary, artifactHintCollector.hints, warnings)
 	syncSummaryCollections(&summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
 	summary.ArtifactHintScan = artifactHintCollector.finish()
 	summary.RawInput = finishRawInputMetadata(rawInput)
@@ -805,7 +819,7 @@ func addReducerCollectionMetadata(metadata *ReducerMetadata, partialFields map[s
 	partialFields[name] = struct{}{}
 }
 
-func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summary, hints []string, warnings *boundedStringCollector) {
+func enrichWithArtifacts(projectDir string, result runner.Result, invocation semanticInvocation, summary *Summary, hints []string, warnings *boundedStringCollector) {
 	if !summary.Success || result.StartTime.IsZero() {
 		return
 	}
@@ -815,8 +829,8 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 	metadata := generated.Metadata
 	classCount := generated.ClassCount
 	codegenCount := generated.CodegenCount
-	if len(found) == 0 && shouldReportAvailableArtifacts(summary.Command) {
-		prefixes := commandProjectPrefixes(summary.Command)
+	if len(found) == 0 && shouldReportAvailableArtifacts(invocation) {
+		prefixes := commandProjectPrefixes(invocation)
 		available := artifacts.FindAvailableScopedWithMetadata(projectDir, hints, prefixes)
 		// Gradle project paths can be remapped in settings. Scope is therefore a
 		// preference, but an unscoped fallback is accepted only when it finds one
@@ -858,8 +872,8 @@ func artifactScanTruncationReason(metadata artifacts.ScanMetadata) string {
 	}
 }
 
-func shouldReportAvailableArtifacts(command []string) bool {
-	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
+func shouldReportAvailableArtifacts(invocation semanticInvocation) bool {
+	for _, arg := range invocation.TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
@@ -887,10 +901,10 @@ func shouldReportAvailableArtifacts(command []string) bool {
 	return false
 }
 
-func commandProjectPrefixes(command []string) []string {
+func commandProjectPrefixes(invocation semanticInvocation) []string {
 	seen := make(map[string]struct{})
 	prefixes := make([]string, 0)
-	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
+	for _, arg := range invocation.TaskSelectors {
 		lastColon := strings.LastIndex(arg, ":")
 		if lastColon <= 0 {
 			continue
@@ -920,11 +934,11 @@ type junitReportSelection struct {
 	truncated       bool
 }
 
-func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Summary, failedTests, important, warnings *boundedStringCollector) {
+func enrichWithJUnitResults(projectDir string, result runner.Result, invocation semanticInvocation, summary *Summary, failedTests, important, warnings *boundedStringCollector) {
 	if !summary.Success && !shouldReadJUnitReportsOnFailure(summary) {
 		return
 	}
-	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(summary.Command))
+	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(invocation))
 	metadata := &JUnitScanMetadata{
 		Discovered:      selection.discovered,
 		Errors:          append([]string(nil), selection.errors...),
@@ -1355,8 +1369,8 @@ func extractRelevantStackFrame(stack string) string {
 	return ""
 }
 
-func shouldFallbackToAvailableJUnitReports(command []string) bool {
-	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
+func shouldFallbackToAvailableJUnitReports(invocation semanticInvocation) bool {
+	for _, arg := range invocation.TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
