@@ -103,11 +103,7 @@ jobs:
               ;;
             push)
               if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-                if git rev-parse --verify "$CURRENT_SHA^" >/dev/null 2>&1; then
-                  git diff --check "$CURRENT_SHA^" "$CURRENT_SHA"
-                else
-                  git diff --check "$empty_tree" "$CURRENT_SHA"
-                fi
+                git diff --check "$empty_tree" "$CURRENT_SHA"
               else
                 git diff --check "$BEFORE_SHA" "$CURRENT_SHA"
               fi
