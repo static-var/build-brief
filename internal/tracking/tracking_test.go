@@ -216,6 +216,64 @@ func TestAcquireLockFileReleaseAllowsNextContender(t *testing.T) {
 	}
 }
 
+func TestReleaseDoesNotRemoveReclaimedSuccessorLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	original, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire original lock: %v", err)
+	}
+	if original.token == "" {
+		t.Fatal("original lock has no ownership token")
+	}
+
+	// Simulate stale recovery replacing the original owner's path.
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatalf("remove original lock: %v", err)
+	}
+	successor, err := acquireLockFile(lockPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquire successor lock: %v", err)
+	}
+	defer releaseLockFile(lockPath, successor)
+	metadata, err := readLockMetadata(lockPath)
+	if err != nil {
+		t.Fatalf("read successor metadata: %v", err)
+	}
+	if metadata.Token != successor.token || successor.token == original.token {
+		t.Fatalf("unexpected ownership tokens: original=%q successor=%q metadata=%q", original.token, successor.token, metadata.Token)
+	}
+
+	if err := releaseLockFile(lockPath, original); err != nil {
+		t.Fatalf("release original lock: %v", err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("original release removed successor lock: %v", err)
+	}
+
+	third, err := acquireLockFile(lockPath, 100*time.Millisecond)
+	if err == nil {
+		releaseLockFile(lockPath, third)
+		t.Fatal("third contender acquired successor lock")
+	}
+}
+
+func TestAcquireLockFileDoesNotReclaimLiveOwnerOverAge(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write old live-owner lock: %v", err)
+	}
+
+	lockFile, err := acquireLockFile(lockPath, 100*time.Millisecond)
+	if err == nil {
+		releaseLockFile(lockPath, lockFile)
+		t.Fatal("acquired lock held by a live owner older than stale age")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("live-owner lock was reclaimed: %v", err)
+	}
+}
+
 func TestDelayedStaleObserverCannotRemoveSuccessorLock(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
 	stale := fmt.Sprintf("pid=%d\ncreated_at=%s\n", 999999, time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
