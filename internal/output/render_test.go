@@ -493,7 +493,7 @@ func TestRenderHumanShowsDiagnosisInsteadOfHighlights(t *testing.T) {
 			Severity:   "error",
 			Summary:    "Kotlin compiler daemon failure",
 			Evidence:   []string{"Could not connect to Kotlin compile daemon", "Daemon compilation failed"},
-			NextChecks: []string{"Inspect Gradle/Kotlin JVM args", "Retry with --no-daemon only if daemon state looks corrupted"},
+			NextChecks: []string{"Inspect Gradle/Kotlin JVM args", "Run the project's Gradle wrapper directly to recover daemon state: ./gradlew --stop (or gradlew.bat --stop on Windows), then retry build-brief", "If needed, run the wrapper directly without the daemon: ./gradlew --no-daemon <task> (or gradlew.bat --no-daemon <task> on Windows)"},
 			Confidence: "high",
 		}},
 	}
