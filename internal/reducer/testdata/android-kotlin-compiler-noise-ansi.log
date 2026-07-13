@@ -1,0 +1,20 @@
+[36m> Configure project :app[0m
+warning: This synthetic warning is unrelated to the compiler failure.
+[33mw: Classpath entry points to a sanitized local cache location.[0m
+> Task :app:compileDebugKotlin
+[31me: /workspace/sample/app/src/main/kotlin/com/example/sanitized/DashboardViewModel.kt:42:17: error: unresolved reference: sessionToken[0m
+    return sessionToken.trim()
+                ^
+> Task :app:compileDebugKotlin FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileDebugKotlin'.
+> Compilation error. See compiler error output for more details.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+
+BUILD FAILED in 6s
+14 actionable tasks: 11 executed, 3 up-to-date
