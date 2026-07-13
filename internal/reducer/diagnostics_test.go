@@ -26,6 +26,14 @@ func TestDiagnoseKotlinDaemonFailure(t *testing.T) {
 	assertEvidenceContains(t, diagnostic, "Could not connect to Kotlin compile daemon")
 	assertEvidenceContains(t, diagnostic, "Daemon compilation failed")
 	assertNextCheckContains(t, diagnostic, "Inspect Gradle/Kotlin JVM args")
+	assertNextCheckContains(t, diagnostic, "./gradlew --stop")
+	assertNextCheckContains(t, diagnostic, "then retry build-brief")
+	assertNextCheckContains(t, diagnostic, "./gradlew --no-daemon <task>")
+	for _, nextCheck := range diagnostic.NextChecks {
+		if strings.Contains(nextCheck, "build-brief --no-daemon") {
+			t.Fatalf("diagnostic recommends impossible build-brief daemon override: %q", nextCheck)
+		}
+	}
 }
 
 func TestDiagnoseAndroidSDKLicenseFailure(t *testing.T) {

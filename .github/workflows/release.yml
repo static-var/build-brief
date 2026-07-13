@@ -16,7 +16,22 @@ on:
         description: Optional explicit version, for example 0.2.0 or v0.2.0
         required: false
         type: string
+      # Dry runs intentionally retain GitHub-hosted validation evidence and cache state.
+      publish:
+        description: Publish release mutations. When false, validation may upload artifacts and use action caches, but makes no repository commit/tag/push, GitHub Release mutation, or Homebrew mutation.
+        required: true
+        default: false
+        type: boolean
+      publish_homebrew:
+        description: Publish the generated formula to Homebrew only when publish is also true
+        required: true
+        default: false
+        type: boolean
 
+# GitHub Actions permissions cannot vary by workflow input. This remains write-capable
+# for publish runs. With publish=false, the invariant is no repository commit/tag/push,
+# GitHub Release mutation, or Homebrew mutation; artifact uploads and action caches are
+# intentional validation evidence and optimization, not release mutations.
 permissions:
   contents: write
 
@@ -31,7 +46,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
@@ -42,13 +57,13 @@ jobs:
           git reset --hard "origin/${{ github.ref_name }}"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.x'
 
@@ -87,23 +102,24 @@ jobs:
             --artifact-dir dist \
             --formula .release/build-brief.rb
 
+      # Every release mutation below is explicitly gated; do not gate validation evidence or caches.
       - name: Commit version bump and changelog
-        if: steps.prepare.outputs.needs_commit == 'true'
+        if: inputs.publish && steps.prepare.outputs.needs_commit == 'true'
         run: |
           git add internal/app/version.go CHANGELOG.md
           git commit -m "chore(release): ${{ steps.prepare.outputs.tag }}"
 
       - name: Create release tag
-        if: steps.prepare.outputs.tag_exists != 'true'
+        if: inputs.publish && steps.prepare.outputs.tag_exists != 'true'
         run: |
           git tag "${{ steps.prepare.outputs.tag }}"
 
       - name: Push release commit
-        if: steps.prepare.outputs.needs_commit == 'true'
+        if: inputs.publish && steps.prepare.outputs.needs_commit == 'true'
         run: git push origin "HEAD:${{ github.ref_name }}"
 
       - name: Push release tag
-        if: steps.prepare.outputs.tag_exists != 'true'
+        if: inputs.publish && steps.prepare.outputs.tag_exists != 'true'
         run: git push origin "${{ steps.prepare.outputs.tag }}"
 
       - name: Generate GitHub changelog notes
@@ -125,8 +141,9 @@ jobs:
 
           echo "notes_file=$combined_notes_file" >> "$GITHUB_OUTPUT"
 
+      # Keep this ungated: dry runs upload validation evidence by design.
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-brief-${{ steps.prepare.outputs.tag }}
           path: |
@@ -136,6 +153,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -154,6 +172,7 @@ jobs:
           fi
 
       - name: Publish Homebrew tap
+        if: inputs.publish && inputs.publish_homebrew
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
