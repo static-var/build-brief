@@ -131,6 +131,9 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		} else if scan.Truncated {
 			line += " (truncated at the reporting limit)"
 		}
+		if scan.WalkTruncated {
+			line += " (walk limit reached)"
+		}
 		if scan.ErrorsTruncated {
 			line += " (error details truncated)"
 		}

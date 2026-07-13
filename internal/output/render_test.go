@@ -403,6 +403,7 @@ func TestRenderHumanDisclosesJUnitErrorsAndTruncation(t *testing.T) {
 			Errors:          []string{"module/build/test-results/test/TEST-bad.xml: XML syntax error"},
 			ErrorCount:      2,
 			ErrorsTruncated: true,
+			WalkTruncated:   true,
 			Truncated:       true,
 		},
 	}
@@ -412,7 +413,7 @@ func TestRenderHumanDisclosesJUnitErrorsAndTruncation(t *testing.T) {
 		t.Fatalf("render JUnit disclosure: %v", err)
 	}
 	for _, expected := range []string{
-		"JUnit reports: 101 discovered, 100 parsed, 1 skipped (truncated at the reporting limit) (error details truncated)",
+		"JUnit reports: 101 discovered, 100 parsed, 1 skipped (truncated at the reporting limit) (walk limit reached) (error details truncated)",
 		"JUnit report scan errors: 2 total",
 		"TEST-bad.xml: XML syntax error",
 		"additional scan errors omitted",

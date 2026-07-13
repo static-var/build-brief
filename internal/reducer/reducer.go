@@ -52,6 +52,7 @@ var (
 	contextCaptureLines              = 2
 	compilerCaptureLines             = 3
 	maxJUnitReportFiles              = 100
+	maxJUnitWalkEntries              = 10_000
 	maxJUnitScanErrors               = 8
 	maxJUnitScanErrorBytes           = 64 * 1024
 	maxJUnitFileBytes                = 1 << 20
@@ -87,6 +88,7 @@ type JUnitScanMetadata struct {
 	ErrorBytes         int64    `json:"error_bytes,omitempty"`
 	ErrorsTruncated    bool     `json:"errors_truncated,omitempty"`
 	FileBytesTruncated bool     `json:"file_bytes_truncated,omitempty"`
+	WalkTruncated      bool     `json:"walk_truncated,omitempty"`
 	Truncated          bool     `json:"truncated"`
 }
 
@@ -1025,6 +1027,7 @@ type junitReportSelection struct {
 	errorCount      int
 	errorBytes      int64
 	errorsTruncated bool
+	walkTruncated   bool
 	truncated       bool
 }
 
@@ -1039,6 +1042,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 		ErrorCount:      selection.errorCount,
 		ErrorBytes:      selection.errorBytes,
 		ErrorsTruncated: selection.errorsTruncated,
+		WalkTruncated:   selection.walkTruncated,
 		Truncated:       selection.truncated,
 	}
 	passedCount := 0
@@ -1095,7 +1099,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	if metadata.Parsed > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
 		summary.JUnitScan = metadata
 	}
-	if metadata.Truncated || metadata.ErrorCount > 0 {
+	if summary.JUnitScan != nil && (metadata.Truncated || metadata.WalkTruncated || metadata.ErrorCount > 0) {
 		message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
 		switch {
 		case metadata.FileBytesTruncated && selection.truncated:
@@ -1104,6 +1108,8 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 			message += " (file byte limit reached)"
 		case metadata.Truncated:
 			message += " (truncated at the reporting limit)"
+		case metadata.WalkTruncated:
+			message += " (walk limit reached)"
 		}
 		addEnrichmentWarning(summary, warnings, message)
 	}
@@ -1204,9 +1210,19 @@ func addEnrichmentWarning(summary *Summary, warnings *boundedStringCollector, me
 	}
 }
 
-func findJUnitReportFiles(projectDir string) junitReportSelection {
+// findJUnitReportFiles evaluates freshness while walking, before applying the
+// report cap. Thus stale reports neither consume report capacity nor create
+// incomplete-scan metadata. The walk itself is bounded independently.
+func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool) junitReportSelection {
 	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
+	threshold := startedAt.Add(-junitTimeSkew)
+	walked := 0
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		walked++
+		if walked > maxJUnitWalkEntries {
+			selection.walkTruncated = true
+			return fs.SkipAll
+		}
 		if walkErr != nil {
 			if isJUnitScanErrorPath(projectDir, path) {
 				addSelectionError(&selection, projectDir, path, walkErr)
@@ -1214,6 +1230,16 @@ func findJUnitReportFiles(projectDir string) junitReportSelection {
 			return nil
 		}
 		if isJUnitReportPath(path, entry.Name()) {
+			if freshOnly {
+				info, err := entry.Info()
+				if err != nil {
+					addSelectionError(&selection, projectDir, path, err)
+					return nil
+				}
+				if info.ModTime().Before(threshold) {
+					return nil
+				}
+			}
 			selection.discovered++
 			if len(selection.files) < maxJUnitReportFiles {
 				selection.files = append(selection.files, path)
@@ -1222,52 +1248,27 @@ func findJUnitReportFiles(projectDir string) junitReportSelection {
 			}
 			return nil
 		}
-		if entry.IsDir() {
-			if artifacts.ShouldSkipDir(entry) {
-				return filepath.SkipDir
-			}
-			return nil
+		if entry.IsDir() && artifacts.ShouldSkipDir(entry) {
+			return filepath.SkipDir
 		}
 		return nil
 	})
-
 	return selection
 }
 
 func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) junitReportSelection {
-	selection := findJUnitReportFiles(projectDir)
-	if len(selection.files) == 0 {
-		return selection
-	}
 	if startedAt.IsZero() {
-		if allowFallback {
-			return selection
+		if !allowFallback {
+			return junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 		}
-		selection.files = nil
-		return selection
+		return findJUnitReportFiles(projectDir, startedAt, false)
 	}
 
-	threshold := startedAt.Add(-junitTimeSkew)
-	fresh := make([]string, 0, len(selection.files))
-	for _, path := range selection.files {
-		info, err := os.Stat(path)
-		if err != nil {
-			addSelectionError(&selection, projectDir, path, err)
-			continue
-		}
-		if !info.ModTime().Before(threshold) {
-			fresh = append(fresh, path)
-		}
-	}
-	if len(fresh) > 0 {
-		selection.files = fresh
+	selection := findJUnitReportFiles(projectDir, startedAt, true)
+	if len(selection.files) > 0 || !allowFallback {
 		return selection
 	}
-	if allowFallback {
-		return selection
-	}
-	selection.files = nil
-	return selection
+	return findJUnitReportFiles(projectDir, startedAt, false)
 }
 
 func addSelectionError(selection *junitReportSelection, projectDir, path string, err error) {

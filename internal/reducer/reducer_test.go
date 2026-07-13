@@ -963,6 +963,86 @@ func TestReduceSuppressesStaleJUnitMetadataForSuccessfulAssemble(t *testing.T) {
 	}
 }
 
+func TestReduceSuppressesOverCapStaleJUnitMetadataForSuccessfulAssemble(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	startTime := time.Now()
+	stale := startTime.Add(-2 * time.Second)
+	for i := 0; i < maxJUnitReportFiles+1; i++ {
+		path := filepath.Join(reportDir, fmt.Sprintf("TEST-stale-%03d.xml", i))
+		writeGeneratedFile(t, path, `<testsuite><testcase name="stale" classname="example.StaleTest"/></testsuite>`)
+		if err := os.Chtimes(path, stale, stale); err != nil {
+			t.Fatalf("age stale JUnit report %s: %v", path, err)
+		}
+	}
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  startTime,
+		RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce stale successful assemble: %v", err)
+	}
+	if summary.JUnitScan != nil {
+		t.Fatalf("over-cap stale JUnit reports must not attach scan metadata: %+v", summary.JUnitScan)
+	}
+}
+
+func TestReduceFindsFreshJUnitReportPastStaleReportsRegardlessOfWalkOrder(t *testing.T) {
+	for _, freshFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("fresh_first_%t", freshFirst), func(t *testing.T) {
+			projectDir := t.TempDir()
+			reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+			if err := os.MkdirAll(reportDir, 0o755); err != nil {
+				t.Fatalf("mkdir report dir: %v", err)
+			}
+			startTime := time.Now()
+			stale := startTime.Add(-2 * time.Second)
+			for i := 0; i < maxJUnitReportFiles+1; i++ {
+				name := fmt.Sprintf("TEST-%s-stale-%03d.xml", map[bool]string{true: "z", false: "a"}[freshFirst], i)
+				path := filepath.Join(reportDir, name)
+				writeGeneratedFile(t, path, `<testsuite><testcase name="stale" classname="example.StaleTest"/></testsuite>`)
+				if err := os.Chtimes(path, stale, stale); err != nil {
+					t.Fatalf("age stale JUnit report %s: %v", path, err)
+				}
+			}
+			freshName := map[bool]string{true: "TEST-a-fresh.xml", false: "TEST-z-fresh.xml"}[freshFirst]
+			writeGeneratedFile(t, filepath.Join(reportDir, freshName), `<testsuite><testcase name="fresh" classname="example.FreshTest"/></testsuite>`)
+
+			summary, err := Reduce(gradle.Command{
+				Executable: "/tmp/gradlew",
+				Args:       []string{"--console=plain", "assemble"},
+				ProjectDir: projectDir,
+				Source:     gradle.SourceWrapper,
+			}, runner.Result{
+				ExitCode:   0,
+				Duration:   time.Second,
+				StartTime:  startTime,
+				RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+			})
+			if err != nil {
+				t.Fatalf("reduce fresh JUnit report: %v", err)
+			}
+			if summary.JUnitScan == nil || summary.JUnitScan.Discovered != 1 || summary.JUnitScan.Parsed != 1 || summary.JUnitScan.Skipped != 0 || summary.JUnitScan.Truncated {
+				t.Fatalf("expected only fresh JUnit report without truncation metadata, got %+v", summary.JUnitScan)
+			}
+			if summary.PassedTestCount != 1 {
+				t.Fatalf("expected fresh JUnit report to be parsed, got %+v", summary)
+			}
+		})
+	}
+}
+
 func TestReduceReportsJUnitScanTruncation(t *testing.T) {
 	projectDir := t.TempDir()
 	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
