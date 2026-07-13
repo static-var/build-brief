@@ -9,7 +9,11 @@ import (
 	"strings"
 )
 
-const DefaultFileName = ".build-brief.json"
+const (
+	DefaultFileName                     = ".build-brief.json"
+	CustomMatchRuleLimit                = 64
+	CustomMatchUniqueResultLimitPerRule = 8
+)
 
 type Config struct {
 	Matches []Match `json:"matches"`

@@ -131,7 +131,10 @@ You can also point to a config file with `--config PATH` or
 effective project directory: `--project-dir`, then `BUILD_BRIEF_PROJECT_DIR`,
 then the current working directory. `--project-dir` takes precedence over
 `BUILD_BRIEF_PROJECT_DIR`. Absolute paths remain unchanged. Invalid regex
-patterns fail fast before Gradle starts.
+patterns fail fast before Gradle starts. Configs may contain more rules, but
+build-brief retains the first 64 rules and ignores the rest; each retained rule
+keeps up to 8 unique matches. `build-brief doctor --config PATH` warns when
+rules are ignored.
 
 ## Build Brief Doctor
 

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +30,41 @@ func TestRunAllowsMissingDefaultConfigButFailsExplicitMissingConfig(t *testing.T
 	result := findResult(t, explicitReport, "config")
 	if result.Status != StatusFail {
 		t.Fatalf("explicit config status = %s, want %s", result.Status, StatusFail)
+	}
+}
+
+func TestRunWarnsWhenCustomMatchRulesExceedRuntimeCap(t *testing.T) {
+	projectDir := t.TempDir()
+	configPath := filepath.Join(projectDir, "custom.json")
+	writeCustomMatchConfig(t, configPath, 65)
+
+	report := Run(Options{ProjectDir: projectDir, ConfigPath: configPath})
+	result := findResult(t, report, "custom match limits")
+	if result.Status != StatusWarn {
+		t.Fatalf("status = %s, want %s: %+v", result.Status, StatusWarn, result)
+	}
+	for _, expected := range []string{"65 configured", "64 retained", "1 ignored"} {
+		if !strings.Contains(result.Summary, expected) {
+			t.Fatalf("summary %q missing %q", result.Summary, expected)
+		}
+	}
+	if report.HasFailures() {
+		t.Fatalf("rule-cap warning must not fail doctor: %+v", report)
+	}
+}
+
+func TestRunAcceptsCustomMatchRuleRuntimeCap(t *testing.T) {
+	projectDir := t.TempDir()
+	configPath := filepath.Join(projectDir, "custom.json")
+	writeCustomMatchConfig(t, configPath, 64)
+
+	report := Run(Options{ProjectDir: projectDir, ConfigPath: configPath})
+	result := findResult(t, report, "config")
+	if result.Status != StatusPass {
+		t.Fatalf("status = %s, want %s: %+v", result.Status, StatusPass, result)
+	}
+	if findResultOptional(report, "custom match limits") != nil {
+		t.Fatalf("unexpected cap result: %+v", report.Results)
 	}
 }
 
@@ -106,6 +142,33 @@ func TestRenderHumanIncludesStatusesAndMessages(t *testing.T) {
 	if !strings.Contains(out, "PASS") || !strings.Contains(out, "project directory exists") {
 		t.Fatalf("rendered output %q missing status/message", out)
 	}
+}
+
+func writeCustomMatchConfig(t *testing.T, path string, count int) {
+	t.Helper()
+
+	var content strings.Builder
+	content.WriteString(`{"matches":[`)
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			content.WriteByte(',')
+		}
+		fmt.Fprintf(&content, `{"name":"rule-%d","pattern":"match"}`, i)
+	}
+	content.WriteString(`]}`)
+	if err := os.WriteFile(path, []byte(content.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findResultOptional(report Report, check string) *Result {
+	for i := range report.Results {
+		result := &report.Results[i]
+		if result.Name == check || strings.Contains(strings.ToLower(result.Name), strings.ToLower(check)) {
+			return result
+		}
+	}
+	return nil
 }
 
 func findResult(t *testing.T, report Report, check string) Result {

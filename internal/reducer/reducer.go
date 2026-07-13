@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"build-brief/internal/artifacts"
+	"build-brief/internal/config"
 	"build-brief/internal/gradle"
 	"build-brief/internal/runner"
 )
@@ -38,14 +39,14 @@ var (
 	configCacheReportPattern         = regexp.MustCompile(`^See the complete report at (file://\S+)`)
 	maxWarnings                      = 8
 	maxImportantLines                = 12
-	maxCustomMatchLines              = 8
+	maxCustomMatchLines              = config.CustomMatchUniqueResultLimitPerRule
 	maxConfigCacheLines              = 8
 	maxReportLines                   = 128
 	maxFailedTasks                   = 64
 	maxFailedTests                   = 128
 	maxBuildScanURLs                 = 16
 	maxCommandArgs                   = 128
-	maxCustomMatchGroups             = 64
+	maxCustomMatchGroups             = config.CustomMatchRuleLimit
 	maxSummaryCollectionBytes        = 64 * 1024
 	configCacheCaptureLines          = 4
 	contextCaptureLines              = 2

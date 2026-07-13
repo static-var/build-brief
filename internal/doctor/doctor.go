@@ -124,7 +124,11 @@ func checkConfig(report *Report, projectDir, configPath string, projectOK bool) 
 		report.add("Config", "default config", StatusPass, "absent; built-in defaults will be used")
 		return
 	}
-	report.add("Config", "config", StatusPass, loadedPath, fmt.Sprintf("custom matches: %d", len(cfg.Matches)))
+	ruleCount := len(cfg.Matches)
+	report.add("Config", "config", StatusPass, loadedPath, fmt.Sprintf("custom matches: %d", ruleCount))
+	if ruleCount > config.CustomMatchRuleLimit {
+		report.add("Config", "custom match limits", StatusWarn, fmt.Sprintf("%d configured; %d retained; %d ignored", ruleCount, config.CustomMatchRuleLimit, ruleCount-config.CustomMatchRuleLimit))
+	}
 }
 
 func checkMode(report *Report, mode string) {
