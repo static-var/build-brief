@@ -39,6 +39,7 @@ var (
 	currentDir         = os.Getwd
 	estimateFileTokens = tracking.EstimateFileTokens
 	runGradle          = runner.RunWithOptions
+	renderSummaryFn    = renderSummary
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -162,7 +163,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "raw":
 		if err := output.RenderRaw(stdout, runResult.RawLogPath); err != nil {
 			fmt.Fprintf(stderr, "build-brief: render raw output: %v\n", err)
-			return runResult.ExitCode
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
@@ -180,14 +181,14 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: reduce log output: %v\n", err)
-			return runResult.ExitCode
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		summary.RawOutputTokens = rawTokens
 
-		rendered, err := renderSummary(summary)
+		rendered, err := renderSummaryFn(summary)
 		if err != nil {
 			fmt.Fprintf(stderr, "build-brief: render summary: %v\n", err)
-			return runResult.ExitCode
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		if tokenMetricsAvailable {
 			summary.EmittedTokens = tracking.EstimateTokens(rendered)
@@ -196,7 +197,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		if _, err := io.WriteString(stdout, rendered); err != nil {
 			fmt.Fprintf(stderr, "build-brief: write summary: %v\n", err)
-			return runResult.ExitCode
+			return wrapperFailureExitCode(runResult.ExitCode)
 		}
 		trackRun(tracking.Record{
 			Timestamp:     timeNow(),
@@ -711,6 +712,13 @@ func parseGainsArgs(args []string) (gainsOptions, error) {
 	}
 
 	return opts, nil
+}
+
+func wrapperFailureExitCode(gradleExitCode int) int {
+	if gradleExitCode != 0 {
+		return gradleExitCode
+	}
+	return 1
 }
 
 func renderSummary(summary reducer.Summary) (string, error) {

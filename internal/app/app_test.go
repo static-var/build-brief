@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"build-brief/internal/gradle"
+	"build-brief/internal/reducer"
 	"build-brief/internal/runner"
 	"build-brief/internal/tracking"
 )
@@ -320,6 +321,141 @@ func TestRunInstallsLocalAgentsFile(t *testing.T) {
 	if strings.Contains(stdout.String(), "RTK detected on this machine") {
 		t.Fatalf("expected no RTK notice when RTK is not detected, got %q", stdout.String())
 	}
+}
+
+func TestRunReturnsWrapperFailureWhenRawOutputRenderingFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			rawLogPath := writeAppRawLog(t, "raw output\n")
+			stubAppRunResult(t, runner.Result{ExitCode: gradleExitCode, RawLogPath: rawLogPath})
+
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--mode", "raw",
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), failingWriter{err: errors.New("stdout closed")}, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "render raw output")
+		})
+	}
+}
+
+func TestRunReturnsWrapperFailureWhenLogReductionFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			stubAppRunResult(t, runner.Result{
+				ExitCode:   gradleExitCode,
+				RawLogPath: filepath.Join(t.TempDir(), "missing.log"),
+			})
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), &stdout, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "reduce log output")
+		})
+	}
+}
+
+func TestRunReturnsWrapperFailureWhenSummaryRenderingFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			rawLogPath := writeAppRawLog(t, "BUILD SUCCESSFUL in 1s\n")
+			stubAppRunResult(t, runner.Result{ExitCode: gradleExitCode, RawLogPath: rawLogPath})
+			stubAppSummaryRenderFailure(t)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), &stdout, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "render summary")
+		})
+	}
+}
+
+func TestRunReturnsWrapperFailureWhenSummaryWriteFails(t *testing.T) {
+	for _, gradleExitCode := range []int{0, 9} {
+		t.Run(fmt.Sprintf("gradle-%d", gradleExitCode), func(t *testing.T) {
+			projectDir := t.TempDir()
+			rawLogPath := writeAppRawLog(t, "BUILD SUCCESSFUL in 1s\n")
+			stubAppRunResult(t, runner.Result{ExitCode: gradleExitCode, RawLogPath: rawLogPath})
+
+			var stderr bytes.Buffer
+			exitCode := Run(context.Background(), []string{
+				"--project-dir", projectDir,
+				"--gradle", os.Args[0],
+				"test",
+			}, strings.NewReader(""), failingWriter{err: errors.New("stdout closed")}, &stderr)
+
+			assertWrapperOutputFailure(t, exitCode, gradleExitCode, stderr.String(), "write summary")
+		})
+	}
+}
+
+func stubAppSummaryRenderFailure(t *testing.T) {
+	t.Helper()
+	original := renderSummaryFn
+	renderSummaryFn = func(reducer.Summary) (string, error) {
+		return "", errors.New("summary renderer unavailable")
+	}
+	t.Cleanup(func() {
+		renderSummaryFn = original
+	})
+}
+
+func stubAppRunResult(t *testing.T, result runner.Result) {
+	t.Helper()
+	original := runGradle
+	runGradle = func(context.Context, gradle.Command, string, runner.Options) (runner.Result, error) {
+		return result, nil
+	}
+	t.Cleanup(func() {
+		runGradle = original
+	})
+}
+
+func writeAppRawLog(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write raw log: %v", err)
+	}
+	return path
+}
+
+func assertWrapperOutputFailure(t *testing.T, got, gradleExitCode int, stderr, branch string) {
+	t.Helper()
+	want := gradleExitCode
+	if want == 0 {
+		want = 1
+	}
+	if got != want {
+		t.Fatalf("%s: expected exit code %d, got %d stderr=%q", branch, want, got, stderr)
+	}
+	if !strings.Contains(stderr, branch) {
+		t.Fatalf("expected %s failure to be visible, got stderr=%q", branch, stderr)
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func TestRunPreservesGradleExitCodeWhenLogPruningFails(t *testing.T) {
