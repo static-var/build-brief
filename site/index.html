@@ -123,7 +123,7 @@
           <p class="step__body">
             Replace <code>./gradlew build</code> with
             <code>build-brief build</code>.
-            All Gradle flags pass through via <code>--</code>, e.g.
+            For Gradle options while preserving wrapper autodetection, use
             <code>build-brief -- --stacktrace test</code>.
           </p>
         </div>
@@ -630,7 +630,7 @@
       </div>
       <div class="limit">
         <span class="limit__icon">~</span>
-        <p>Daemon mode defaults to <code>auto</code>. Use <code>--daemon-mode on</code> or <code>--daemon-mode off</code> to control it explicitly.</p>
+        <p>build-brief strips explicit <code>--daemon</code> and <code>--no-daemon</code> overrides, then leaves Gradle's default daemon behavior unchanged. <code>--daemon-mode</code> is unsupported.</p>
       </div>
       <div class="limit">
         <span class="limit__icon">~</span>
@@ -677,7 +677,7 @@
 
       <details class="faq__item">
         <summary class="faq__q">What about the Gradle daemon?</summary>
-        <p class="faq__a">By default, build-brief uses <code>--daemon-mode auto</code>. You can control this with <code>--daemon-mode on</code> or <code>--daemon-mode off</code>. When using daemon mode on, consider <code>--gradle-user-home</code> for shared caches.</p>
+        <p class="faq__a">build-brief strips explicit <code>--daemon</code> and <code>--no-daemon</code> overrides, so Gradle's default daemon behavior applies. <code>--daemon-mode</code> is unsupported.</p>
       </details>
 
       <details class="faq__item">

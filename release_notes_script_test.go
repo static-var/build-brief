@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+func TestPublishHomebrewTapFailsWhenTokenIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	formulaFile := filepath.Join(dir, "build-brief.rb")
+	writeTestFile(t, formulaFile, "class BuildBrief < Formula\nend\n")
+
+	cmd := exec.Command("bash", "scripts/publish-homebrew-tap.sh",
+		"--tap-repo", "example/homebrew-tap",
+		"--formula-file", formulaFile,
+		"--version", "0.0.1",
+	)
+	cmd.Env = append(os.Environ(), "HOMEBREW_TAP_TOKEN=")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("publish-homebrew-tap.sh unexpectedly succeeded without a token:\n%s", output)
+	}
+	if !strings.Contains(string(output), "HOMEBREW_TAP_TOKEN is not set") {
+		t.Fatalf("expected missing-token error, got:\n%s", output)
+	}
+}
+
 func TestAppendGeneratedReleaseNotesCombinesBaseAndGenerated(t *testing.T) {
 	dir := t.TempDir()
 	baseFile := filepath.Join(dir, "release-notes.md")

@@ -81,7 +81,7 @@ var diagnosticRules = []diagnosticRule{
 		Confidence: "high",
 		Priority:   30,
 		Needles:    []string{"could not connect to kotlin compile daemon", "daemon compilation failed", "kotlin compile daemon"},
-		NextChecks: []string{"Inspect Gradle/Kotlin JVM args", "Retry with --no-daemon only if daemon state looks corrupted"},
+		NextChecks: []string{"Inspect Gradle/Kotlin JVM args", "Recover daemon state directly: ./gradlew --stop (or gradlew.bat --stop on Windows), or gradle --stop for system/explicit Gradle; then retry build-brief", "If needed, run Gradle directly without the daemon: ./gradlew --no-daemon <task> (or gradlew.bat --no-daemon <task> on Windows), or gradle --no-daemon <task>"},
 	},
 	{
 		ID:                    "kotlin_oom",
