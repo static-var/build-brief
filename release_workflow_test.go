@@ -158,6 +158,46 @@ func TestWorkflowRunBlockParserRejectsInvalidYAML(t *testing.T) {
 	}
 }
 
+// These fixtures are accepted by actionlint v1.7.11, which does not resolve aliases in run keys or values.
+func TestWorkflowRunBlockParserRejectsActionlintValidAliasedExpressionMutations(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"alias value": "name: Alias value\non: push\njobs:\n  release:\n    runs-on: ubuntu-latest\n    env:\n      COMMAND: &unsafe 'printf %s \"${{ github.actor }}\"'\n    steps:\n      - run: *unsafe\n",
+		"alias key":   "name: Alias key\non: push\nenv:\n  RUN_KEY: &run run\n  COMMAND: &unsafe 'printf %s \"${{ github.actor }}\"'\njobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - ? *run\n        : *unsafe\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := rejectGitHubExpressionsInRunBlocks(fixture)
+			if err == nil || !strings.Contains(err.Error(), "${{ github.actor }}") {
+				t.Fatalf("aliased expression was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsAliasedRunKeyDuplicate(t *testing.T) {
+	fixture := "env:\n  SAFE: &safe echo-safe\n  UNSAFE: &unsafe echo-unsafe\njobs:\n  release:\n    steps:\n      - name: mutation fixture\n        &run run: *safe\n        *run: *unsafe\n"
+	if err := rejectGitHubExpressionsInRunBlocks(fixture); err == nil || !strings.Contains(err.Error(), "duplicate YAML key \"run\"") {
+		t.Fatalf("alias-derived duplicate run key was accepted: %v", err)
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsAliasCyclesAndNonScalarRunNodes(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"cycle":            "jobs:\n  release:\n    steps:\n      - &cycle\n        name: mutation fixture\n        nested: *cycle\n",
+		"non-scalar value": "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: [echo safe]\n",
+		"non-scalar key":   "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        ? [run]\n        : echo safe\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseWorkflowRunBlocks(fixture)
+			if err == nil {
+				t.Fatal("unsafe YAML node was accepted")
+			}
+			if name == "cycle" && !strings.Contains(err.Error(), "cyclic YAML alias") {
+				t.Fatalf("cycle was rejected for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
 func TestReleaseWorkflowWiresShellValuesThroughEnvironment(t *testing.T) {
 	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
 
@@ -306,32 +346,80 @@ func parseWorkflowRunBlocks(content string) ([]workflowRunBlock, error) {
 }
 
 func collectWorkflowRunBlocks(node *yaml.Node, blocks *[]workflowRunBlock) error {
-	switch node.Kind {
+	return collectResolvedWorkflowRunBlocks(node, blocks, map[*yaml.Node]bool{})
+}
+
+func collectResolvedWorkflowRunBlocks(node *yaml.Node, blocks *[]workflowRunBlock, ancestors map[*yaml.Node]bool) error {
+	resolved, err := resolveYAMLAlias(node)
+	if err != nil {
+		return err
+	}
+
+	switch resolved.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode, yaml.MappingNode:
+		if ancestors[resolved] {
+			return fmt.Errorf("cyclic YAML alias reference at line %d", node.Line)
+		}
+		ancestors[resolved] = true
+		defer delete(ancestors, resolved)
+	}
+
+	switch resolved.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
-		for _, child := range node.Content {
-			if err := collectWorkflowRunBlocks(child, blocks); err != nil {
+		for _, child := range resolved.Content {
+			if err := collectResolvedWorkflowRunBlocks(child, blocks, ancestors); err != nil {
 				return err
 			}
 		}
 	case yaml.MappingNode:
-		keys := make(map[string]struct{}, len(node.Content)/2)
-		for index := 0; index < len(node.Content); index += 2 {
-			key, value := node.Content[index], node.Content[index+1]
-			if key.Kind == yaml.ScalarNode {
-				if _, duplicate := keys[key.Value]; duplicate {
-					return fmt.Errorf("duplicate YAML key %q at line %d", key.Value, key.Line)
-				}
-				keys[key.Value] = struct{}{}
-				if key.Value == "run" && value.Kind == yaml.ScalarNode {
-					*blocks = append(*blocks, workflowRunBlock{line: key.Line, source: value.Value})
-				}
+		if len(resolved.Content)%2 != 0 {
+			return fmt.Errorf("invalid YAML mapping at line %d", resolved.Line)
+		}
+		keys := make(map[string]struct{}, len(resolved.Content)/2)
+		for index := 0; index < len(resolved.Content); index += 2 {
+			key, value := resolved.Content[index], resolved.Content[index+1]
+			resolvedKey, err := resolveYAMLAlias(key)
+			if err != nil {
+				return err
 			}
-			if err := collectWorkflowRunBlocks(value, blocks); err != nil {
+			if resolvedKey.Kind != yaml.ScalarNode {
+				return fmt.Errorf("YAML mapping key at line %d must resolve to a scalar", key.Line)
+			}
+			if _, duplicate := keys[resolvedKey.Value]; duplicate {
+				return fmt.Errorf("duplicate YAML key %q at line %d", resolvedKey.Value, key.Line)
+			}
+			keys[resolvedKey.Value] = struct{}{}
+			if resolvedKey.Value == "run" {
+				resolvedValue, err := resolveYAMLAlias(value)
+				if err != nil {
+					return err
+				}
+				if resolvedValue.Kind != yaml.ScalarNode {
+					return fmt.Errorf("run value at line %d must resolve to a scalar", value.Line)
+				}
+				*blocks = append(*blocks, workflowRunBlock{line: key.Line, source: resolvedValue.Value})
+			}
+			if err := collectResolvedWorkflowRunBlocks(value, blocks, ancestors); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func resolveYAMLAlias(node *yaml.Node) (*yaml.Node, error) {
+	aliases := map[*yaml.Node]bool{}
+	for node.Kind == yaml.AliasNode {
+		if aliases[node] {
+			return nil, fmt.Errorf("cyclic YAML alias reference at line %d", node.Line)
+		}
+		aliases[node] = true
+		if node.Alias == nil {
+			return nil, fmt.Errorf("YAML alias at line %d has no target", node.Line)
+		}
+		node = node.Alias
+	}
+	return node, nil
 }
 
 func addDetachedWorktree(t *testing.T) string {
