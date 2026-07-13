@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +44,51 @@ func TestRecordRunRewritesBroadDataWithoutRepairingDirectory(t *testing.T) {
 	}
 	if _, err := os.Lstat(path + ".lock"); !os.IsNotExist(err) {
 		t.Fatalf("tracking lock remains: %v", err)
+	}
+}
+
+func TestWriteRecordsIgnoresStaleFixedAndUniqueTemps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tracking.jsonl")
+	fixedTemp := path + ".tmp"
+	if err := os.WriteFile(fixedTemp, []byte("stale fixed temp\n"), 0o600); err != nil {
+		t.Fatalf("write fixed stale temp: %v", err)
+	}
+	for _, staleTemp := range []string{path + ".tmp-stale-one", path + ".tmp-stale-two"} {
+		if err := os.WriteFile(staleTemp, []byte("stale unique temp\n"), 0o600); err != nil {
+			t.Fatalf("write unique stale temp: %v", err)
+		}
+	}
+
+	if err := writeRecords(path, []Record{{Timestamp: time.Now(), Command: "gradlew test"}}); err != nil {
+		t.Fatalf("write records with stale temps: %v", err)
+	}
+	for _, staleTemp := range []string{fixedTemp, path + ".tmp-stale-one", path + ".tmp-stale-two"} {
+		contents, err := os.ReadFile(staleTemp)
+		if err != nil {
+			t.Fatalf("read stale temp %s: %v", staleTemp, err)
+		}
+		if !strings.HasPrefix(string(contents), "stale") {
+			t.Fatalf("stale temp %s was modified: %q", staleTemp, contents)
+		}
+	}
+	assertMode(t, path, 0o600)
+}
+
+func TestWriteRecordsLeavesStaleTempSymlinkUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tracking.jsonl")
+	target := filepath.Join(t.TempDir(), "target")
+	writeSentinel(t, target)
+	if err := os.Symlink(target, path+".tmp"); err != nil {
+		t.Fatalf("symlink stale temp: %v", err)
+	}
+
+	if err := writeRecords(path, []Record{{Timestamp: time.Now(), Command: "gradlew test"}}); err != nil {
+		t.Fatalf("write records with stale temp symlink: %v", err)
+	}
+	assertSentinel(t, target)
+	info, err := os.Lstat(path + ".tmp")
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("stale temp symlink changed: info=%v err=%v", info, err)
 	}
 }
 
@@ -144,7 +190,7 @@ func TestTrackingSymlinksDoNotMutateTargets(t *testing.T) {
 		assertMode(t, path, 0o600)
 	})
 
-	for _, suffix := range []string{".tmp", ".lock", ".lock.reclaim"} {
+	for _, suffix := range []string{".lock", ".lock.reclaim"} {
 		t.Run(suffix, func(t *testing.T) {
 			setTrackingEnv(t)
 			path, err := dbPath()

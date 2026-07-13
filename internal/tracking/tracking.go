@@ -28,6 +28,12 @@ const (
 	staleLockAge         = 30 * time.Second
 )
 
+var (
+	createTrackingTemp   = os.CreateTemp
+	renameTrackingFile   = os.Rename
+	encodeTrackingRecord = func(encoder *json.Encoder, record Record) error { return encoder.Encode(record) }
+)
+
 type Record struct {
 	Timestamp     time.Time `json:"timestamp"`
 	ProjectPath   string    `json:"project_path"`
@@ -745,25 +751,29 @@ func removeLockFile(lockPath string, timeout time.Duration, remove func(string) 
 }
 
 func writeRecords(path string, records []Record) (err error) {
-	tmpPath := path + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	file, err := createTrackingTemp(filepath.Dir(path), filepath.Base(path)+".tmp-")
 	if err != nil {
 		return err
 	}
-	// file was created with O_EXCL, so this cannot change a pre-existing target.
-	if err := file.Chmod(0o600); err != nil {
-		return errors.Join(err, file.Close(), os.Remove(tmpPath))
-	}
+	tmpPath := file.Name()
+	closed := false
 	cleanup := true
 	defer func() {
 		if cleanup {
-			err = errors.Join(err, file.Close(), os.Remove(tmpPath))
+			if !closed {
+				err = errors.Join(err, file.Close())
+			}
+			err = errors.Join(err, os.Remove(tmpPath))
 		}
 	}()
 
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
+
 	encoder := json.NewEncoder(file)
 	for _, record := range records {
-		if err := encoder.Encode(record); err != nil {
+		if err := encodeTrackingRecord(encoder, record); err != nil {
 			return err
 		}
 	}
@@ -774,7 +784,8 @@ func writeRecords(path string, records []Record) (err error) {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	closed = true
+	if err := renameTrackingFile(tmpPath, path); err != nil {
 		return err
 	}
 	cleanup = false
