@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+func TestMergeScanMetadataPreservesGeneratedErrorsAndIncompleteness(t *testing.T) {
+	merged := MergeScanMetadata(
+		ScanMetadata{Discovered: 2, Reported: 1, Skipped: 1, Errors: []string{"generated: permission denied"}, ErrorCount: 1, ErrorBytes: int64(len("generated: permission denied")), SnapshotTruncated: true, Truncated: true},
+		ScanMetadata{Discovered: 1, Reported: 1},
+	)
+	if merged.Discovered != 3 || merged.Reported != 2 || merged.Skipped != 1 {
+		t.Fatalf("expected combined scan counts, got %+v", merged)
+	}
+	if merged.ErrorCount != 1 || len(merged.Errors) != 1 || merged.Errors[0] != "generated: permission denied" || !merged.SnapshotTruncated || !merged.Truncated {
+		t.Fatalf("expected generated errors and incompleteness preserved, got %+v", merged)
+	}
+}
+
 func TestCaptureAndFindGeneratedUsesSnapshotDiff(t *testing.T) {
 	projectDir := t.TempDir()
 

@@ -512,7 +512,9 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	commandArgsTruncated := commandArgs.truncated
 	artifactHintCollector := newArtifactHintCollector()
 	diagnosticEvidence := newDiagnosticEvidence()
-	invocationShape := gradle.AnalyzeArgs(commandArgs.values)
+	// Classification must consider every sanitized argument; only the echoed
+	// command is bounded for schema-safe output.
+	invocationShape := gradle.AnalyzeArgs(sanitizedArgs)
 	rawInput := RawInputMetadata{}
 
 	file, err := os.Open(result.RawLogPath)
@@ -611,12 +613,8 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		}
 
 		for i, rule := range customRules {
-			if rule.Pattern == nil {
-				continue
-			}
-			matches := rule.Pattern.FindAllString(text, maxCustomMatchLines+1)
-			for _, match := range matches {
-				customMatches[i].add(strings.TrimRight(match, ".,;:"))
+			if rule.Pattern != nil {
+				scanCustomMatches(rule.Pattern, text, customMatches[i])
 			}
 		}
 
@@ -682,6 +680,27 @@ func customMatchRuleBytes(rules []CustomMatchRule) int64 {
 	return total
 }
 
+// scanCustomMatches streams regexp matches so early duplicates cannot hide a
+// later unique value. It retains no match slice and relies on the collector's
+// existing count and byte bounds.
+func scanCustomMatches(pattern *regexp.Regexp, text string, collector *boundedStringCollector) {
+	for offset := 0; offset <= len(text); {
+		match := pattern.FindStringIndex(text[offset:])
+		if match == nil {
+			return
+		}
+		start, end := offset+match[0], offset+match[1]
+		collector.add(strings.TrimRight(text[start:end], ".,;:"))
+		if end > offset {
+			offset = end
+			continue
+		}
+		// Empty matches otherwise make no progress. Advancing a byte is safe for
+		// string slicing and keeps allocations bounded even for such a pattern.
+		offset++
+	}
+}
+
 func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
 	if len(rules) == 0 {
 		return nil
@@ -720,7 +739,7 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 	metadata := &ReducerMetadata{Collections: make(map[string]ReducerCollectionMetadata)}
 	partialFields := make(map[string]struct{})
 	if rawInput != nil {
-		for _, field := range []string{"artifact_hint_scan", "artifacts", "build_status_line", "build_scan_urls", "config_cache_problems", "config_cache_report_url", "config_cache_status", "custom_matches", "diagnostics", "failed_tasks", "failed_tests", "important_lines", "report_lines", "warning_count", "warnings"} {
+		for _, field := range []string{"artifact_hint_scan", "artifacts", "build_status_line", "build_scan_urls", "config_cache_problems", "config_cache_report_url", "config_cache_status", "custom_matches", "diagnostics", "failed_tasks", "failed_tests", "important_lines", "junit_scan", "passed_test_count", "failed_test_count", "report_lines", "warning_count", "warnings"} {
 			partialFields[field] = struct{}{}
 		}
 	}
@@ -752,6 +771,11 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 	}
 	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.ErrorCount > 0) {
 		for _, field := range []string{"junit_scan", "failed_tests", "passed_test_count", "failed_test_count", "important_lines"} {
+			partialFields[field] = struct{}{}
+		}
+	}
+	if summary.ArtifactHintScan != nil && summary.ArtifactHintScan.Truncated {
+		for _, field := range []string{"artifact_hint_scan", "artifacts"} {
 			partialFields[field] = struct{}{}
 		}
 	}
@@ -792,9 +816,19 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 	classCount := generated.ClassCount
 	codegenCount := generated.CodegenCount
 	if len(found) == 0 && shouldReportAvailableArtifacts(summary.Command) {
-		available := artifacts.FindAvailableScopedWithMetadata(projectDir, hints, commandProjectPrefixes(summary.Command))
+		prefixes := commandProjectPrefixes(summary.Command)
+		available := artifacts.FindAvailableScopedWithMetadata(projectDir, hints, prefixes)
+		// Gradle project paths can be remapped in settings. Scope is therefore a
+		// preference, but an unscoped fallback is accepted only when it finds one
+		// complete candidate; multiple candidates are ambiguous and remain scoped.
+		if len(prefixes) > 0 && len(available.Artifacts) == 0 {
+			unscoped := artifacts.FindAvailableWithMetadata(projectDir, hints)
+			if unscoped.Metadata.Discovered == 1 && len(unscoped.Artifacts) == 1 && !unscoped.Metadata.Truncated && unscoped.Metadata.ErrorCount == 0 {
+				available = unscoped
+			}
+		}
 		found = available.Artifacts
-		metadata = available.Metadata
+		metadata = artifacts.MergeScanMetadata(metadata, available.Metadata)
 	}
 	summary.Artifacts = found
 	summary.GeneratedClassFileCount = classCount

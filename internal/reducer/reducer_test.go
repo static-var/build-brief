@@ -1570,6 +1570,148 @@ func TestReduceSanitizesSensitiveCommandArguments(t *testing.T) {
 	}
 }
 
+func TestReduceClassifiesFullSanitizedCommandAfterBoundedEcho(t *testing.T) {
+	args := make([]string, 0, maxCommandArgs+1)
+	for i := 0; i < maxCommandArgs; i++ {
+		args = append(args, "--stacktrace")
+	}
+	args = append(args, "tasks")
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       args,
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceSystem,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		RawLogPath: writeTestLog(t, []string{"task report line", "BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce bounded informational command: %v", err)
+	}
+	if len(summary.Command) != maxCommandArgs+1 {
+		t.Fatalf("expected bounded command echo, got %d entries", len(summary.Command))
+	}
+	if !contains(summary.ReportLines, "task report line") {
+		t.Fatalf("expected full sanitized args to classify informational task, got %v", summary.ReportLines)
+	}
+}
+
+func TestReducePreservesGeneratedScanIncompletenessAcrossWarmFallback(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, "app", "build", "libs", "app.jar")
+	writeGeneratedFile(t, path, "jar")
+	snapshot := artifacts.Capture(projectDir)
+	snapshot.Metadata.ArtifactEntries.Truncated = true
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}, runner.Result{
+		ExitCode:         0,
+		Duration:         time.Second,
+		StartTime:        time.Now(),
+		ArtifactSnapshot: snapshot,
+		RawLogPath:       writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce incomplete generated warm fallback: %v", err)
+	}
+	if !containsArtifact(summary.Artifacts, "JAR", "app/build/libs/app.jar") {
+		t.Fatalf("expected warm fallback artifact, got %+v", summary.Artifacts)
+	}
+	if summary.ArtifactScan == nil || !summary.ArtifactScan.SnapshotTruncated || !summary.ArtifactScan.Truncated {
+		t.Fatalf("expected generated scan incompleteness to survive fallback, got %+v", summary.ArtifactScan)
+	}
+}
+
+func TestReduceMarksTruncatedArtifactHintsPartial(t *testing.T) {
+	projectDir := t.TempDir()
+	lines := make([]string, 0, maxArtifactHints+2)
+	for i := 0; i < maxArtifactHints+1; i++ {
+		lines = append(lines, fmt.Sprintf("output: ./custom/artifact-%03d.jar", i))
+	}
+	lines = append(lines, "BUILD SUCCESSFUL in 1s")
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}, runner.Result{ExitCode: 0, Duration: time.Second, StartTime: time.Now(), RawLogPath: writeTestLog(t, lines)})
+	if err != nil {
+		t.Fatalf("reduce truncated hints: %v", err)
+	}
+	if summary.ArtifactHintScan == nil || !summary.ArtifactHintScan.Truncated || summary.Reducer == nil {
+		t.Fatalf("expected truncated hint completeness metadata, got hints=%+v reducer=%+v", summary.ArtifactHintScan, summary.Reducer)
+	}
+	for _, field := range []string{"artifact_hint_scan", "artifacts"} {
+		if !contains(summary.Reducer.PartialFields, field) {
+			t.Fatalf("expected %q partial, got %+v", field, summary.Reducer.PartialFields)
+		}
+	}
+}
+
+func TestReduceWarmFallbackUsesUnscopedArtifactsForRemappedProject(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGeneratedFile(t, filepath.Join(projectDir, "remapped", "android", "build", "outputs", "apk", "debug", "app.apk"), "apk")
+	snapshot := artifacts.Capture(projectDir)
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{":app:assembleDebug"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}, runner.Result{ExitCode: 0, Duration: time.Second, StartTime: time.Now(), ArtifactSnapshot: snapshot, RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"})})
+	if err != nil {
+		t.Fatalf("reduce remapped warm fallback: %v", err)
+	}
+	if !containsArtifact(summary.Artifacts, "APK", "remapped/android/build/outputs/apk/debug/app.apk") {
+		t.Fatalf("expected explicit unscoped fallback for remapped project, got %+v", summary.Artifacts)
+	}
+}
+
+func TestReduceCustomRegexRetainsUniqueMatchAfterEarlyDuplicates(t *testing.T) {
+	line := strings.Repeat("duplicate ", maxCustomMatchLines+1) + "late-unique"
+	summary, err := ReduceWithOptions(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"build"},
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceSystem,
+	}, runner.Result{ExitCode: 0, Duration: time.Second, RawLogPath: writeTestLog(t, []string{line, "BUILD SUCCESSFUL in 1s"})}, Options{
+		CustomMatches: []CustomMatchRule{{Name: "tokens", Pattern: regexp.MustCompile(`duplicate|late-unique`)}},
+	})
+	if err != nil {
+		t.Fatalf("reduce duplicate custom matches: %v", err)
+	}
+	if !contains(summary.CustomMatches[0].Matches, "late-unique") {
+		t.Fatalf("expected later unique custom match, got %+v", summary.CustomMatches)
+	}
+}
+
+func TestReduceRawInputPartialMarksJUnitDerivedFieldsPartial(t *testing.T) {
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"test"},
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceSystem,
+	}, runner.Result{ExitCode: 0, Duration: time.Second, RawLogPath: writeTestLog(t, []string{strings.Repeat("x", maxReducerLineBytes+1), "BUILD SUCCESSFUL in 1s"})})
+	if err != nil {
+		t.Fatalf("reduce partial raw input: %v", err)
+	}
+	if summary.Reducer == nil {
+		t.Fatal("expected partial reducer metadata")
+	}
+	for _, field := range []string{"junit_scan", "passed_test_count", "failed_test_count"} {
+		if !contains(summary.Reducer.PartialFields, field) {
+			t.Fatalf("expected %q partial, got %+v", field, summary.Reducer.PartialFields)
+		}
+	}
+}
+
 func writeTestLog(t *testing.T, lines []string) string {
 	t.Helper()
 

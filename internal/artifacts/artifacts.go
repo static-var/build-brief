@@ -66,6 +66,32 @@ type AvailableResult struct {
 	Metadata  ScanMetadata
 }
 
+// MergeScanMetadata combines sequential scans while preserving bounded error
+// details and every incompleteness signal from both scans.
+func MergeScanMetadata(left, right ScanMetadata) ScanMetadata {
+	merged := ScanMetadata{
+		Discovered:        left.Discovered + right.Discovered,
+		Reported:          left.Reported + right.Reported,
+		Skipped:           left.Skipped + right.Skipped,
+		ErrorCount:        left.ErrorCount + right.ErrorCount,
+		HintsTruncated:    left.HintsTruncated || right.HintsTruncated,
+		SnapshotTruncated: left.SnapshotTruncated || right.SnapshotTruncated,
+	}
+	for _, scan := range []ScanMetadata{left, right} {
+		for _, scanError := range scan.Errors {
+			if len(merged.Errors) >= maxScanErrors || merged.ErrorBytes+int64(len(scanError)) > maxScanErrorBytes {
+				merged.ErrorsTruncated = true
+				continue
+			}
+			merged.Errors = append(merged.Errors, scanError)
+			merged.ErrorBytes += int64(len(scanError))
+		}
+	}
+	merged.ErrorsTruncated = merged.ErrorsTruncated || left.ErrorsTruncated || right.ErrorsTruncated
+	merged.Truncated = left.Truncated || right.Truncated || merged.ErrorsTruncated
+	return merged
+}
+
 type artifactCollector struct {
 	artifacts     []Artifact
 	projectDir    string
