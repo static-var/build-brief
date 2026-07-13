@@ -1043,6 +1043,65 @@ func TestReduceFindsFreshJUnitReportPastStaleReportsRegardlessOfWalkOrder(t *tes
 	}
 }
 
+func TestReduceDoesNotFallbackToEarlyStaleJUnitReportsWhenFreshWalkIsTruncated(t *testing.T) {
+	projectDir := t.TempDir()
+	stalePath := filepath.Join(projectDir, "000-stale", "build", "test-results", "test", "TEST-stale.xml")
+	writeGeneratedFile(t, stalePath, `<testsuite><testcase name="stale" classname="example.StaleTest"/></testsuite>`)
+	startTime := time.Now()
+	stale := startTime.Add(-2 * time.Second)
+	if err := os.Chtimes(stalePath, stale, stale); err != nil {
+		t.Fatalf("age stale JUnit report: %v", err)
+	}
+
+	paddingDir := filepath.Join(projectDir, "100-padding")
+	if err := os.MkdirAll(paddingDir, 0o755); err != nil {
+		t.Fatalf("mkdir padding directory: %v", err)
+	}
+	for i := 0; i < maxJUnitWalkEntries; i++ {
+		path := filepath.Join(paddingDir, fmt.Sprintf("entry-%05d", i))
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatalf("write walk padding %s: %v", path, err)
+		}
+	}
+	freshPath := filepath.Join(projectDir, "999-fresh", "build", "test-results", "test", "TEST-fresh.xml")
+	writeGeneratedFile(t, freshPath, `<testsuite><testcase name="fresh" classname="example.FreshTest"/></testsuite>`)
+	if err := os.Chtimes(freshPath, startTime, startTime); err != nil {
+		t.Fatalf("set fresh JUnit report time: %v", err)
+	}
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "test"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  startTime,
+		RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce truncated fresh JUnit walk: %v", err)
+	}
+	if summary.PassedTestCount != 0 || summary.FailedTestCount != 0 {
+		t.Fatalf("must not parse stale fallback after incomplete fresh scan, got %d passed / %d failed", summary.PassedTestCount, summary.FailedTestCount)
+	}
+	if summary.JUnitScan == nil || !summary.JUnitScan.WalkTruncated || summary.JUnitScan.Discovered != 0 || summary.JUnitScan.Parsed != 0 {
+		t.Fatalf("expected walk-only JUnit scan metadata, got %+v", summary.JUnitScan)
+	}
+	if !contains(summary.Warnings, "JUnit report scan incomplete: discovered 0, parsed 0, skipped 0 (walk limit reached)") {
+		t.Fatalf("expected walk truncation warning, got %v", summary.Warnings)
+	}
+	if summary.Reducer == nil || !summary.Reducer.Partial {
+		t.Fatalf("expected partial reducer metadata, got %+v", summary.Reducer)
+	}
+	for _, field := range []string{"junit_scan", "failed_tests", "passed_test_count", "failed_test_count", "important_lines"} {
+		if !contains(summary.Reducer.PartialFields, field) {
+			t.Fatalf("expected walk truncation to mark %q partial, got %+v", field, summary.Reducer.PartialFields)
+		}
+	}
+}
+
 func TestReduceReportsJUnitScanTruncation(t *testing.T) {
 	projectDir := t.TempDir()
 	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")

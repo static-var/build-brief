@@ -870,7 +870,7 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 			Truncated:     true,
 		}
 	}
-	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.ErrorCount > 0) {
+	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.WalkTruncated || summary.JUnitScan.ErrorCount > 0) {
 		for _, field := range []string{"junit_scan", "failed_tests", "passed_test_count", "failed_test_count", "important_lines"} {
 			partialFields[field] = struct{}{}
 		}
@@ -1096,7 +1096,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	if metadata.Skipped < 0 {
 		metadata.Skipped = 0
 	}
-	if metadata.Parsed > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
+	if metadata.Parsed > 0 || metadata.ErrorCount > 0 || metadata.WalkTruncated || metadata.Truncated {
 		summary.JUnitScan = metadata
 	}
 	if summary.JUnitScan != nil && (metadata.Truncated || metadata.WalkTruncated || metadata.ErrorCount > 0) {
@@ -1265,7 +1265,7 @@ func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallbac
 	}
 
 	selection := findJUnitReportFiles(projectDir, startedAt, true)
-	if len(selection.files) > 0 || !allowFallback {
+	if len(selection.files) > 0 || !allowFallback || selection.truncated || selection.walkTruncated || selection.errorCount > 0 {
 		return selection
 	}
 	return findJUnitReportFiles(projectDir, startedAt, false)
