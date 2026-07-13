@@ -48,6 +48,43 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if scan := summary.JUnitScan; scan != nil {
+		if _, err := fmt.Fprintf(bw, "JUnit reports: %d discovered, %d parsed, %d skipped\n", scan.Discovered, scan.Parsed, scan.Skipped); err != nil {
+			return err
+		}
+		if scan.SkippedTests > 0 {
+			if _, err := fmt.Fprintf(bw, "  - %d skipped tests\n", scan.SkippedTests); err != nil {
+				return err
+			}
+		}
+		if len(scan.Errors) > 0 {
+			if _, err := fmt.Fprintln(bw, "JUnit report scan errors:"); err != nil {
+				return err
+			}
+			for _, scanError := range scan.Errors {
+				if _, err := fmt.Fprintf(bw, "  - %s\n", scanError); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if scan := summary.ArtifactScan; scan != nil {
+		if _, err := fmt.Fprintf(bw, "Artifacts scan: %d discovered, %d reported, %d skipped\n", scan.Discovered, scan.Reported, scan.Skipped); err != nil {
+			return err
+		}
+		if len(scan.Errors) > 0 {
+			if _, err := fmt.Fprintln(bw, "Artifact scan errors:"); err != nil {
+				return err
+			}
+			for _, scanError := range scan.Errors {
+				if _, err := fmt.Fprintf(bw, "  - %s\n", scanError); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	if len(summary.BuildScanURLs) > 0 {
 		label := "Build scan:"
 		if len(summary.BuildScanURLs) > 1 {

@@ -2,6 +2,7 @@ package reducer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -115,6 +116,9 @@ func TestReduceSuccessSummary(t *testing.T) {
 	}
 	if summary.PassedTestCount != 2 || summary.FailedTestCount != 1 {
 		t.Fatalf("expected junit counts 2 passed / 1 failed, got %d passed / %d failed", summary.PassedTestCount, summary.FailedTestCount)
+	}
+	if summary.JUnitScan == nil || summary.JUnitScan.Discovered != 1 || summary.JUnitScan.Parsed != 1 || summary.JUnitScan.Skipped != 0 || summary.JUnitScan.SkippedTests != 1 || summary.JUnitScan.Truncated {
+		t.Fatalf("unexpected complete junit scan metadata: %+v", summary.JUnitScan)
 	}
 	if summary.FailedTasks == nil || summary.FailedTests == nil || summary.Warnings == nil || summary.ImportantLines == nil {
 		t.Fatal("expected summary slices to be initialized")
@@ -565,6 +569,97 @@ func TestReduceDoesNotReuseStaleJUnitCountsOnEarlyFailure(t *testing.T) {
 	}
 }
 
+func TestReduceReportsJUnitScanTruncation(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+
+	for i := 0; i < maxJUnitReportFiles+1; i++ {
+		report := fmt.Sprintf(`<testsuite><testcase name="test-%03d" classname="ExampleTest"></testcase></testsuite>`, i)
+		path := filepath.Join(reportDir, fmt.Sprintf("TEST-%03d.xml", i))
+		if err := os.WriteFile(path, []byte(report), 0o644); err != nil {
+			t.Fatalf("write junit report %s: %v", path, err)
+		}
+	}
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "test"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce truncated junit scan: %v", err)
+	}
+	if summary.JUnitScan == nil {
+		t.Fatal("expected junit scan metadata")
+	}
+	if summary.JUnitScan.Discovered != maxJUnitReportFiles+1 || summary.JUnitScan.Parsed != maxJUnitReportFiles {
+		t.Fatalf("unexpected junit scan counts: %+v", summary.JUnitScan)
+	}
+	if summary.JUnitScan.Skipped != 1 || !summary.JUnitScan.Truncated {
+		t.Fatalf("expected one skipped report and truncation, got %+v", summary.JUnitScan)
+	}
+}
+
+func TestReduceReportsMalformedAndUnreadableJUnitReports(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "TEST-bad.xml"), []byte("<testsuite><broken>"), 0o644); err != nil {
+		t.Fatalf("write malformed junit report: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(reportDir, "TEST-unreadable.xml"), 0o755); err != nil {
+		t.Fatalf("mkdir unreadable junit report: %v", err)
+	}
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "test"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:  1,
+		Duration:  time.Second,
+		StartTime: time.Now(),
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :test FAILED",
+			"FAILURE: Build failed with an exception.",
+			"Execution failed for task ':test'.",
+			"BUILD FAILED in 1s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce malformed/unreadable junit reports: %v", err)
+	}
+	if summary.JUnitScan == nil {
+		t.Fatal("expected junit scan metadata")
+	}
+	if summary.JUnitScan.Discovered != 2 || summary.JUnitScan.Parsed != 0 || summary.JUnitScan.Skipped != 2 {
+		t.Fatalf("unexpected junit scan counts: %+v", summary.JUnitScan)
+	}
+	if len(summary.JUnitScan.Errors) != 2 {
+		t.Fatalf("expected two junit scan errors, got %+v", summary.JUnitScan)
+	}
+	if len(summary.Warnings) == 0 {
+		t.Fatal("expected malformed/unreadable junit warning")
+	}
+}
+
 func TestReduceIgnoresMalformedJUnitXml(t *testing.T) {
 	projectDir := t.TempDir()
 	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
@@ -869,6 +964,12 @@ func TestReduceFindsGeneratedArtifactsAndOmittedCompilationOutputs(t *testing.T)
 	}
 	if summary.GeneratedCodegenFileCount != 1 {
 		t.Fatalf("expected 1 generated codegen file, got %d", summary.GeneratedCodegenFileCount)
+	}
+	if summary.ArtifactScan == nil {
+		t.Fatal("expected artifact scan metadata")
+	}
+	if summary.ArtifactScan.Discovered != 4 || summary.ArtifactScan.Reported != 4 || summary.ArtifactScan.Skipped != 0 {
+		t.Fatalf("unexpected artifact scan metadata: %+v", summary.ArtifactScan)
 	}
 }
 

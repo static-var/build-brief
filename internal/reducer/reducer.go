@@ -3,6 +3,7 @@ package reducer
 import (
 	"bufio"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -37,6 +38,7 @@ var (
 	contextCaptureLines              = 2
 	compilerCaptureLines             = 3
 	maxJUnitReportFiles              = 100
+	maxJUnitScanErrors               = 8
 	junitTimeSkew                    = time.Second
 )
 
@@ -56,6 +58,17 @@ type CustomMatchResult struct {
 	Matches []string `json:"matches"`
 }
 
+type JUnitScanMetadata struct {
+	Discovered   int      `json:"discovered"`
+	Parsed       int      `json:"parsed"`
+	Skipped      int      `json:"skipped"`
+	SkippedTests int      `json:"skipped_tests,omitempty"`
+	Errors       []string `json:"errors,omitempty"`
+	Truncated    bool     `json:"truncated"`
+}
+
+type ArtifactScanMetadata = artifacts.ScanMetadata
+
 type Diagnostic struct {
 	ID         string   `json:"id"`
 	Category   string   `json:"category"`
@@ -67,41 +80,43 @@ type Diagnostic struct {
 }
 
 type Summary struct {
-	SchemaVersion             string              `json:"schema_version"`
-	Tool                      string              `json:"tool"`
-	Success                   bool                `json:"success"`
-	ExitCode                  int                 `json:"exit_code"`
-	Duration                  string              `json:"duration"`
-	DurationMs                int64               `json:"duration_ms"`
-	ProjectDir                string              `json:"project_dir"`
-	Executable                string              `json:"executable"`
-	Command                   []string            `json:"command"`
-	CommandLine               string              `json:"command_line"`
-	Source                    string              `json:"source"`
-	RawLogPath                string              `json:"raw_log_path"`
-	RawOutputTokens           int                 `json:"raw_output_tokens"`
-	EmittedTokens             int                 `json:"emitted_output_tokens"`
-	SavedTokens               int                 `json:"saved_output_tokens"`
-	SavingsPct                float64             `json:"savings_pct"`
-	BuildStatusLine           string              `json:"build_status_line"`
-	FailedTasks               []string            `json:"failed_tasks"`
-	FailedTests               []string            `json:"failed_tests"`
-	PassedTestCount           int                 `json:"passed_test_count,omitempty"`
-	FailedTestCount           int                 `json:"failed_test_count,omitempty"`
-	WarningCount              int                 `json:"warning_count"`
-	Warnings                  []string            `json:"warnings"`
-	ImportantLines            []string            `json:"important_lines"`
-	Diagnostics               []Diagnostic        `json:"diagnostics,omitempty"`
-	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
-	ConfigCacheStatus         string              `json:"config_cache_status,omitempty"`
-	ConfigCacheProblems       []string            `json:"config_cache_problems,omitempty"`
-	ConfigCacheReportURL      string              `json:"config_cache_report_url,omitempty"`
-	ReportLines               []string            `json:"report_lines,omitempty"`
-	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
-	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
-	GeneratedClassFileCount   int                 `json:"generated_class_file_count,omitempty"`
-	GeneratedCodegenFileCount int                 `json:"generated_codegen_file_count,omitempty"`
-	TotalLines                int                 `json:"total_lines"`
+	SchemaVersion             string                `json:"schema_version"`
+	Tool                      string                `json:"tool"`
+	Success                   bool                  `json:"success"`
+	ExitCode                  int                   `json:"exit_code"`
+	Duration                  string                `json:"duration"`
+	DurationMs                int64                 `json:"duration_ms"`
+	ProjectDir                string                `json:"project_dir"`
+	Executable                string                `json:"executable"`
+	Command                   []string              `json:"command"`
+	CommandLine               string                `json:"command_line"`
+	Source                    string                `json:"source"`
+	RawLogPath                string                `json:"raw_log_path"`
+	RawOutputTokens           int                   `json:"raw_output_tokens"`
+	EmittedTokens             int                   `json:"emitted_output_tokens"`
+	SavedTokens               int                   `json:"saved_output_tokens"`
+	SavingsPct                float64               `json:"savings_pct"`
+	BuildStatusLine           string                `json:"build_status_line"`
+	FailedTasks               []string              `json:"failed_tasks"`
+	FailedTests               []string              `json:"failed_tests"`
+	PassedTestCount           int                   `json:"passed_test_count,omitempty"`
+	FailedTestCount           int                   `json:"failed_test_count,omitempty"`
+	WarningCount              int                   `json:"warning_count"`
+	Warnings                  []string              `json:"warnings"`
+	ImportantLines            []string              `json:"important_lines"`
+	Diagnostics               []Diagnostic          `json:"diagnostics,omitempty"`
+	BuildScanURLs             []string              `json:"build_scan_urls,omitempty"`
+	ConfigCacheStatus         string                `json:"config_cache_status,omitempty"`
+	ConfigCacheProblems       []string              `json:"config_cache_problems,omitempty"`
+	ConfigCacheReportURL      string                `json:"config_cache_report_url,omitempty"`
+	ReportLines               []string              `json:"report_lines,omitempty"`
+	CustomMatches             []CustomMatchResult   `json:"custom_matches,omitempty"`
+	Artifacts                 []Artifact            `json:"artifacts,omitempty"`
+	JUnitScan                 *JUnitScanMetadata    `json:"junit_scan,omitempty"`
+	ArtifactScan              *ArtifactScanMetadata `json:"artifact_scan,omitempty"`
+	GeneratedClassFileCount   int                   `json:"generated_class_file_count,omitempty"`
+	GeneratedCodegenFileCount int                   `json:"generated_codegen_file_count,omitempty"`
+	TotalLines                int                   `json:"total_lines"`
 }
 
 type junitTestSuite struct {
@@ -315,8 +330,8 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		summary.ImportantLines = append(summary.ImportantLines, summary.BuildStatusLine)
 	}
 
-	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important)
-	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints)
+	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important, warnings)
+	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints, warnings)
 	summary.Diagnostics = Diagnose(diagnosticEvidence, summary)
 
 	return summary, nil
@@ -336,18 +351,34 @@ func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
 	return results
 }
 
-func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summary, hints []string) {
+func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summary, hints []string, warnings map[string]struct{}) {
 	if !summary.Success || result.StartTime.IsZero() {
 		return
 	}
 
-	found, classCount, codegenCount := artifacts.FindGenerated(projectDir, result.StartTime, result.ArtifactSnapshot, hints)
+	generated := artifacts.FindGeneratedWithMetadata(projectDir, result.StartTime, result.ArtifactSnapshot, hints)
+	found := generated.Artifacts
+	metadata := generated.Metadata
+	classCount := generated.ClassCount
+	codegenCount := generated.CodegenCount
 	if len(found) == 0 && shouldReportAvailableArtifacts(summary.Command) {
-		found = filterAvailableArtifacts(artifacts.FindAvailable(projectDir, hints), summary.Command)
+		available := artifacts.FindAvailableWithMetadata(projectDir, hints)
+		found = filterAvailableArtifacts(available.Artifacts, summary.Command)
+		metadata = available.Metadata
 	}
 	summary.Artifacts = found
 	summary.GeneratedClassFileCount = classCount
 	summary.GeneratedCodegenFileCount = codegenCount
+	if metadata.Discovered > 0 || len(metadata.Errors) > 0 || metadata.Truncated {
+		summary.ArtifactScan = &metadata
+	}
+	if metadata.Truncated || len(metadata.Errors) > 0 {
+		message := fmt.Sprintf("Artifact scan incomplete: discovered %d, reported %d, skipped %d", metadata.Discovered, metadata.Reported, metadata.Skipped)
+		if metadata.Truncated {
+			message += " (truncated at the reporting limit)"
+		}
+		addEnrichmentWarning(summary, warnings, message)
+	}
 }
 
 func shouldReportAvailableArtifacts(command []string) bool {
@@ -423,23 +454,38 @@ func commandProjectPrefixes(command []string) []string {
 	return prefixes
 }
 
-func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Summary, failedTests, important map[string]struct{}) {
+type junitReportSelection struct {
+	files      []string
+	discovered int
+	errors     []string
+	truncated  bool
+}
+
+func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Summary, failedTests, important, warnings map[string]struct{}) {
 	if !summary.Success && !shouldReadJUnitReportsOnFailure(summary) {
 		return
 	}
-	reportFiles := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(summary.Command))
+	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(summary.Command))
+	metadata := &JUnitScanMetadata{
+		Discovered: selection.discovered,
+		Errors:     append([]string(nil), selection.errors...),
+		Truncated:  selection.truncated,
+	}
 	passedCount := 0
 	failedCount := 0
-	for _, path := range reportFiles {
+	for _, path := range selection.files {
 		content, err := os.ReadFile(path)
 		if err != nil {
+			addJUnitScanError(metadata, path, err)
 			continue
 		}
 
 		var suite junitTestSuite
 		if err := xml.Unmarshal(content, &suite); err != nil {
+			addJUnitScanError(metadata, path, err)
 			continue
 		}
+		metadata.Parsed++
 
 		for _, testCase := range suite.TestCases {
 			failure := testCase.Failure
@@ -447,6 +493,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 				failure = testCase.Error
 			}
 			if failure == nil && testCase.Skipped != nil {
+				metadata.SkippedTests++
 				continue
 			}
 			if failure == nil {
@@ -466,6 +513,20 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 			}
 		}
 	}
+	metadata.Skipped = metadata.Discovered - metadata.Parsed
+	if metadata.Skipped < 0 {
+		metadata.Skipped = 0
+	}
+	if metadata.Discovered > 0 || len(metadata.Errors) > 0 || metadata.Truncated {
+		summary.JUnitScan = metadata
+	}
+	if metadata.Truncated || len(metadata.Errors) > 0 {
+		message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
+		if metadata.Truncated {
+			message += " (truncated at the reporting limit)"
+		}
+		addEnrichmentWarning(summary, warnings, message)
+	}
 
 	if passedCount > 0 || failedCount > 0 {
 		summary.PassedTestCount = passedCount
@@ -473,10 +534,37 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 	}
 }
 
-func findJUnitReportFiles(projectDir string) []string {
-	reportFiles := make([]string, 0)
+func addJUnitScanError(metadata *JUnitScanMetadata, path string, err error) {
+	if err == nil || len(metadata.Errors) >= maxJUnitScanErrors {
+		return
+	}
+	metadata.Errors = append(metadata.Errors, path+": "+err.Error())
+}
+
+func addEnrichmentWarning(summary *Summary, warnings map[string]struct{}, message string) {
+	before := len(summary.Warnings)
+	addUnique(&summary.Warnings, warnings, message, maxWarnings)
+	if len(summary.Warnings) > before {
+		summary.WarningCount++
+	}
+}
+
+func findJUnitReportFiles(projectDir string) junitReportSelection {
+	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if strings.Contains(filepath.ToSlash(path), "/build/test-results/") && len(selection.errors) < maxJUnitScanErrors {
+				selection.errors = append(selection.errors, path+": "+walkErr.Error())
+			}
+			return nil
+		}
+		if isJUnitReportPath(path, entry.Name()) {
+			selection.discovered++
+			if len(selection.files) >= maxJUnitReportFiles {
+				selection.truncated = true
+				return fs.SkipAll
+			}
+			selection.files = append(selection.files, path)
 			return nil
 		}
 		if entry.IsDir() {
@@ -485,35 +573,31 @@ func findJUnitReportFiles(projectDir string) []string {
 			}
 			return nil
 		}
-		if len(reportFiles) >= maxJUnitReportFiles {
-			return fs.SkipAll
-		}
-		if isJUnitReportPath(path, entry.Name()) {
-			reportFiles = append(reportFiles, path)
-		}
 		return nil
 	})
 
-	return reportFiles
+	return selection
 }
 
-func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) []string {
-	reportFiles := findJUnitReportFiles(projectDir)
-	if len(reportFiles) == 0 {
-		return nil
+func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) junitReportSelection {
+	selection := findJUnitReportFiles(projectDir)
+	if len(selection.files) == 0 {
+		return selection
 	}
 	if startedAt.IsZero() {
 		if allowFallback {
-			return reportFiles
+			return selection
 		}
-		return nil
+		selection.files = nil
+		return selection
 	}
 
 	threshold := startedAt.Add(-junitTimeSkew)
-	fresh := make([]string, 0, len(reportFiles))
-	for _, path := range reportFiles {
+	fresh := make([]string, 0, len(selection.files))
+	for _, path := range selection.files {
 		info, err := os.Stat(path)
 		if err != nil {
+			addSelectionError(&selection, path, err)
 			continue
 		}
 		if !info.ModTime().Before(threshold) {
@@ -521,12 +605,21 @@ func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallbac
 		}
 	}
 	if len(fresh) > 0 {
-		return fresh
+		selection.files = fresh
+		return selection
 	}
 	if allowFallback {
-		return reportFiles
+		return selection
 	}
-	return nil
+	selection.files = nil
+	return selection
+}
+
+func addSelectionError(selection *junitReportSelection, path string, err error) {
+	if err == nil || len(selection.errors) >= maxJUnitScanErrors {
+		return
+	}
+	selection.errors = append(selection.errors, path+": "+err.Error())
 }
 
 func addUnique(items *[]string, seen map[string]struct{}, value string, limit int) {

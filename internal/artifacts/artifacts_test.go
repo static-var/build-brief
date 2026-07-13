@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,24 @@ func TestFindGeneratedWithSnapshotDiffExcludesArtifactThatMtimeFallbackWouldIncl
 	}
 	if !containsArtifact(withoutSnapshot, "JAR", "app/build/libs/existing.jar") {
 		t.Fatalf("expected mtime-only fallback to include artifact, got %+v", withoutSnapshot)
+	}
+}
+
+func TestFindGeneratedReportsArtifactScanTruncation(t *testing.T) {
+	projectDir := t.TempDir()
+	for i := 0; i < maxArtifactsReported+1; i++ {
+		writeFile(t, filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%03d.jar", i)), "jar")
+	}
+
+	result := FindGeneratedWithMetadata(projectDir, time.Now().Add(-time.Hour), Snapshot{}, nil)
+	if len(result.Artifacts) != maxArtifactsReported {
+		t.Fatalf("expected capped artifacts, got %d", len(result.Artifacts))
+	}
+	if result.Metadata.Discovered != maxArtifactsReported+1 || result.Metadata.Reported != maxArtifactsReported {
+		t.Fatalf("unexpected artifact scan counts: %+v", result.Metadata)
+	}
+	if result.Metadata.Skipped != 1 || !result.Metadata.Truncated {
+		t.Fatalf("expected one skipped artifact and truncation, got %+v", result.Metadata)
 	}
 }
 

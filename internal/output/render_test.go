@@ -244,6 +244,45 @@ func TestRenderHumanShowsConfigCacheSection(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsEnrichmentScanMetadataAndWarnings(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 5s",
+		WarningCount:    1,
+		Warnings:        []string{"JUnit report scan incomplete: discovered 2, parsed 0, skipped 2"},
+		JUnitScan: &reducer.JUnitScanMetadata{
+			Discovered: 2,
+			Skipped:    2,
+			Errors:     []string{"TEST-bad.xml: XML syntax error"},
+		},
+		ArtifactScan: &reducer.ArtifactScanMetadata{
+			Discovered: 21,
+			Reported:   20,
+			Skipped:    1,
+			Truncated:  true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render enrichment metadata: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"Warnings: 1",
+		"JUnit report scan incomplete: discovered 2, parsed 0, skipped 2",
+		"JUnit reports: 2 discovered, 0 parsed, 2 skipped",
+		"JUnit report scan errors:",
+		"TEST-bad.xml: XML syntax error",
+		"Artifacts scan: 21 discovered, 20 reported, 1 skipped",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected enrichment output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,
