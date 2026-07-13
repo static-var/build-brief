@@ -116,7 +116,7 @@ func TestRunnerProcessHelper(t *testing.T) {
 		fmt.Fprintln(os.Stdout, "done")
 	case "long":
 		fmt.Fprintln(os.Stdout, strings.Repeat("x", 1_500_000))
-	case "noop":
+	case "noop", "help", "test":
 		fmt.Fprintln(os.Stdout, "done")
 	case "cancel":
 		fmt.Fprintln(os.Stdout, "started")
@@ -449,6 +449,54 @@ func TestRunHandlesVeryLongLines(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
+	}
+}
+
+func TestRunSkipsArtifactSnapshotForPureInformationalInvocation(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+	artifactPath := filepath.Join(projectDir, "app", "build", "libs", "existing.jar")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("jar"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	command := runnerTestCommand(t, projectDir, "help")
+	result, err := Run(context.Background(), command, logDir)
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	if result.ArtifactSnapshot.Captured || len(result.ArtifactSnapshot.ArtifactEntries) != 0 {
+		t.Fatalf("expected informational invocation to skip artifact snapshot, got %+v", result.ArtifactSnapshot)
+	}
+}
+
+func BenchmarkRunLargeProjectInvocation(b *testing.B) {
+	projectDir := b.TempDir()
+	logDir := b.TempDir()
+	for i := 0; i < 8192; i++ {
+		path := filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%05d.jar", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("jar"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.Setenv("BUILD_BRIEF_RUNNER_HELPER", "1")
+	for _, task := range []string{"help", "test"} {
+		b.Run(task, func(b *testing.B) {
+			command := gradle.Command{Executable: os.Args[0], Args: []string{"-test.run=^TestRunnerProcessHelper$", "--", task}, ProjectDir: projectDir, Source: gradle.SourceSystem}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := Run(context.Background(), command, logDir); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

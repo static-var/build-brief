@@ -1135,6 +1135,59 @@ func TestReduceCapturesKotlinSourceErrorFromConsole(t *testing.T) {
 	}
 }
 
+func TestReduceSkipsEnrichmentForPureInformationalInvocation(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGeneratedFile(t, filepath.Join(projectDir, "app", "build", "libs", "existing.jar"), "jar")
+	writeGeneratedFile(t, filepath.Join(projectDir, "app", "build", "test-results", "test", "TEST-example.xml"), `<testsuite><testcase name="passes" classname="example.Test"></testcase></testsuite>`)
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", ":properties"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  time.Now(),
+		RawLogPath: writeTestLog(t, []string{"project property", "BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce informational invocation: %v", err)
+	}
+	if summary.JUnitScan != nil || summary.ArtifactScan != nil || len(summary.Artifacts) != 0 || summary.PassedTestCount != 0 || summary.FailedTestCount != 0 {
+		t.Fatalf("expected informational invocation to skip enrichment, got %+v", summary)
+	}
+	if !contains(summary.ReportLines, "project property") {
+		t.Fatalf("expected informational report line preserved, got %+v", summary.ReportLines)
+	}
+}
+
+func BenchmarkReduceInformationalLargeProject(b *testing.B) {
+	projectDir := b.TempDir()
+	for i := 0; i < 8192; i++ {
+		path := filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%05d.jar", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("jar"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	logPath := filepath.Join(b.TempDir(), "informational.log")
+	if err := os.WriteFile(logPath, []byte("project property\nBUILD SUCCESSFUL in 1s\n"), 0o644); err != nil {
+		b.Fatal(err)
+	}
+	command := gradle.Command{Executable: "/tmp/gradlew", Args: []string{"properties"}, ProjectDir: projectDir, Source: gradle.SourceWrapper}
+	result := runner.Result{ExitCode: 0, Duration: time.Second, StartTime: time.Now(), RawLogPath: logPath}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Reduce(command, result); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestReducePreservesInformationalReportOutput(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradle",
