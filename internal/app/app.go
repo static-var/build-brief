@@ -56,7 +56,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	}
 
-	opts, gradleArgs, err := parseArgs(args)
+	opts, gradleArgs, err := ParseArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "build-brief: %v\n\n", err)
 		writeUsage(stderr)
@@ -392,7 +392,8 @@ func writeDoctorUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --help, -h                Show doctor help")
 }
 
-func parseArgs(args []string) (Options, []string, error) {
+// ParseArgs separates build-brief flags from Gradle invocation arguments.
+func ParseArgs(args []string) (Options, []string, error) {
 	opts := Options{
 		Mode:           envOrDefault("BUILD_BRIEF_MODE", "human"),
 		ProjectDir:     os.Getenv("BUILD_BRIEF_PROJECT_DIR"),
@@ -486,6 +487,10 @@ func parseArgs(args []string) (Options, []string, error) {
 
 	normalized, err := normalizeMode(opts)
 	return normalized, nil, err
+}
+
+func parseArgs(args []string) (Options, []string, error) {
+	return ParseArgs(args)
 }
 
 func normalizeMode(opts Options) (Options, error) {

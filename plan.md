@@ -1,3 +1,7 @@
+# Historical planning document
+
+> **Historical document:** This is the original planning record. For current usage and behavior, see the [README](./README.md) and the current code.
+
 # Gradle Output Reduction Tool Plan (`build-brief`)
 
 ## Problem
