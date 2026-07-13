@@ -407,10 +407,15 @@ func readLogLines(reader *bufio.Reader, visit func([]byte, bool, int64) error) e
 		if len(fragment) > 0 {
 			lineBytes += int64(len(fragment))
 			content := fragment
+			terminatorBytes := 0
 			if err != bufio.ErrBufferFull && content[len(content)-1] == '\n' {
-				// The bound applies to line content. A newline terminator is not
-				// discarded content and must not make an exact-limit line partial.
+				// The bound applies to line content, excluding LF or CRLF terminators.
 				content = content[:len(content)-1]
+				terminatorBytes++
+				if len(content) > 0 && content[len(content)-1] == '\r' {
+					content = content[:len(content)-1]
+					terminatorBytes++
+				}
 			}
 			if !truncated {
 				remaining := maxReducerLineBytes - len(line)
@@ -422,10 +427,7 @@ func readLogLines(reader *bufio.Reader, visit func([]byte, bool, int64) error) e
 				}
 			}
 			if err != bufio.ErrBufferFull {
-				contentBytes := lineBytes
-				if len(fragment) > 0 && fragment[len(fragment)-1] == '\n' {
-					contentBytes--
-				}
+				contentBytes := lineBytes - int64(terminatorBytes)
 				if visitErr := visit(line, truncated, contentBytes-int64(len(line))); visitErr != nil {
 					return visitErr
 				}
@@ -750,6 +752,11 @@ func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandA
 	}
 	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.ErrorCount > 0) {
 		for _, field := range []string{"junit_scan", "failed_tests", "passed_test_count", "failed_test_count", "important_lines"} {
+			partialFields[field] = struct{}{}
+		}
+	}
+	if summary.ArtifactScan != nil && (summary.ArtifactScan.Truncated || summary.ArtifactScan.ErrorCount > 0) {
+		for _, field := range []string{"artifacts", "artifact_scan", "generated_class_file_count", "generated_codegen_file_count"} {
 			partialFields[field] = struct{}{}
 		}
 	}

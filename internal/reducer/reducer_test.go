@@ -1201,6 +1201,34 @@ func TestReduceRetainsArtifactTruncationWhenWarningsAreSaturated(t *testing.T) {
 	if summary.ArtifactScan == nil || !summary.ArtifactScan.Truncated {
 		t.Fatalf("expected artifact truncation metadata despite warning cap, got %+v", summary.ArtifactScan)
 	}
+	if summary.Reducer == nil || !summary.Reducer.Partial {
+		t.Fatalf("expected artifact truncation to mark reducer partial, got %+v", summary.Reducer)
+	}
+	for _, field := range []string{"artifacts", "artifact_scan", "generated_class_file_count", "generated_codegen_file_count"} {
+		if !contains(summary.Reducer.PartialFields, field) {
+			t.Fatalf("expected artifact truncation to mark %q partial, got %+v", field, summary.Reducer.PartialFields)
+		}
+	}
+}
+
+func TestFinishReducerMetadataMarksArtifactScanErrorsPartial(t *testing.T) {
+	collector := func() *boundedStringCollector {
+		return newBoundedStringCollector(1, 1, false)
+	}
+	metadata := finishReducerMetadata(
+		nil,
+		Summary{ArtifactScan: &ArtifactScanMetadata{ErrorCount: 1}},
+		collector(), false, false, 0, 0, 0,
+		collector(), collector(), collector(), collector(), collector(), collector(), collector(), nil,
+	)
+	if metadata == nil || !metadata.Partial {
+		t.Fatalf("expected artifact scan error to mark reducer partial, got %+v", metadata)
+	}
+	for _, field := range []string{"artifacts", "artifact_scan", "generated_class_file_count", "generated_codegen_file_count"} {
+		if !contains(metadata.PartialFields, field) {
+			t.Fatalf("expected artifact scan error to mark %q partial, got %+v", field, metadata.PartialFields)
+		}
+	}
 }
 
 func TestReduceDoesNotDoubleCountEvictedStandardRootHint(t *testing.T) {
@@ -1850,16 +1878,24 @@ func TestReduceRawInputLineLimitCountsOnlyDiscardedContent(t *testing.T) {
 	cases := []struct {
 		name          string
 		contentBytes  int
+		terminator    string
 		wantPartial   bool
 		wantDiscarded int64
 	}{
-		{name: "limit minus one", contentBytes: maxReducerLineBytes - 1},
-		{name: "limit", contentBytes: maxReducerLineBytes},
-		{name: "limit plus one", contentBytes: maxReducerLineBytes + 1, wantPartial: true, wantDiscarded: 1},
+		{name: "exact LF", contentBytes: maxReducerLineBytes, terminator: "\n"},
+		{name: "exact CRLF", contentBytes: maxReducerLineBytes, terminator: "\r\n"},
+		{name: "max plus one LF", contentBytes: maxReducerLineBytes + 1, terminator: "\n", wantPartial: true, wantDiscarded: 1},
+		{name: "max plus one CRLF", contentBytes: maxReducerLineBytes + 1, terminator: "\r\n", wantPartial: true, wantDiscarded: 1},
+		{name: "exact unterminated", contentBytes: maxReducerLineBytes},
+		{name: "max plus one unterminated", contentBytes: maxReducerLineBytes + 1, wantPartial: true, wantDiscarded: 1},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "build-brief.log")
+			if err := os.WriteFile(path, []byte(strings.Repeat("x", tc.contentBytes)+tc.terminator), 0o644); err != nil {
+				t.Fatalf("write limit boundary log: %v", err)
+			}
 			summary, err := Reduce(gradle.Command{
 				Executable: "/tmp/gradle",
 				Args:       []string{"--console=plain", "build"},
@@ -1868,7 +1904,7 @@ func TestReduceRawInputLineLimitCountsOnlyDiscardedContent(t *testing.T) {
 			}, runner.Result{
 				ExitCode:   0,
 				Duration:   time.Second,
-				RawLogPath: writeTestLog(t, []string{strings.Repeat("x", tc.contentBytes), "BUILD SUCCESSFUL in 1s"}),
+				RawLogPath: path,
 			})
 			if err != nil {
 				t.Fatalf("reduce limit boundary: %v", err)
@@ -1880,7 +1916,7 @@ func TestReduceRawInputLineLimitCountsOnlyDiscardedContent(t *testing.T) {
 				return
 			}
 			if summary.RawInput != nil {
-				t.Fatalf("expected complete %d-byte line plus newline, got %+v", tc.contentBytes, summary.RawInput)
+				t.Fatalf("expected complete %d-byte line, got %+v", tc.contentBytes, summary.RawInput)
 			}
 		})
 	}
