@@ -1184,11 +1184,6 @@ func TestReduceDoesNotFallbackToEarlyStaleJUnitReportsWhenFreshWalkIsTruncated(t
 	projectDir := t.TempDir()
 	stalePath := filepath.Join(projectDir, "000-stale", "build", "test-results", "test", "TEST-stale.xml")
 	writeGeneratedFile(t, stalePath, `<testsuite><testcase name="stale" classname="example.StaleTest"/></testsuite>`)
-	startTime := time.Now().Add(2 * time.Second)
-	stale := startTime.Add(-2 * time.Second)
-	if err := os.Chtimes(stalePath, stale, stale); err != nil {
-		t.Fatalf("age stale JUnit report: %v", err)
-	}
 
 	paddingDir := filepath.Join(projectDir, "100-padding", "build", "test-results", "test")
 	if err := os.MkdirAll(paddingDir, 0o755); err != nil {
@@ -1202,6 +1197,14 @@ func TestReduceDoesNotFallbackToEarlyStaleJUnitReportsWhenFreshWalkIsTruncated(t
 	}
 	freshPath := filepath.Join(projectDir, "999-fresh", "build", "test-results", "test", "TEST-fresh.xml")
 	writeGeneratedFile(t, freshPath, `<testsuite><testcase name="fresh" classname="example.FreshTest"/></testsuite>`)
+
+	// Start after all fixtures exist, with enough skew that every padding file
+	// is deterministically stale even if fixture creation is slow.
+	startTime := time.Now().Add(2 * junitTimeSkew)
+	stale := startTime.Add(-2 * junitTimeSkew)
+	if err := os.Chtimes(stalePath, stale, stale); err != nil {
+		t.Fatalf("age stale JUnit report: %v", err)
+	}
 	if err := os.Chtimes(freshPath, startTime, startTime); err != nil {
 		t.Fatalf("set fresh JUnit report time: %v", err)
 	}
