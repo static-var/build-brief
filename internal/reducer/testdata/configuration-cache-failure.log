@@ -1,0 +1,17 @@
+> Task :build
+Calculating task graph as no cached configuration is available for tasks: build
+
+1 problem was found storing the configuration cache.
+- Task `:build` of type `org.gradle.api.DefaultTask`: invocation of `Task.project` at execution time is unsupported.
+  See the complete report at file:///workspace/sample/build/reports/configuration-cache/sanitized/report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Configuration cache problems found in this build.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+
+BUILD FAILED in 2s
+Configuration cache entry discarded with 1 problem.
