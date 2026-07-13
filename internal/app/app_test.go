@@ -214,6 +214,7 @@ func TestRunPrintsHelp(t *testing.T) {
 		"build-brief rewrite 'gradle test && gradle check'",
 		"build-brief gradle test",
 		"build-brief ./gradlew test",
+		"Optional custom match config (64 rules; 8 unique matches per rule)",
 		"Relative --config and BUILD_BRIEF_CONFIG paths resolve from the effective",
 		"project directory: --project-dir, then BUILD_BRIEF_PROJECT_DIR, then the",
 		"current working directory. --project-dir takes precedence over",
@@ -257,6 +258,7 @@ func TestRunPrintsDoctorHelp(t *testing.T) {
 
 	help := stdout.String()
 	for _, expected := range []string{
+		"Optional custom match config (64 rules; 8 unique matches per rule)",
 		"Relative --config and BUILD_BRIEF_CONFIG paths resolve from the effective",
 		"project directory: --project-dir, then BUILD_BRIEF_PROJECT_DIR, then the",
 		"current working directory. --project-dir takes precedence over",
@@ -902,6 +904,26 @@ func TestRunDoctorProjectDirFlagOverridesEnvForRelativeConfig(t *testing.T) {
 
 	exitCode, stdout, stderr := runAppDoctor(t, "--project-dir", flagProjectDir, "--config", "custom.json")
 	assertAppDoctorConfigResult(t, flagProjectDir, exitCode, stdout, stderr)
+}
+
+func TestRunDoctorWarnsForRulesBeyondCustomMatchCapWithoutFailing(t *testing.T) {
+	projectDir := t.TempDir()
+	writeExecutable(t, filepath.Join(projectDir, "gradlew"))
+	matches := strings.TrimSuffix(strings.Repeat(`{"name":"rule","pattern":"match"},`, 65), ",")
+	writeAppConfig(t, filepath.Join(projectDir, "custom.json"), `{"matches":[`+matches+`]}`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"doctor", "--project-dir", projectDir, "--config", "custom.json"}, strings.NewReader(""), &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("expected warning-only doctor exit code 0, got %d stderr=%q stdout=%q", exitCode, stderr.String(), stdout.String())
+	}
+	for _, expected := range []string{"WARN custom match limits: 65 configured; 64 retained; 1 ignored", "Result: healthy with warnings"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("expected doctor output to contain %q, got %q", expected, stdout.String())
+		}
+	}
 }
 
 func TestRunDoctorHealthyProject(t *testing.T) {

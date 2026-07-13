@@ -1,0 +1,16 @@
+> Task :app:mergeDebugRuntimeClasspath FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:mergeDebugRuntimeClasspath'.
+> Could not resolve all files for configuration ':app:debugRuntimeClasspath'.
+   > Could not find com.example.sanitized:telemetry-client:9.9.9.
+     Searched in the following locations:
+       - https://repo.example.invalid/releases/com/example/sanitized/telemetry-client/9.9.9/telemetry-client-9.9.9.pom
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+
+BUILD FAILED in 4s
+7 actionable tasks: 2 executed, 5 up-to-date
