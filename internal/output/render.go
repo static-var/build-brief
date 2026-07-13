@@ -10,6 +10,34 @@ import (
 	"build-brief/internal/reducer"
 )
 
+// RenderGitHubAnnotations emits generic workflow commands only. Callers decide
+// whether the current environment is GitHub Actions.
+func RenderGitHubAnnotations(w io.Writer, summary reducer.Summary) error {
+	if !summary.Success {
+		if _, err := fmt.Fprintf(w, "::error::%s\n", escapeGitHubWorkflowCommand("build-brief: Gradle build failed; see human summary and raw log")); err != nil {
+			return err
+		}
+	}
+	if !summary.Success && summaryPartial(summary) {
+		if _, err := fmt.Fprintf(w, "::warning::%s\n", escapeGitHubWorkflowCommand("build-brief: summary may be partial; see human summary and raw log")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func escapeGitHubWorkflowCommand(message string) string {
+	message = strings.ReplaceAll(message, "%", "%25")
+	message = strings.ReplaceAll(message, "\r", "%0D")
+	message = strings.ReplaceAll(message, "\n", "%0A")
+	return strings.ReplaceAll(message, ":", "%3A")
+}
+
+func summaryPartial(summary reducer.Summary) bool {
+	return summary.RawInput != nil && summary.RawInput.Partial ||
+		summary.Reducer != nil && summary.Reducer.Partial
+}
+
 func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	bw := bufio.NewWriter(w)
 	statusLine := renderStatusLine(summary)

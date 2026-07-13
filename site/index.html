@@ -159,6 +159,26 @@
 
 <hr class="divider">
 
+<section class="section-border">
+  <div class="wrap">
+    <p class="section__kicker fade-in">CI</p>
+    <h2 class="section__title fade-in">Explicit when you need it.</h2>
+    <p class="section__lead fade-in">
+      Use <code>build-brief --ci test</code> to opt into CI behavior. It is never
+      inferred from the environment and keeps the normal human summary and Gradle exit code.
+      <code>--ci</code> rejects <code>--mode raw</code>.
+    </p>
+    <p class="section__lead fade-in">
+      With <code>GITHUB_ACTIONS=true</code>, failed builds add one generic error annotation;
+      partial failed summaries add at most one generic warning. Successful builds add none.
+      Annotations make no source-location claims. They do not upload raw logs: add a separate
+      workflow artifact-upload step when the retained log is needed after the job.
+    </p>
+  </div>
+</section>
+
+<hr class="divider">
+
 <!-- ======================================================= -->
 <!-- BEFORE / AFTER                                           -->
 <!-- ======================================================= -->

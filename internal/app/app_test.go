@@ -50,6 +50,124 @@ func TestParseArgsTreatsJSONModeAsHuman(t *testing.T) {
 	}
 }
 
+func TestParseArgsReadsCIAndRejectsRawMode(t *testing.T) {
+	opts, gradleArgs, err := parseArgs([]string{"--ci", "test"})
+	if err != nil {
+		t.Fatalf("parse CI args: %v", err)
+	}
+	if !opts.CI || len(gradleArgs) != 1 || gradleArgs[0] != "test" {
+		t.Fatalf("unexpected CI parse result: opts=%+v args=%v", opts, gradleArgs)
+	}
+
+	_, _, err = parseArgs([]string{"--ci", "--mode", "raw", "test"})
+	if err == nil || !strings.Contains(err.Error(), "--ci cannot be combined with --mode raw") {
+		t.Fatalf("expected CI raw mode error, got %v", err)
+	}
+}
+
+func TestRunCIAnnotationsAreExplicitAndPreserveGradleExit(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "BUILD FAILED in 1s\n", "", 7)
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--ci", "--project-dir", projectDir, "--gradle", scriptPath, "test"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 7 {
+		t.Fatalf("CI exit code = %d, want Gradle exit 7; stderr=%q", exitCode, stderr.String())
+	}
+	if got := strings.Count(stdout.String(), "::error::"); got != 1 {
+		t.Fatalf("error annotation count = %d, want 1: %q", got, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "file=") || strings.Contains(stdout.String(), "line=") {
+		t.Fatalf("annotation must not claim a source location: %q", stdout.String())
+	}
+}
+
+func TestRunCIDoesNotAnnotateOutsideGitHubOrPersistTracking(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "BUILD SUCCESSFUL in 1s\n", "", 0)
+	t.Setenv("GITHUB_ACTIONS", "false")
+
+	originalRecordRun := recordRun
+	records := 0
+	recordRun = func(tracking.Record) error {
+		records++
+		return nil
+	}
+	t.Cleanup(func() { recordRun = originalRecordRun })
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--ci", "--project-dir", projectDir, "--gradle", scriptPath, "test"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("CI exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "::") {
+		t.Fatalf("outside GitHub emitted workflow command: %q", stdout.String())
+	}
+	if records != 0 {
+		t.Fatalf("CI persisted %d tracking records, want 0", records)
+	}
+}
+
+type failAfterFirstWrite struct {
+	writes int
+	buffer bytes.Buffer
+}
+
+func (w *failAfterFirstWrite) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > 1 {
+		return 0, errors.New("annotation output unavailable")
+	}
+	return w.buffer.Write(p)
+}
+
+func (w *failAfterFirstWrite) String() string {
+	return w.buffer.String()
+}
+
+func TestRunCIAnnotationWriteFailurePreservesGradleExit(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "BUILD FAILED in 1s\n", "", 7)
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	var stdout failAfterFirstWrite
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--ci", "--project-dir", projectDir, "--gradle", scriptPath, "test"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 7 {
+		t.Fatalf("CI annotation write failure exit = %d, want Gradle exit 7", exitCode)
+	}
+	if stdout.writes != 2 {
+		t.Fatalf("stdout writes = %d, want summary plus annotation; stdout=%q stderr=%q", stdout.writes, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunDoesNotAutoDetectGitHubActions(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := appGradleCommand(t, "BUILD FAILED in 1s\n", "", 7)
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--project-dir", projectDir, "--gradle", scriptPath, "test"}, strings.NewReader(""), &stdout, &stderr)
+	if exitCode != 7 {
+		t.Fatalf("non-CI exit code = %d, want 7", exitCode)
+	}
+	if strings.Contains(stdout.String(), "::error::") {
+		t.Fatalf("non-CI GitHub environment emitted annotation: %q", stdout.String())
+	}
+}
+
+func TestRunRejectsCIRawModeWithUsageExit(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if exitCode := Run(context.Background(), []string{"--ci", "--mode", "raw", "test"}, strings.NewReader(""), &stdout, &stderr); exitCode != 2 {
+		t.Fatalf("CI raw exit = %d, want 2", exitCode)
+	}
+}
+
 func TestParseArgsReadsGradleUserHome(t *testing.T) {
 	opts, gradleArgs, err := parseArgs([]string{"--gradle-user-home", "/tmp/shared-home", "test"})
 	if err != nil {
