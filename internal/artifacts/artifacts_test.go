@@ -274,6 +274,13 @@ func TestCaptureBoundsSnapshotMapsAndReportsCounts(t *testing.T) {
 	}
 }
 
+func TestSnapshotEntryRetainerDefersHeapAllocation(t *testing.T) {
+	retainer := newSnapshotEntryRetainer(make(map[string]SnapshotEntry), &SnapshotEntryMetadata{}, maxSnapshotClassEntries, lexicographicSnapshotCandidateLess)
+	if cap(retainer.heap.values) != 0 {
+		t.Fatalf("expected no heap storage before candidates, got capacity %d", cap(retainer.heap.values))
+	}
+}
+
 func TestSnapshotRetentionKeepsExactTopKAtOverflowBoundary(t *testing.T) {
 	entries := make(map[string]SnapshotEntry)
 	metadata := &SnapshotEntryMetadata{}
@@ -301,6 +308,37 @@ func TestSnapshotRetentionKeepsExactTopKAtOverflowBoundary(t *testing.T) {
 	}
 	if _, ok := artifactEntries["z.jar"]; !ok {
 		t.Fatalf("expected best retained JAR preserved, got %+v", artifactEntries)
+	}
+}
+
+func BenchmarkCaptureEmpty(b *testing.B) {
+	projectDir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := Capture(projectDir); len(got.ArtifactEntries) != 0 || len(got.ClassEntries) != 0 || len(got.CodegenEntries) != 0 {
+			b.Fatalf("expected empty snapshot, got %+v", got)
+		}
+	}
+}
+
+func BenchmarkCaptureSparse(b *testing.B) {
+	projectDir := b.TempDir()
+	for i := 0; i < 10; i++ {
+		path := filepath.Join(projectDir, "app", "build", "classes", "main", fmt.Sprintf("Class%02d.class", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("class"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := Capture(projectDir); len(got.ClassEntries) != 10 {
+			b.Fatalf("retained = %d, want 10", len(got.ClassEntries))
+		}
 	}
 }
 

@@ -349,7 +349,7 @@ type snapshotEntryRetainer struct {
 func newSnapshotEntryRetainer(entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, max int, less func(snapshotCandidate, snapshotCandidate) bool) *snapshotEntryRetainer {
 	return &snapshotEntryRetainer{
 		entries: entries, metadata: metadata, max: max,
-		heap: snapshotCandidateHeap{values: make([]snapshotCandidate, 0, max), less: less},
+		heap: snapshotCandidateHeap{less: less},
 	}
 }
 
@@ -361,7 +361,7 @@ func (r *snapshotEntryRetainer) retain(path string, entry SnapshotEntry) {
 	candidate := snapshotCandidate{path: path, entry: entry}
 	if r.heap.Len() < r.max {
 		r.entries[path] = entry
-		heap.Push(&r.heap, candidate)
+		r.push(candidate)
 		r.metadata.Retained++
 		return
 	}
@@ -372,6 +372,22 @@ func (r *snapshotEntryRetainer) retain(path string, entry SnapshotEntry) {
 	worst := heap.Pop(&r.heap).(snapshotCandidate)
 	delete(r.entries, worst.path)
 	r.entries[path] = entry
+	r.push(candidate)
+}
+
+func (r *snapshotEntryRetainer) push(candidate snapshotCandidate) {
+	if len(r.heap.values) == cap(r.heap.values) {
+		capacity := 8
+		if existing := cap(r.heap.values); existing > 0 {
+			capacity = existing * 2
+		}
+		if capacity > r.max {
+			capacity = r.max
+		}
+		values := make([]snapshotCandidate, len(r.heap.values), capacity)
+		copy(values, r.heap.values)
+		r.heap.values = values
+	}
 	heap.Push(&r.heap, candidate)
 }
 
@@ -411,15 +427,18 @@ func Capture(projectDir string) Snapshot {
 		ClassEntries:    make(map[string]SnapshotEntry),
 		CodegenEntries:  make(map[string]SnapshotEntry),
 	}
-	artifactEntries := newSnapshotEntryRetainer(snapshot.ArtifactEntries, &snapshot.Metadata.ArtifactEntries, maxSnapshotArtifactEntries, artifactSnapshotCandidateLess)
-	classEntries := newSnapshotEntryRetainer(snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, lexicographicSnapshotCandidateLess)
-	codegenEntries := newSnapshotEntryRetainer(snapshot.CodegenEntries, &snapshot.Metadata.CodegenEntries, maxSnapshotCodegenEntries, lexicographicSnapshotCandidateLess)
+	var artifactEntries, classEntries, codegenEntries *snapshotEntryRetainer
 
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
 		if buildDir, ok, skip := buildDirPath(path, entry); ok {
+			if artifactEntries == nil {
+				artifactEntries = newSnapshotEntryRetainer(snapshot.ArtifactEntries, &snapshot.Metadata.ArtifactEntries, maxSnapshotArtifactEntries, artifactSnapshotCandidateLess)
+				classEntries = newSnapshotEntryRetainer(snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, lexicographicSnapshotCandidateLess)
+				codegenEntries = newSnapshotEntryRetainer(snapshot.CodegenEntries, &snapshot.Metadata.CodegenEntries, maxSnapshotCodegenEntries, lexicographicSnapshotCandidateLess)
+			}
 			captureBuildDir(buildDir, projectDir, artifactEntries, classEntries, codegenEntries)
 			if skip {
 				return filepath.SkipDir
