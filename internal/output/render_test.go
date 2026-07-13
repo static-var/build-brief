@@ -64,18 +64,36 @@ func TestRenderGitHubAnnotationsCapsPartialWarningsAndSkipsSuccess(t *testing.T)
 	}
 }
 
-func TestSanitizeGitHubHumanSummaryNeutralizesTrimStartWorkflowCommandsAtAllLineBoundaries(t *testing.T) {
-	input := "::warning::untrusted\r ::error::untrusted\r\n\t::add-mask::secret\n\u00a0::stop-commands::pause\n\u2003::pause::resume\nplain\n"
-	want := "| ::warning::untrusted\n|  ::error::untrusted\n| \t::add-mask::secret\n| \u00a0::stop-commands::pause\n| \u2003::pause::resume\nplain\n"
+func TestSanitizeGitHubHumanSummaryNeutralizesRunnerCommandsAtAllLineBoundaries(t *testing.T) {
+	input := "::warning::untrusted\r ::error::untrusted\r\n\t::add-mask::secret\n\u00a0::stop-commands::pause\n\u2003::pause::resume\n" +
+		"##[error] untrusted\rprefix ##[warning] untrusted\r\n\t##[add-mask]secret\n\u00a0##[debug]trace\n\u2003##[group]build\n" +
+		"##[endgroup]\nfirst ##[save-state name=key]value then ##[set-output name=result]value\n##[stop-commands]pause\nplain\n"
+	want := "| ::warning::untrusted\n|  ::error::untrusted\n| \t::add-mask::secret\n| \u00a0::stop-commands::pause\n| \u2003::pause::resume\n" +
+		"## [error] untrusted\nprefix ## [warning] untrusted\n\t## [add-mask]secret\n\u00a0## [debug]trace\n\u2003## [group]build\n" +
+		"## [endgroup]\nfirst ## [save-state name=key]value then ## [set-output name=result]value\n## [stop-commands]pause\nplain\n"
 	got := SanitizeGitHubHumanSummary(input)
 	if got != want {
 		t.Fatalf("sanitized GitHub human summary = %q, want %q", got, want)
 	}
 	for _, line := range strings.Split(got, "\n") {
-		if strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "::") {
-			t.Fatalf("runner TrimStart would execute workflow command line %q", line)
+		if runnerRecognizesWorkflowCommand(line) {
+			t.Fatalf("runner would execute workflow command line %q", line)
 		}
 	}
+}
+
+// runnerRecognizesWorkflowCommand models the runner's modern trim-start parser
+// and legacy scanner for the command forms registered by GitHub Actions.
+func runnerRecognizesWorkflowCommand(line string) bool {
+	if strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "::") {
+		return true
+	}
+	for _, command := range []string{"error", "warning", "add-mask", "debug", "group", "endgroup", "save-state", "set-output", "stop-commands"} {
+		if strings.Contains(line, "##["+command+"]") || strings.Contains(line, "##["+command+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRenderHumanKeepsSuccessConcise(t *testing.T) {

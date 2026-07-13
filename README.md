@@ -70,7 +70,7 @@ Use `--ci` when a job needs CI behavior; it is never inferred from the environme
 build-brief --ci test
 ```
 
-`--ci` keeps the normal human summary and Gradle exit code. It rejects `--mode raw` with usage exit 2. In GitHub Actions only (`GITHUB_ACTIONS=true`), each untrusted human-summary line whose Unicode-trimmed content begins with `::` receives a non-whitespace sentinel, including after LF, CRLF, or CR boundaries. Intentional tool annotations remain exact. A failed build adds one generic `::error` annotation; a partial failed summary adds at most one generic `::warning`. Successful builds add none. These annotations use the bounded synthetic tool-level location `build-brief:1`, not a source location. CI runs do not persist gains history, although token metrics are still calculated for the run.
+`--ci` keeps the normal human summary and Gradle exit code. It rejects `--mode raw` with usage exit 2. In GitHub Actions only (`GITHUB_ACTIONS=true`), untrusted human-summary lines neutralize every legacy `##[` opener, including embedded forms, and Unicode-trimmed modern `::` commands, across LF, CRLF, or CR boundaries. Intentional tool annotations remain exact. A failed build adds one generic `::error` annotation; a partial failed summary adds at most one generic `::warning`. Successful builds add none. These annotations use the bounded synthetic tool-level location `build-brief:1`, not a source location. CI runs do not persist gains history, although token metrics are still calculated for the run.
 
 Raw logs remain local files. GitHub annotations do not upload them: add a separate artifact-upload step if the workflow needs the raw log after the job.
 

@@ -53,17 +53,20 @@ func escapeGitHubWorkflowCommandProperty(value string) string {
 }
 
 // SanitizeGitHubHumanSummary prevents untrusted summary content from becoming
-// workflow commands. GitHub-only rendering normalizes all line boundaries and
-// prefixes a non-whitespace sentinel because the runner trims leading Unicode
-// whitespace before parsing commands.
+// workflow commands. GitHub-only rendering normalizes all line boundaries,
+// breaks every legacy command opener wherever it occurs, and prefixes a
+// non-whitespace sentinel for modern commands because the runner trims leading
+// Unicode whitespace before parsing them.
 func SanitizeGitHubHumanSummary(rendered string) string {
 	rendered = strings.ReplaceAll(rendered, "\r\n", "\n")
 	rendered = strings.ReplaceAll(rendered, "\r", "\n")
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
+		line = strings.ReplaceAll(line, "##[", "## [")
 		if strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "::") {
-			lines[i] = "| " + line
+			line = "| " + line
 		}
+		lines[i] = line
 	}
 	return strings.Join(lines, "\n")
 }
