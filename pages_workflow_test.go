@@ -16,9 +16,22 @@ func TestPagesWorkflowPreservesDeploymentContract(t *testing.T) {
 }
 
 func TestPagesWorkflowChecksAcceptCRLF(t *testing.T) {
-	workflow := strings.ReplaceAll(readPagesWorkflow(t), "\n", "\r\n")
-	assertPagesWorkflowPins(t, workflow)
-	assertPagesWorkflowDeploymentContract(t, workflow)
+	source := normalizeWorkflowLineEndings(readPagesWorkflow(t))
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{name: "starting LF", source: source},
+		{name: "already CRLF", source: strings.ReplaceAll(source, "\n", "\r\n")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workflow := strings.ReplaceAll(normalizeWorkflowLineEndings(tc.source), "\n", "\r\n")
+			assertPagesWorkflowPins(t, workflow)
+			assertPagesWorkflowDeploymentContract(t, workflow)
+		})
+	}
 }
 
 func readPagesWorkflow(t *testing.T) string {
@@ -31,7 +44,7 @@ func readPagesWorkflow(t *testing.T) string {
 }
 
 func normalizeWorkflowLineEndings(workflow string) string {
-	return strings.ReplaceAll(workflow, "\r\n", "\n")
+	return strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(workflow)
 }
 
 func assertPagesWorkflowPins(t *testing.T, workflow string) {
