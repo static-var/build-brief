@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-test:
+    name: Go tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (race)
+            os: ubuntu-latest
+            race: true
+          - name: macOS
+            os: macos-latest
+            race: false
+          - name: Windows
+            os: windows-latest
+            race: false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go tests with race detector
+        if: ${{ matrix.race }}
+        run: go test -race ./...
+
+      - name: Run Go tests
+        if: ${{ !matrix.race }}
+        run: go test ./...
+
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Verify Go modules
+        run: go mod verify
+
+      - name: Check shell scripts
+        shell: bash
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(git ls-files -z -- '*.sh')
+
+      - name: Check diff hygiene
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request)
+              git diff --check "$BASE_SHA...$HEAD_SHA"
+              ;;
+            push)
+              if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+                git diff --check "$CURRENT_SHA^" "$CURRENT_SHA"
+              else
+                git diff --check "$BEFORE_SHA" "$CURRENT_SHA"
+              fi
+              ;;
+            workflow_dispatch)
+              git diff --check HEAD^ HEAD
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
