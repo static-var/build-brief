@@ -31,6 +31,17 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if raw := summary.RawInput; raw != nil && raw.Partial {
+		if _, err := fmt.Fprintf(bw, "WARNING: raw input incomplete: %d line(s) exceeded the %d-byte reducer limit; summary fields may be partial.\n", raw.TruncatedLines, 1<<20); err != nil {
+			return err
+		}
+	}
+	if reducer := summary.Reducer; reducer != nil && reducer.Partial && len(reducer.PartialFields) > 0 {
+		if _, err := fmt.Fprintf(bw, "WARNING: reducer summary partial for: %s\n", strings.Join(reducer.PartialFields, ", ")); err != nil {
+			return err
+		}
+	}
+
 	if summary.PassedTestCount > 0 || summary.FailedTestCount > 0 {
 		if _, err := fmt.Fprintf(bw, "Tests: %d passed, %d failed\n", summary.PassedTestCount, summary.FailedTestCount); err != nil {
 			return err
@@ -50,7 +61,9 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 
 	if scan := summary.JUnitScan; scan != nil {
 		line := fmt.Sprintf("JUnit reports: %d discovered, %d parsed, %d skipped", scan.Discovered, scan.Parsed, scan.Skipped)
-		if scan.Truncated {
+		if scan.FileBytesTruncated {
+			line += " (file byte limit reached)"
+		} else if scan.Truncated {
 			line += " (truncated at the reporting limit)"
 		}
 		if scan.ErrorsTruncated {

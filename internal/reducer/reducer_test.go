@@ -589,11 +589,14 @@ func TestReduceBoundsUnterminatedLineHintAcquisition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reduce oversized unterminated line: %v", err)
 	}
-	if summary.ArtifactHintScan == nil || !summary.ArtifactHintScan.Truncated {
-		t.Fatalf("expected explicit hint truncation metadata, got %+v", summary.ArtifactHintScan)
+	if summary.RawInput == nil || !summary.RawInput.Partial || summary.RawInput.TruncatedLines != 1 {
+		t.Fatalf("expected explicit raw input truncation metadata, got %+v", summary.RawInput)
 	}
-	if summary.ArtifactHintScan.Observed != 0 || len(summary.Artifacts) != 0 {
-		t.Fatalf("expected discarded hints after the bounded prefix, got scan=%+v artifacts=%+v", summary.ArtifactHintScan, summary.Artifacts)
+	if summary.ArtifactHintScan != nil {
+		t.Fatalf("expected no artifact hint metadata for a non-artifact fragmented line, got %+v", summary.ArtifactHintScan)
+	}
+	if len(summary.Artifacts) != 0 {
+		t.Fatalf("expected discarded hints after the bounded prefix, got artifacts=%+v", summary.Artifacts)
 	}
 	if summary.BuildStatusLine != "BUILD SUCCESSFUL in 1s" {
 		t.Fatalf("expected reducer to continue after oversized line, got %q", summary.BuildStatusLine)
@@ -1758,5 +1761,159 @@ func TestReduceConfigCacheSingularProblemAndDiscardedStatus(t *testing.T) {
 	}
 	if summary.ConfigCacheReportURL != "file:///tmp/project/build/reports/configuration-cache/def456/configuration-cache-report.html" {
 		t.Fatalf("unexpected report URL: %q", summary.ConfigCacheReportURL)
+	}
+}
+
+func TestReduceBoundsSummaryCollectionsByCountAndBytes(t *testing.T) {
+	projectDir := t.TempDir()
+	lines := make([]string, 0, maxReportLines+maxFailedTasks+maxFailedTests+maxBuildScanURLs+8)
+	for i := 0; i < maxReportLines+10; i++ {
+		lines = append(lines, fmt.Sprintf("report line %03d", i))
+	}
+	for i := 0; i < maxFailedTasks+10; i++ {
+		lines = append(lines, fmt.Sprintf("> Task :task-%03d FAILED", i))
+	}
+	for i := 0; i < maxFailedTests+10; i++ {
+		lines = append(lines, fmt.Sprintf("ExampleTest%03d > test FAILED", i))
+	}
+	for i := 0; i < maxBuildScanURLs+10; i++ {
+		lines = append(lines, fmt.Sprintf("Build scan: https://develocity.example/s/%03d", i))
+	}
+	lines = append(lines, "BUILD SUCCESSFUL in 1s")
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "-p", "smoke/projects/jvm-junit", ":tasks", "--all"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		RawLogPath: writeTestLog(t, lines),
+	})
+	if err != nil {
+		t.Fatalf("reduce bounded collections: %v", err)
+	}
+
+	if len(summary.ReportLines) > maxReportLines || len(summary.FailedTasks) > maxFailedTasks || len(summary.FailedTests) > maxFailedTests || len(summary.BuildScanURLs) > maxBuildScanURLs {
+		t.Fatalf("summary collection count exceeded bounds: reports=%d tasks=%d tests=%d scans=%d", len(summary.ReportLines), len(summary.FailedTasks), len(summary.FailedTests), len(summary.BuildScanURLs))
+	}
+	if summary.Reducer == nil || len(summary.Reducer.Collections) < 4 {
+		t.Fatalf("expected reducer collection completeness metadata, got %+v", summary.Reducer)
+	}
+	for name, collection := range summary.Reducer.Collections {
+		if !collection.Truncated {
+			t.Fatalf("expected %s collection to be marked truncated: %+v", name, collection)
+		}
+		if collection.RetainedBytes > int64(maxSummaryCollectionBytes) {
+			t.Fatalf("%s retained bytes exceeded bound: %+v", name, collection)
+		}
+	}
+}
+
+func TestReduceBoundsSummaryCollectionBytes(t *testing.T) {
+	long := strings.Repeat("x", maxSummaryCollectionBytes+1)
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "-p", "smoke/projects/jvm-junit", ":tasks", "--all"},
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceSystem,
+	}, runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			long,
+			"> Task :" + long + " FAILED",
+			"ExampleTest > " + long + " FAILED",
+			"Build scan: https://develocity.example/s/" + long,
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("reduce byte-bounded collections: %v", err)
+	}
+	if summary.Reducer == nil {
+		t.Fatal("expected reducer completeness metadata")
+	}
+	for _, name := range []string{"report_lines", "failed_tasks", "failed_tests", "build_scan_urls"} {
+		collection, ok := summary.Reducer.Collections[name]
+		if !ok || !collection.Truncated {
+			t.Fatalf("expected byte truncation metadata for %s, got %+v", name, summary.Reducer.Collections)
+		}
+		if collection.RetainedBytes > int64(maxSummaryCollectionBytes) {
+			t.Fatalf("%s retained bytes exceeded bound: %+v", name, collection)
+		}
+	}
+}
+
+func TestReduceLongFragmentedLineUsesRawInputCompleteness(t *testing.T) {
+	line := strings.Repeat("x", maxReducerLineBytes+1) + " > Task :trailing FAILED"
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceSystem,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		RawLogPath: writeTestLog(t, []string{line, "BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce fragmented line: %v", err)
+	}
+	if summary.RawInput == nil || summary.RawInput.TruncatedLines != 1 || summary.RawInput.TruncatedBytes == 0 {
+		t.Fatalf("expected raw input truncation metadata, got %+v", summary.RawInput)
+	}
+	if summary.ArtifactHintScan != nil {
+		t.Fatalf("long non-artifact line must not report artifact hint truncation: %+v", summary.ArtifactHintScan)
+	}
+	if summary.Reducer == nil || !summary.Reducer.Partial || !contains(summary.Reducer.PartialFields, "failed_tasks") {
+		t.Fatalf("expected failed task field to be partial, got %+v", summary.Reducer)
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal fragmented summary: %v", err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"raw_input"`) || !strings.Contains(text, `"reducer"`) || !strings.Contains(text, `"partial":true`) {
+		t.Fatalf("expected additive completeness metadata in JSON: %s", text)
+	}
+}
+
+func TestReduceSkipsOversizedJUnitBeforeParsing(t *testing.T) {
+	projectDir := t.TempDir()
+	reportDir := filepath.Join(projectDir, "module", "build", "test-results", "test")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	startTime := time.Now()
+	content := []byte(`<testsuite><testcase name="before" classname="ExampleTest"></testcase>` + strings.Repeat("x", maxJUnitFileBytes) + `</testsuite>`)
+	if err := os.WriteFile(filepath.Join(reportDir, "TEST-oversized.xml"), content, 0o644); err != nil {
+		t.Fatalf("write oversized junit report: %v", err)
+	}
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "test"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}, runner.Result{
+		ExitCode:  1,
+		Duration:  time.Second,
+		StartTime: startTime,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :test FAILED",
+			"Execution failed for task ':test'.",
+			"BUILD FAILED in 1s",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("reduce oversized junit report: %v", err)
+	}
+	if summary.JUnitScan == nil || !summary.JUnitScan.FileBytesTruncated || summary.JUnitScan.Parsed != 0 {
+		t.Fatalf("expected oversized junit metadata without parsing, got %+v", summary.JUnitScan)
+	}
+	if len(summary.JUnitScan.Errors) != 0 {
+		t.Fatalf("oversized junit should not be parsed as malformed XML: %+v", summary.JUnitScan)
 	}
 }

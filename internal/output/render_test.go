@@ -414,3 +414,35 @@ func TestRenderHumanShowsDiagnosisInsteadOfHighlights(t *testing.T) {
 		t.Fatalf("expected diagnostics to replace highlights, got %q", rendered)
 	}
 }
+
+func TestRenderHumanShowsRawInputCompletenessWarning(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		RawInput: &reducer.RawInputMetadata{
+			Partial:        true,
+			TruncatedLines: 1,
+			TruncatedBytes: 24,
+		},
+		Reducer: &reducer.ReducerMetadata{
+			Partial:       true,
+			PartialFields: []string{"failed_tasks", "failed_tests"},
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render completeness warning: %v", err)
+	}
+	for _, expected := range []string{
+		"WARNING: raw input incomplete",
+		"1 line",
+		"summary fields may be partial",
+		"failed_tasks",
+		"failed_tests",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("expected completeness warning to contain %q, got %q", expected, out.String())
+		}
+	}
+}
