@@ -473,7 +473,7 @@ func dbPath() (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(configDir, "build-brief")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensureTrackingDir(dir); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "tracking.jsonl"), nil
@@ -488,6 +488,9 @@ func loadRecords(path string) ([]Record, error) {
 		return nil, err
 	}
 	defer file.Close()
+	if err := secureTrackingFile(file); err != nil {
+		return nil, err
+	}
 
 	records := make([]Record, 0)
 	scanner := bufio.NewScanner(file)
@@ -543,6 +546,10 @@ func acquireLockFile(lockPath string, timeout time.Duration) (*lockHandle, error
 			guardErr := releaseReclaimGuard(guard)
 			return nil, errors.Join(err, guardErr)
 		}
+		if err := secureTrackingPath(lockPath); err != nil {
+			guardErr := releaseReclaimGuard(guard)
+			return nil, errors.Join(err, guardErr)
+		}
 
 		reclaimed, reclaimErr := reclaimStaleLockUnderGuard(lockPath)
 		guardErr := releaseReclaimGuard(guard)
@@ -586,6 +593,9 @@ func acquireReclaimGuard(lockPath string, deadline time.Time) (*os.File, error) 
 	guard, err := os.OpenFile(reclaimGuardPath(lockPath), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
+	}
+	if err := secureTrackingFile(guard); err != nil {
+		return nil, errors.Join(err, guard.Close())
 	}
 	if err := lockReclaimGuard(guard, deadline); err != nil {
 		return nil, errors.Join(err, guard.Close())
@@ -730,9 +740,12 @@ func removeLockFile(lockPath string, timeout time.Duration, remove func(string) 
 
 func writeRecords(path string, records []Record) error {
 	tmpPath := path + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
+	}
+	if err := secureTrackingFile(file); err != nil {
+		return errors.Join(err, file.Close())
 	}
 
 	encoder := json.NewEncoder(file)
