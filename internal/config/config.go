@@ -30,6 +30,8 @@ func Load(projectDir, explicitPath string) (Config, string, error) {
 			}
 			return Config{}, "", fmt.Errorf("stat default config %s: %w", path, err)
 		}
+	} else if !filepath.IsAbs(path) {
+		path = filepath.Join(projectDir, path)
 	}
 
 	content, err := os.ReadFile(path)

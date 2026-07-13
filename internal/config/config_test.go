@@ -32,6 +32,42 @@ func TestLoadUsesExplicitConfigPath(t *testing.T) {
 	}
 }
 
+func TestLoadResolvesRelativeExplicitPathAgainstProjectDir(t *testing.T) {
+	callerDir := t.TempDir()
+	projectDir := t.TempDir()
+	configPath := filepath.Join(projectDir, "custom.json")
+	writeConfig(t, configPath, `{
+		"matches": [
+			{"name": "emulator.wtf", "pattern": "https://app\\.emulator\\.wtf/[^\\s]+"}
+		]
+	}`)
+
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get caller directory: %v", err)
+	}
+	if err := os.Chdir(callerDir); err != nil {
+		t.Fatalf("change caller directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Errorf("restore caller directory: %v", err)
+		}
+	})
+
+	cfg, loadedPath, err := Load(projectDir, "custom.json")
+	if err != nil {
+		t.Fatalf("load relative explicit config: %v", err)
+	}
+
+	if loadedPath != configPath {
+		t.Fatalf("expected loaded path %q, got %q", configPath, loadedPath)
+	}
+	if len(cfg.Matches) != 1 || cfg.Matches[0].Name != "emulator.wtf" {
+		t.Fatalf("unexpected matches: %+v", cfg.Matches)
+	}
+}
+
 func TestLoadUsesDefaultProjectConfig(t *testing.T) {
 	projectDir := t.TempDir()
 	configPath := filepath.Join(projectDir, ".build-brief.json")
