@@ -244,6 +244,93 @@ func TestRenderHumanShowsConfigCacheSection(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsEnrichmentScanMetadataAndWarnings(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 5s",
+		WarningCount:    1,
+		Warnings:        []string{"JUnit report scan incomplete: discovered 2, parsed 0, skipped 2"},
+		JUnitScan: &reducer.JUnitScanMetadata{
+			Discovered: 2,
+			Skipped:    2,
+			Errors:     []string{"TEST-bad.xml: XML syntax error"},
+		},
+		ArtifactScan: &reducer.ArtifactScanMetadata{
+			Discovered: 21,
+			Reported:   20,
+			Skipped:    1,
+			Truncated:  true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render enrichment metadata: %v", err)
+	}
+
+	rendered := out.String()
+	for _, expected := range []string{
+		"Warnings: 1",
+		"JUnit report scan incomplete: discovered 2, parsed 0, skipped 2",
+		"JUnit reports: 2 discovered, 0 parsed, 2 skipped",
+		"JUnit report scan errors:",
+		"TEST-bad.xml: XML syntax error",
+		"Artifacts scan: 21 discovered, 20 reported, 1 skipped",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected enrichment output to contain %q, got %q", expected, rendered)
+		}
+	}
+}
+
+func TestRenderHumanShowsScanTruncationWhenWarningsAreCapped(t *testing.T) {
+	warnings := make([]string, 8)
+	for i := range warnings {
+		warnings[i] = "warning: existing warning"
+	}
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		WarningCount:    len(warnings),
+		Warnings:        warnings,
+		ArtifactScan: &reducer.ArtifactScanMetadata{
+			Discovered: 21,
+			Reported:   20,
+			Skipped:    1,
+			Truncated:  true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render saturated-warning scan: %v", err)
+	}
+	if !strings.Contains(out.String(), "truncated at the reporting limit") {
+		t.Fatalf("expected scan truncation to render independently of warnings, got %q", out.String())
+	}
+}
+
+func TestRenderHumanShowsArtifactHintRetentionTruncation(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		ArtifactHintScan: &reducer.ArtifactHintScanMetadata{
+			Observed:  10_000,
+			Retained:  64,
+			Omitted:   9_936,
+			Truncated: true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render artifact hint metadata: %v", err)
+	}
+	if !strings.Contains(out.String(), "Artifact hints: 10000 observed, 64 retained, 9936 omitted") {
+		t.Fatalf("expected artifact hint truncation metadata, got %q", out.String())
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,
@@ -325,5 +412,37 @@ func TestRenderHumanShowsDiagnosisInsteadOfHighlights(t *testing.T) {
 	}
 	if strings.Contains(rendered, "Highlights:") {
 		t.Fatalf("expected diagnostics to replace highlights, got %q", rendered)
+	}
+}
+
+func TestRenderHumanShowsRawInputCompletenessWarning(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		RawInput: &reducer.RawInputMetadata{
+			Partial:        true,
+			TruncatedLines: 1,
+			TruncatedBytes: 24,
+		},
+		Reducer: &reducer.ReducerMetadata{
+			Partial:       true,
+			PartialFields: []string{"failed_tasks", "failed_tests"},
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render completeness warning: %v", err)
+	}
+	for _, expected := range []string{
+		"WARNING: raw input incomplete",
+		"1 line",
+		"summary fields may be partial",
+		"failed_tasks",
+		"failed_tests",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("expected completeness warning to contain %q, got %q", expected, out.String())
+		}
 	}
 }

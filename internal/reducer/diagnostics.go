@@ -39,7 +39,7 @@ func (e diagnosticEvidence) add(id, line string) {
 	if containsString(e[id], clean) || len(e[id]) >= maxDiagnosticEvidence {
 		return
 	}
-	e[id] = append(e[id], clean)
+	e[id] = append(e[id], strings.Clone(clean))
 }
 
 var diagnosticRules = []diagnosticRule{
