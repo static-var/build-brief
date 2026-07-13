@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +90,21 @@ func TestRecordRunDropsExpiredRecords(t *testing.T) {
 	}
 	if len(report.Recent) != 1 || report.Recent[0].Command != current.Command {
 		t.Fatalf("unexpected recent records: %+v", report.Recent)
+	}
+}
+
+func TestTrackingEnvironmentUsesTestAppDataOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("os.UserConfigDir uses AppData only on Windows")
+	}
+
+	configDir := setTrackingEnv(t)
+	path, err := dbPath()
+	if err != nil {
+		t.Fatalf("db path: %v", err)
+	}
+	if filepath.Dir(path) != filepath.Join(configDir, "build-brief") {
+		t.Fatalf("expected isolated tracking path under %q, got %q", configDir, path)
 	}
 }
 
@@ -649,9 +665,12 @@ func TestRecordRunRedactsUnrecoverableLegacySensitiveLabels(t *testing.T) {
 	}
 }
 
-func setTrackingEnv(t *testing.T) {
+func setTrackingEnv(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
+	configDir := filepath.Join(home, ".config")
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("AppData", configDir)
+	return configDir
 }
