@@ -16,19 +16,22 @@ on:
         description: Optional explicit version, for example 0.2.0 or v0.2.0
         required: false
         type: string
+      # Dry runs intentionally retain GitHub-hosted validation evidence and cache state.
       publish:
-        description: Publish the version bump, tag, GitHub release, and optionally Homebrew
+        description: Publish release mutations. When false, validation may upload artifacts and use action caches, but makes no repository commit/tag/push, GitHub Release mutation, or Homebrew mutation.
         required: true
         default: false
         type: boolean
       publish_homebrew:
-        description: Publish the generated formula to Homebrew (requires publish)
+        description: Publish the generated formula to Homebrew only when publish is also true
         required: true
         default: false
         type: boolean
 
 # GitHub Actions permissions cannot vary by workflow input. This remains write-capable
-# for publish runs; all external mutations below require inputs.publish == true.
+# for publish runs. With publish=false, the invariant is no repository commit/tag/push,
+# GitHub Release mutation, or Homebrew mutation; artifact uploads and action caches are
+# intentional validation evidence and optimization, not release mutations.
 permissions:
   contents: write
 
@@ -99,6 +102,7 @@ jobs:
             --artifact-dir dist \
             --formula .release/build-brief.rb
 
+      # Every release mutation below is explicitly gated; do not gate validation evidence or caches.
       - name: Commit version bump and changelog
         if: inputs.publish && steps.prepare.outputs.needs_commit == 'true'
         run: |
@@ -137,6 +141,7 @@ jobs:
 
           echo "notes_file=$combined_notes_file" >> "$GITHUB_OUTPUT"
 
+      # Keep this ungated: dry runs upload validation evidence by design.
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

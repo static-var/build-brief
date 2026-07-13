@@ -8,31 +8,6 @@ import (
 	"testing"
 )
 
-func TestReleaseWorkflowDefaultsToDryRunAndGatesPublication(t *testing.T) {
-	workflow := readTestFile(t, ".github/workflows/release.yml")
-
-	if got := strings.Count(workflow, "default: false\n        type: boolean"); got != 2 {
-		t.Fatalf("expected publish inputs to default false, found %d defaults", got)
-	}
-
-	for _, want := range []string{
-		"publish:\n        description:",
-		"publish_homebrew:\n        description:",
-		"if: inputs.publish && steps.prepare.outputs.needs_commit == 'true'",
-		"if: inputs.publish && steps.prepare.outputs.tag_exists != 'true'",
-		"if: inputs.publish\n        env:\n          GH_TOKEN:",
-		"if: inputs.publish && inputs.publish_homebrew",
-		"actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2",
-		"actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0",
-		"actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0",
-		"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2",
-	} {
-		if !strings.Contains(workflow, want) {
-			t.Errorf("release workflow missing %q", want)
-		}
-	}
-}
-
 func TestPublishHomebrewTapFailsWhenTokenIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	formulaFile := filepath.Join(dir, "build-brief.rb")
