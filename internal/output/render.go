@@ -49,7 +49,14 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	}
 
 	if scan := summary.JUnitScan; scan != nil {
-		if _, err := fmt.Fprintf(bw, "JUnit reports: %d discovered, %d parsed, %d skipped\n", scan.Discovered, scan.Parsed, scan.Skipped); err != nil {
+		line := fmt.Sprintf("JUnit reports: %d discovered, %d parsed, %d skipped", scan.Discovered, scan.Parsed, scan.Skipped)
+		if scan.Truncated {
+			line += " (truncated at the reporting limit)"
+		}
+		if scan.ErrorsTruncated {
+			line += " (error details truncated)"
+		}
+		if _, err := fmt.Fprintln(bw, line); err != nil {
 			return err
 		}
 		if scan.SkippedTests > 0 {
@@ -58,7 +65,11 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 			}
 		}
 		if len(scan.Errors) > 0 {
-			if _, err := fmt.Fprintln(bw, "JUnit report scan errors:"); err != nil {
+			label := "JUnit report scan errors:"
+			if scan.ErrorCount > 0 {
+				label = fmt.Sprintf("JUnit report scan errors: %d total", scan.ErrorCount)
+			}
+			if _, err := fmt.Fprintln(bw, label); err != nil {
 				return err
 			}
 			for _, scanError := range scan.Errors {
@@ -66,19 +77,40 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 					return err
 				}
 			}
+			if scan.ErrorsTruncated {
+				if _, err := fmt.Fprintln(bw, "  - additional scan errors omitted"); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
 	if scan := summary.ArtifactScan; scan != nil {
-		if _, err := fmt.Fprintf(bw, "Artifacts scan: %d discovered, %d reported, %d skipped\n", scan.Discovered, scan.Reported, scan.Skipped); err != nil {
+		line := fmt.Sprintf("Artifacts scan: %d discovered, %d reported, %d skipped", scan.Discovered, scan.Reported, scan.Skipped)
+		if scan.Truncated {
+			line += " (truncated at the reporting limit)"
+		}
+		if scan.ErrorsTruncated {
+			line += " (error details truncated)"
+		}
+		if _, err := fmt.Fprintln(bw, line); err != nil {
 			return err
 		}
 		if len(scan.Errors) > 0 {
-			if _, err := fmt.Fprintln(bw, "Artifact scan errors:"); err != nil {
+			label := "Artifact scan errors:"
+			if scan.ErrorCount > 0 {
+				label = fmt.Sprintf("Artifact scan errors: %d total", scan.ErrorCount)
+			}
+			if _, err := fmt.Fprintln(bw, label); err != nil {
 				return err
 			}
 			for _, scanError := range scan.Errors {
 				if _, err := fmt.Fprintf(bw, "  - %s\n", scanError); err != nil {
+					return err
+				}
+			}
+			if scan.ErrorsTruncated {
+				if _, err := fmt.Fprintln(bw, "  - additional scan errors omitted"); err != nil {
 					return err
 				}
 			}

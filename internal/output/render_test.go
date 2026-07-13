@@ -283,6 +283,33 @@ func TestRenderHumanShowsEnrichmentScanMetadataAndWarnings(t *testing.T) {
 	}
 }
 
+func TestRenderHumanShowsScanTruncationWhenWarningsAreCapped(t *testing.T) {
+	warnings := make([]string, 8)
+	for i := range warnings {
+		warnings[i] = "warning: existing warning"
+	}
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		WarningCount:    len(warnings),
+		Warnings:        warnings,
+		ArtifactScan: &reducer.ArtifactScanMetadata{
+			Discovered: 21,
+			Reported:   20,
+			Skipped:    1,
+			Truncated:  true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render saturated-warning scan: %v", err)
+	}
+	if !strings.Contains(out.String(), "truncated at the reporting limit") {
+		t.Fatalf("expected scan truncation to render independently of warnings, got %q", out.String())
+	}
+}
+
 func TestRenderHumanShowsArtifactsAndOmittedCompilationOutputs(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,

@@ -23,11 +23,13 @@ type Artifact struct {
 }
 
 type ScanMetadata struct {
-	Discovered int      `json:"discovered"`
-	Reported   int      `json:"reported"`
-	Skipped    int      `json:"skipped"`
-	Errors     []string `json:"errors,omitempty"`
-	Truncated  bool     `json:"truncated"`
+	Discovered      int      `json:"discovered"`
+	Reported        int      `json:"reported"`
+	Skipped         int      `json:"skipped"`
+	Errors          []string `json:"errors,omitempty"`
+	ErrorCount      int      `json:"error_count,omitempty"`
+	ErrorsTruncated bool     `json:"errors_truncated,omitempty"`
+	Truncated       bool     `json:"truncated"`
 }
 
 type GeneratedResult struct {
@@ -43,16 +45,17 @@ type AvailableResult struct {
 }
 
 type artifactCollector struct {
-	artifacts []Artifact
-	seen      map[string]struct{}
-	metadata  ScanMetadata
-	stopped   bool
+	artifacts  []Artifact
+	seen       map[string]struct{}
+	projectDir string
+	metadata   ScanMetadata
 }
 
-func newArtifactCollector() *artifactCollector {
+func newArtifactCollector(projectDir string) *artifactCollector {
 	return &artifactCollector{
-		artifacts: make([]Artifact, 0, maxArtifactsReported),
-		seen:      make(map[string]struct{}),
+		artifacts:  make([]Artifact, 0, maxArtifactsReported),
+		seen:       make(map[string]struct{}),
+		projectDir: projectDir,
 	}
 }
 
@@ -62,26 +65,48 @@ func (c *artifactCollector) add(artifact Artifact) bool {
 	}
 	c.seen[artifact.Path] = struct{}{}
 	c.metadata.Discovered++
-	if len(c.artifacts) >= maxArtifactsReported {
-		c.metadata.Truncated = true
-		c.stopped = true
-		return false
+	if len(c.artifacts) < maxArtifactsReported {
+		c.artifacts = append(c.artifacts, artifact)
+		return true
 	}
+
+	c.metadata.Truncated = true
 	c.artifacts = append(c.artifacts, artifact)
-	c.metadata.Reported = len(c.artifacts)
+	sortArtifacts(c.artifacts)
+	c.artifacts = c.artifacts[:maxArtifactsReported]
 	return true
 }
 
 func (c *artifactCollector) addError(path string, err error) {
-	if err == nil || len(c.metadata.Errors) >= maxScanErrors {
+	if err == nil {
 		return
 	}
-	c.metadata.Errors = append(c.metadata.Errors, path+": "+err.Error())
+	c.metadata.ErrorCount++
+	if len(c.metadata.Errors) >= maxScanErrors {
+		c.metadata.ErrorsTruncated = true
+		return
+	}
+	c.metadata.Errors = append(c.metadata.Errors, relativeScanPath(c.projectDir, path)+": "+err.Error())
 }
 
 func (c *artifactCollector) finish() ScanMetadata {
+	sortArtifacts(c.artifacts)
+	if len(c.artifacts) > maxArtifactsReported {
+		c.artifacts = c.artifacts[:maxArtifactsReported]
+	}
+	c.metadata.Reported = len(c.artifacts)
 	c.metadata.Skipped = c.metadata.Discovered - c.metadata.Reported
+	if c.metadata.Skipped > 0 {
+		c.metadata.Truncated = true
+	}
 	return c.metadata
+}
+
+func relativeScanPath(projectDir, path string) string {
+	if relative, err := filepath.Rel(projectDir, path); err == nil {
+		return filepath.ToSlash(relative)
+	}
+	return filepath.ToSlash(path)
 }
 
 type Snapshot struct {
@@ -155,7 +180,7 @@ func FindGenerated(projectDir string, startedAt time.Time, snapshot Snapshot, hi
 
 func FindGeneratedWithMetadata(projectDir string, startedAt time.Time, snapshot Snapshot, hints []string) GeneratedResult {
 	threshold := startedAt.Add(-artifactTimeSkew)
-	collector := newArtifactCollector()
+	collector := newArtifactCollector(projectDir)
 	classCount := 0
 	codegenCount := 0
 
@@ -164,14 +189,8 @@ func FindGeneratedWithMetadata(projectDir string, startedAt time.Time, snapshot 
 			collector.addError(path, walkErr)
 			return nil
 		}
-		if collector.stopped {
-			return fs.SkipAll
-		}
 		if buildDir, ok, skip := buildDirPath(path, entry); ok {
 			scanBuildDir(buildDir, projectDir, threshold, snapshot, collector, &classCount, &codegenCount)
-			if collector.stopped {
-				return fs.SkipAll
-			}
 			if skip {
 				return filepath.SkipDir
 			}
@@ -189,17 +208,14 @@ func FindGeneratedWithMetadata(projectDir string, startedAt time.Time, snapshot 
 
 	for _, hint := range hints {
 		addHintArtifact(hint, projectDir, threshold, snapshot, collector)
-		if collector.stopped {
-			break
-		}
 	}
 
-	sortArtifacts(collector.artifacts)
+	metadata := collector.finish()
 	return GeneratedResult{
 		Artifacts:    collector.artifacts,
 		ClassCount:   classCount,
 		CodegenCount: codegenCount,
-		Metadata:     collector.finish(),
+		Metadata:     metadata,
 	}
 }
 
@@ -208,21 +224,15 @@ func FindAvailable(projectDir string, hints []string) []Artifact {
 }
 
 func FindAvailableWithMetadata(projectDir string, hints []string) AvailableResult {
-	collector := newArtifactCollector()
+	collector := newArtifactCollector(projectDir)
 
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			collector.addError(path, walkErr)
 			return nil
 		}
-		if collector.stopped {
-			return fs.SkipAll
-		}
 		if buildDir, ok, skip := buildDirPath(path, entry); ok {
 			scanAvailableBuildDir(buildDir, projectDir, collector)
-			if collector.stopped {
-				return fs.SkipAll
-			}
 			if skip {
 				return filepath.SkipDir
 			}
@@ -240,13 +250,10 @@ func FindAvailableWithMetadata(projectDir string, hints []string) AvailableResul
 
 	for _, hint := range hints {
 		addAvailableHintArtifact(hint, projectDir, collector)
-		if collector.stopped {
-			break
-		}
 	}
 
-	sortArtifacts(collector.artifacts)
-	return AvailableResult{Artifacts: collector.artifacts, Metadata: collector.finish()}
+	metadata := collector.finish()
+	return AvailableResult{Artifacts: collector.artifacts, Metadata: metadata}
 }
 
 func ExtractHints(text string) []string {
@@ -313,9 +320,7 @@ func captureBuildDir(buildDir, projectDir string, snapshot *Snapshot) {
 
 func scanBuildDir(buildDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector, classCount, codegenCount *int) {
 	for _, root := range artifactRoots {
-		if scanArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, threshold, snapshot, collector) {
-			break
-		}
+		scanArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, threshold, snapshot, collector)
 	}
 	*classCount += countChangedFiles(filepath.Join(buildDir, "classes"), projectDir, threshold, snapshot.Captured, snapshot.ClassEntries, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
@@ -330,9 +335,7 @@ func scanBuildDir(buildDir, projectDir string, threshold time.Time, snapshot Sna
 
 func scanAvailableBuildDir(buildDir, projectDir string, collector *artifactCollector) {
 	for _, root := range artifactRoots {
-		if scanAvailableArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, collector) {
-			break
-		}
+		scanAvailableArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, collector)
 	}
 }
 
@@ -367,16 +370,16 @@ func captureArtifactRoot(rootDir, projectDir string, entries map[string]Snapshot
 	})
 }
 
-func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector) bool {
+func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			collector.addError(rootDir, err)
 		}
-		return false
+		return
 	}
 	if !info.IsDir() {
-		return false
+		return
 	}
 
 	_ = filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -384,17 +387,11 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 			collector.addError(path, walkErr)
 			return nil
 		}
-		if collector.stopped {
-			return fs.SkipAll
-		}
 		if entry.IsDir() {
 			artifact, state, ok := buildArtifact(path, entry, projectDir)
 			if ok && shouldReportState(artifact.Path, state, threshold, snapshot.Captured, snapshot.ArtifactEntries) {
 				if collector.add(artifact) {
 					return filepath.SkipDir
-				}
-				if collector.stopped {
-					return fs.SkipAll
 				}
 			}
 			return nil
@@ -408,12 +405,8 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 			return nil
 		}
 		collector.add(artifact)
-		if collector.stopped {
-			return fs.SkipAll
-		}
 		return nil
 	})
-	return collector.stopped
 }
 
 func captureMatchingFiles(rootDir, projectDir string, entries map[string]SnapshotEntry, match func(path string) bool) {
@@ -583,16 +576,16 @@ func modifiedSince(modTimeUnixNano int64, threshold time.Time) bool {
 	return !time.Unix(0, modTimeUnixNano).Before(threshold)
 }
 
-func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCollector) bool {
+func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCollector) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			collector.addError(rootDir, err)
 		}
-		return false
+		return
 	}
 	if !info.IsDir() {
-		return false
+		return
 	}
 
 	_ = filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -600,16 +593,10 @@ func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCo
 			collector.addError(path, walkErr)
 			return nil
 		}
-		if collector.stopped {
-			return fs.SkipAll
-		}
 		if entry.IsDir() {
 			artifact, _, ok := buildArtifact(path, entry, projectDir)
 			if ok && collector.add(artifact) {
 				return filepath.SkipDir
-			}
-			if collector.stopped {
-				return fs.SkipAll
 			}
 			return nil
 		}
@@ -622,12 +609,8 @@ func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCo
 			return nil
 		}
 		collector.add(artifact)
-		if collector.stopped {
-			return fs.SkipAll
-		}
 		return nil
 	})
-	return collector.stopped
 }
 
 func sortArtifacts(artifacts []Artifact) {

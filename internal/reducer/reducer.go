@@ -59,12 +59,14 @@ type CustomMatchResult struct {
 }
 
 type JUnitScanMetadata struct {
-	Discovered   int      `json:"discovered"`
-	Parsed       int      `json:"parsed"`
-	Skipped      int      `json:"skipped"`
-	SkippedTests int      `json:"skipped_tests,omitempty"`
-	Errors       []string `json:"errors,omitempty"`
-	Truncated    bool     `json:"truncated"`
+	Discovered      int      `json:"discovered"`
+	Parsed          int      `json:"parsed"`
+	Skipped         int      `json:"skipped"`
+	SkippedTests    int      `json:"skipped_tests,omitempty"`
+	Errors          []string `json:"errors,omitempty"`
+	ErrorCount      int      `json:"error_count,omitempty"`
+	ErrorsTruncated bool     `json:"errors_truncated,omitempty"`
+	Truncated       bool     `json:"truncated"`
 }
 
 type ArtifactScanMetadata = artifacts.ScanMetadata
@@ -365,14 +367,19 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 		available := artifacts.FindAvailableWithMetadata(projectDir, hints)
 		found = filterAvailableArtifacts(available.Artifacts, summary.Command)
 		metadata = available.Metadata
+		metadata.Reported = len(found)
+		metadata.Skipped = metadata.Discovered - metadata.Reported
+		if metadata.Skipped < 0 {
+			metadata.Skipped = 0
+		}
 	}
 	summary.Artifacts = found
 	summary.GeneratedClassFileCount = classCount
 	summary.GeneratedCodegenFileCount = codegenCount
-	if metadata.Discovered > 0 || len(metadata.Errors) > 0 || metadata.Truncated {
+	if metadata.Discovered > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
 		summary.ArtifactScan = &metadata
 	}
-	if metadata.Truncated || len(metadata.Errors) > 0 {
+	if metadata.Truncated || metadata.ErrorCount > 0 {
 		message := fmt.Sprintf("Artifact scan incomplete: discovered %d, reported %d, skipped %d", metadata.Discovered, metadata.Reported, metadata.Skipped)
 		if metadata.Truncated {
 			message += " (truncated at the reporting limit)"
@@ -455,10 +462,12 @@ func commandProjectPrefixes(command []string) []string {
 }
 
 type junitReportSelection struct {
-	files      []string
-	discovered int
-	errors     []string
-	truncated  bool
+	files           []string
+	discovered      int
+	errors          []string
+	errorCount      int
+	errorsTruncated bool
+	truncated       bool
 }
 
 func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Summary, failedTests, important, warnings map[string]struct{}) {
@@ -467,22 +476,24 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 	}
 	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(summary.Command))
 	metadata := &JUnitScanMetadata{
-		Discovered: selection.discovered,
-		Errors:     append([]string(nil), selection.errors...),
-		Truncated:  selection.truncated,
+		Discovered:      selection.discovered,
+		Errors:          append([]string(nil), selection.errors...),
+		ErrorCount:      selection.errorCount,
+		ErrorsTruncated: selection.errorsTruncated,
+		Truncated:       selection.truncated,
 	}
 	passedCount := 0
 	failedCount := 0
 	for _, path := range selection.files {
 		content, err := os.ReadFile(path)
 		if err != nil {
-			addJUnitScanError(metadata, path, err)
+			addJUnitScanError(metadata, projectDir, path, err)
 			continue
 		}
 
 		var suite junitTestSuite
 		if err := xml.Unmarshal(content, &suite); err != nil {
-			addJUnitScanError(metadata, path, err)
+			addJUnitScanError(metadata, projectDir, path, err)
 			continue
 		}
 		metadata.Parsed++
@@ -517,10 +528,10 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 	if metadata.Skipped < 0 {
 		metadata.Skipped = 0
 	}
-	if metadata.Discovered > 0 || len(metadata.Errors) > 0 || metadata.Truncated {
+	if metadata.Discovered > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
 		summary.JUnitScan = metadata
 	}
-	if metadata.Truncated || len(metadata.Errors) > 0 {
+	if metadata.Truncated || metadata.ErrorCount > 0 {
 		message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
 		if metadata.Truncated {
 			message += " (truncated at the reporting limit)"
@@ -534,11 +545,29 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 	}
 }
 
-func addJUnitScanError(metadata *JUnitScanMetadata, path string, err error) {
-	if err == nil || len(metadata.Errors) >= maxJUnitScanErrors {
+func addJUnitScanError(metadata *JUnitScanMetadata, projectDir, path string, err error) {
+	if err == nil {
 		return
 	}
-	metadata.Errors = append(metadata.Errors, path+": "+err.Error())
+	metadata.ErrorCount++
+	if len(metadata.Errors) >= maxJUnitScanErrors {
+		metadata.ErrorsTruncated = true
+		return
+	}
+	metadata.Errors = append(metadata.Errors, relativeScanErrorPath(projectDir, path)+": "+err.Error())
+}
+
+func relativeScanErrorPath(projectDir, path string) string {
+	if relative, err := filepath.Rel(projectDir, path); err == nil {
+		return filepath.ToSlash(relative)
+	}
+	return filepath.ToSlash(path)
+}
+
+func isJUnitScanErrorPath(projectDir, path string) bool {
+	relative := relativeScanErrorPath(projectDir, path)
+	normalized := "/" + strings.Trim(relative, "/") + "/"
+	return strings.Contains(normalized, "/build/test-results/")
 }
 
 func addEnrichmentWarning(summary *Summary, warnings map[string]struct{}, message string) {
@@ -553,18 +582,18 @@ func findJUnitReportFiles(projectDir string) junitReportSelection {
 	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			if strings.Contains(filepath.ToSlash(path), "/build/test-results/") && len(selection.errors) < maxJUnitScanErrors {
-				selection.errors = append(selection.errors, path+": "+walkErr.Error())
+			if isJUnitScanErrorPath(projectDir, path) {
+				addSelectionError(&selection, projectDir, path, walkErr)
 			}
 			return nil
 		}
 		if isJUnitReportPath(path, entry.Name()) {
 			selection.discovered++
-			if len(selection.files) >= maxJUnitReportFiles {
+			if len(selection.files) < maxJUnitReportFiles {
+				selection.files = append(selection.files, path)
+			} else {
 				selection.truncated = true
-				return fs.SkipAll
 			}
-			selection.files = append(selection.files, path)
 			return nil
 		}
 		if entry.IsDir() {
@@ -597,7 +626,7 @@ func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallbac
 	for _, path := range selection.files {
 		info, err := os.Stat(path)
 		if err != nil {
-			addSelectionError(&selection, path, err)
+			addSelectionError(&selection, projectDir, path, err)
 			continue
 		}
 		if !info.ModTime().Before(threshold) {
@@ -615,11 +644,16 @@ func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallbac
 	return selection
 }
 
-func addSelectionError(selection *junitReportSelection, path string, err error) {
-	if err == nil || len(selection.errors) >= maxJUnitScanErrors {
+func addSelectionError(selection *junitReportSelection, projectDir, path string, err error) {
+	if err == nil {
 		return
 	}
-	selection.errors = append(selection.errors, path+": "+err.Error())
+	selection.errorCount++
+	if len(selection.errors) >= maxJUnitScanErrors {
+		selection.errorsTruncated = true
+		return
+	}
+	selection.errors = append(selection.errors, relativeScanErrorPath(projectDir, path)+": "+err.Error())
 }
 
 func addUnique(items *[]string, seen map[string]struct{}, value string, limit int) {

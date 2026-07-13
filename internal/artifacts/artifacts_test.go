@@ -93,6 +93,25 @@ func TestFindGeneratedReportsArtifactScanTruncation(t *testing.T) {
 	}
 }
 
+func TestFindGeneratedPreservesArtifactPriorityWhenCapped(t *testing.T) {
+	projectDir := t.TempDir()
+	for i := 0; i < maxArtifactsReported; i++ {
+		writeFile(t, filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%03d.jar", i)), "jar")
+	}
+	writeFile(t, filepath.Join(projectDir, "app", "build", "libs", "zzz-release.apk"), "apk")
+
+	result := FindGeneratedWithMetadata(projectDir, time.Now().Add(-time.Hour), Snapshot{}, nil)
+	if len(result.Artifacts) != maxArtifactsReported {
+		t.Fatalf("expected capped artifacts, got %d", len(result.Artifacts))
+	}
+	if !containsArtifact(result.Artifacts, "APK", "app/build/libs/zzz-release.apk") {
+		t.Fatalf("expected high-priority apk to survive cap, got %+v", result.Artifacts)
+	}
+	if result.Metadata.Discovered != maxArtifactsReported+1 || result.Metadata.Reported != maxArtifactsReported || result.Metadata.Skipped != 1 || !result.Metadata.Truncated {
+		t.Fatalf("unexpected mixed-priority metadata: %+v", result.Metadata)
+	}
+}
+
 func TestFindAvailableIncludesExistingArtifactsWithoutSnapshotDiff(t *testing.T) {
 	projectDir := t.TempDir()
 	writeFile(t, filepath.Join(projectDir, "androidApp", "build", "outputs", "apk", "debug", "androidApp-debug.apk"), "apk")
