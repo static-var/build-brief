@@ -364,14 +364,9 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 	classCount := generated.ClassCount
 	codegenCount := generated.CodegenCount
 	if len(found) == 0 && shouldReportAvailableArtifacts(summary.Command) {
-		available := artifacts.FindAvailableWithMetadata(projectDir, hints)
-		found = filterAvailableArtifacts(available.Artifacts, summary.Command)
+		available := artifacts.FindAvailableScopedWithMetadata(projectDir, hints, commandProjectPrefixes(summary.Command))
+		found = available.Artifacts
 		metadata = available.Metadata
-		metadata.Reported = len(found)
-		metadata.Skipped = metadata.Discovered - metadata.Reported
-		if metadata.Skipped < 0 {
-			metadata.Skipped = 0
-		}
 	}
 	summary.Artifacts = found
 	summary.GeneratedClassFileCount = classCount
@@ -415,27 +410,6 @@ func shouldReportAvailableArtifacts(command []string) bool {
 		}
 	}
 	return false
-}
-
-func filterAvailableArtifacts(found []Artifact, command []string) []Artifact {
-	projectPrefixes := commandProjectPrefixes(command)
-	if len(projectPrefixes) == 0 {
-		return found
-	}
-
-	filtered := make([]Artifact, 0, len(found))
-	for _, artifact := range found {
-		for _, prefix := range projectPrefixes {
-			if artifact.Path == prefix || strings.HasPrefix(artifact.Path, prefix+"/") {
-				filtered = append(filtered, artifact)
-				break
-			}
-		}
-	}
-	if len(filtered) == 0 {
-		return found
-	}
-	return filtered
 }
 
 func commandProjectPrefixes(command []string) []string {
@@ -554,14 +528,46 @@ func addJUnitScanError(metadata *JUnitScanMetadata, projectDir, path string, err
 		metadata.ErrorsTruncated = true
 		return
 	}
-	metadata.Errors = append(metadata.Errors, relativeScanErrorPath(projectDir, path)+": "+err.Error())
+	metadata.Errors = append(metadata.Errors, relativeScanErrorPath(projectDir, path)+": "+sanitizeScanErrorText(projectDir, err.Error()))
 }
 
 func relativeScanErrorPath(projectDir, path string) string {
 	if relative, err := filepath.Rel(projectDir, path); err == nil {
 		return filepath.ToSlash(relative)
 	}
-	return filepath.ToSlash(path)
+	return sanitizeScanErrorText(projectDir, filepath.ToSlash(path))
+}
+
+func sanitizeScanErrorText(projectDir, text string) string {
+	for _, root := range scanErrorPathVariants(projectDir) {
+		text = strings.ReplaceAll(text, root, "<project>")
+	}
+	return text
+}
+
+func scanErrorPathVariants(projectDir string) []string {
+	if projectDir == "" {
+		return nil
+	}
+	candidates := []string{projectDir, filepath.Clean(projectDir)}
+	if absolute, err := filepath.Abs(projectDir); err == nil {
+		candidates = append(candidates, absolute, filepath.Clean(absolute))
+	}
+	variants := make([]string, 0, len(candidates)*2)
+	seen := make(map[string]struct{}, len(candidates)*2)
+	for _, candidate := range candidates {
+		for _, variant := range []string{candidate, filepath.ToSlash(candidate)} {
+			if variant == "" {
+				continue
+			}
+			if _, ok := seen[variant]; ok {
+				continue
+			}
+			seen[variant] = struct{}{}
+			variants = append(variants, variant)
+		}
+	}
+	return variants
 }
 
 func isJUnitScanErrorPath(projectDir, path string) bool {
@@ -653,7 +659,7 @@ func addSelectionError(selection *junitReportSelection, projectDir, path string,
 		selection.errorsTruncated = true
 		return
 	}
-	selection.errors = append(selection.errors, relativeScanErrorPath(projectDir, path)+": "+err.Error())
+	selection.errors = append(selection.errors, relativeScanErrorPath(projectDir, path)+": "+sanitizeScanErrorText(projectDir, err.Error()))
 }
 
 func addUnique(items *[]string, seen map[string]struct{}, value string, limit int) {

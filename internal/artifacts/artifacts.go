@@ -46,35 +46,69 @@ type AvailableResult struct {
 
 type artifactCollector struct {
 	artifacts  []Artifact
-	seen       map[string]struct{}
 	projectDir string
+	scope      []string
 	metadata   ScanMetadata
 }
 
 func newArtifactCollector(projectDir string) *artifactCollector {
 	return &artifactCollector{
 		artifacts:  make([]Artifact, 0, maxArtifactsReported),
-		seen:       make(map[string]struct{}),
 		projectDir: projectDir,
 	}
 }
 
-func (c *artifactCollector) add(artifact Artifact) bool {
-	if _, ok := c.seen[artifact.Path]; ok {
-		return false
+func newScopedArtifactCollector(projectDir string, prefixes []string) *artifactCollector {
+	collector := newArtifactCollector(projectDir)
+	for _, prefix := range prefixes {
+		prefix = strings.ReplaceAll(strings.TrimSpace(prefix), `\`, "/")
+		prefix = filepath.ToSlash(strings.Trim(prefix, "/"))
+		if prefix != "" {
+			collector.scope = append(collector.scope, prefix)
+		}
 	}
-	c.seen[artifact.Path] = struct{}{}
+	return collector
+}
+
+func (c *artifactCollector) add(artifact Artifact) bool {
+	// Dedupe is bounded to retained top-K entries; discarded candidates are
+	// counted but never retained, so the collector state cannot grow with the scan.
+	if !c.matchesScope(artifact) {
+		// Artifact directories can be pruned even when they are out of scope.
+		return true
+	}
+	for _, retained := range c.artifacts {
+		if retained.Path == artifact.Path {
+			return false
+		}
+	}
+
 	c.metadata.Discovered++
 	if len(c.artifacts) < maxArtifactsReported {
 		c.artifacts = append(c.artifacts, artifact)
+		sortArtifacts(c.artifacts)
 		return true
 	}
 
 	c.metadata.Truncated = true
-	c.artifacts = append(c.artifacts, artifact)
-	sortArtifacts(c.artifacts)
-	c.artifacts = c.artifacts[:maxArtifactsReported]
+	if artifactLess(artifact, c.artifacts[maxArtifactsReported-1]) {
+		c.artifacts[maxArtifactsReported-1] = artifact
+		sortArtifacts(c.artifacts)
+	}
 	return true
+}
+
+func (c *artifactCollector) matchesScope(artifact Artifact) bool {
+	if len(c.scope) == 0 {
+		return true
+	}
+	path := filepath.ToSlash(strings.Trim(artifact.Path, "/"))
+	for _, prefix := range c.scope {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *artifactCollector) addError(path string, err error) {
@@ -86,14 +120,12 @@ func (c *artifactCollector) addError(path string, err error) {
 		c.metadata.ErrorsTruncated = true
 		return
 	}
-	c.metadata.Errors = append(c.metadata.Errors, relativeScanPath(c.projectDir, path)+": "+err.Error())
+	scanError := sanitizeScanErrorText(c.projectDir, err.Error())
+	c.metadata.Errors = append(c.metadata.Errors, relativeScanPath(c.projectDir, path)+": "+scanError)
 }
 
 func (c *artifactCollector) finish() ScanMetadata {
 	sortArtifacts(c.artifacts)
-	if len(c.artifacts) > maxArtifactsReported {
-		c.artifacts = c.artifacts[:maxArtifactsReported]
-	}
 	c.metadata.Reported = len(c.artifacts)
 	c.metadata.Skipped = c.metadata.Discovered - c.metadata.Reported
 	if c.metadata.Skipped > 0 {
@@ -106,7 +138,39 @@ func relativeScanPath(projectDir, path string) string {
 	if relative, err := filepath.Rel(projectDir, path); err == nil {
 		return filepath.ToSlash(relative)
 	}
-	return filepath.ToSlash(path)
+	return sanitizeScanErrorText(projectDir, filepath.ToSlash(path))
+}
+
+func sanitizeScanErrorText(projectDir, text string) string {
+	for _, root := range scanPathVariants(projectDir) {
+		text = strings.ReplaceAll(text, root, "<project>")
+	}
+	return text
+}
+
+func scanPathVariants(projectDir string) []string {
+	if projectDir == "" {
+		return nil
+	}
+	candidates := []string{projectDir, filepath.Clean(projectDir)}
+	if absolute, err := filepath.Abs(projectDir); err == nil {
+		candidates = append(candidates, absolute, filepath.Clean(absolute))
+	}
+	variants := make([]string, 0, len(candidates)*2)
+	seen := make(map[string]struct{}, len(candidates)*2)
+	for _, candidate := range candidates {
+		for _, variant := range []string{candidate, filepath.ToSlash(candidate)} {
+			if variant == "" {
+				continue
+			}
+			if _, ok := seen[variant]; ok {
+				continue
+			}
+			seen[variant] = struct{}{}
+			variants = append(variants, variant)
+		}
+	}
+	return variants
 }
 
 type Snapshot struct {
@@ -224,7 +288,11 @@ func FindAvailable(projectDir string, hints []string) []Artifact {
 }
 
 func FindAvailableWithMetadata(projectDir string, hints []string) AvailableResult {
-	collector := newArtifactCollector(projectDir)
+	return FindAvailableScopedWithMetadata(projectDir, hints, nil)
+}
+
+func FindAvailableScopedWithMetadata(projectDir string, hints, projectPrefixes []string) AvailableResult {
+	collector := newScopedArtifactCollector(projectDir, projectPrefixes)
 
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -615,19 +683,23 @@ func scanAvailableArtifactRoot(rootDir, projectDir string, collector *artifactCo
 
 func sortArtifacts(artifacts []Artifact) {
 	sort.Slice(artifacts, func(i, j int) bool {
-		priorityI := artifactPriority(artifacts[i])
-		priorityJ := artifactPriority(artifacts[j])
-		if priorityI != priorityJ {
-			return priorityI < priorityJ
-		}
-		if artifacts[i].SizeBytes != artifacts[j].SizeBytes {
-			return artifacts[i].SizeBytes > artifacts[j].SizeBytes
-		}
-		if artifacts[i].Kind != artifacts[j].Kind {
-			return artifacts[i].Kind < artifacts[j].Kind
-		}
-		return artifacts[i].Path < artifacts[j].Path
+		return artifactLess(artifacts[i], artifacts[j])
 	})
+}
+
+func artifactLess(left, right Artifact) bool {
+	priorityLeft := artifactPriority(left)
+	priorityRight := artifactPriority(right)
+	if priorityLeft != priorityRight {
+		return priorityLeft < priorityRight
+	}
+	if left.SizeBytes != right.SizeBytes {
+		return left.SizeBytes > right.SizeBytes
+	}
+	if left.Kind != right.Kind {
+		return left.Kind < right.Kind
+	}
+	return left.Path < right.Path
 }
 
 func artifactKind(name string, isDir bool) (string, bool) {

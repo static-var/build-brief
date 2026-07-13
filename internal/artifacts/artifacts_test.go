@@ -1,9 +1,12 @@
 package artifacts
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -90,6 +93,44 @@ func TestFindGeneratedReportsArtifactScanTruncation(t *testing.T) {
 	}
 	if result.Metadata.Skipped != 1 || !result.Metadata.Truncated {
 		t.Fatalf("expected one skipped artifact and truncation, got %+v", result.Metadata)
+	}
+}
+
+func TestArtifactCollectorSanitizesProjectDirFromScanError(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, "app", "build", "outputs", "apk")
+	collector := newArtifactCollector(projectDir)
+
+	collector.addError(path, &fs.PathError{Op: "open", Path: path, Err: errors.New("permission denied")})
+	metadata := collector.finish()
+
+	if len(metadata.Errors) != 1 {
+		t.Fatalf("expected one scan error, got %+v", metadata)
+	}
+	if strings.Contains(metadata.Errors[0], projectDir) {
+		t.Fatalf("scan error leaked project directory %q: %q", projectDir, metadata.Errors[0])
+	}
+}
+
+func TestArtifactCollectorRetainsBoundedStateForLargeCandidateStream(t *testing.T) {
+	collector := newArtifactCollector("")
+	const candidateCount = 100_000
+
+	for i := 0; i < candidateCount; i++ {
+		collector.add(Artifact{Kind: "JAR", Path: fmt.Sprintf("module/build/libs/artifact-%06d.jar", i)})
+	}
+
+	if len(collector.artifacts) != maxArtifactsReported {
+		t.Fatalf("expected retained artifacts bounded at %d, got %d", maxArtifactsReported, len(collector.artifacts))
+	}
+	discovered := collector.metadata.Discovered
+	collector.add(collector.artifacts[0])
+	if collector.metadata.Discovered != discovered {
+		t.Fatalf("expected retained artifact duplicate to be ignored, got discovered=%d", collector.metadata.Discovered)
+	}
+	metadata := collector.finish()
+	if metadata.Discovered != candidateCount || metadata.Reported != maxArtifactsReported || metadata.Skipped != candidateCount-maxArtifactsReported || !metadata.Truncated {
+		t.Fatalf("unexpected large-stream metadata: %+v", metadata)
 	}
 }
 

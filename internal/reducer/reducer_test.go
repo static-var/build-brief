@@ -3,6 +3,7 @@ package reducer
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -314,8 +315,101 @@ func TestReduceFallsBackToAvailableArtifactsForWarmAssemble(t *testing.T) {
 	if containsArtifact(summary.Artifacts, "APK", "benchmark/build/outputs/apk/debug/benchmark-debug.apk") {
 		t.Fatalf("did not expect warm assemble fallback to include unrelated module artifact, got %+v", summary.Artifacts)
 	}
-	if summary.ArtifactScan == nil || summary.ArtifactScan.Discovered != 2 || summary.ArtifactScan.Reported != 1 || summary.ArtifactScan.Skipped != 1 {
-		t.Fatalf("expected scoped artifact metadata, got %+v", summary.ArtifactScan)
+	if summary.ArtifactScan == nil || summary.ArtifactScan.Discovered != 1 || summary.ArtifactScan.Reported != 1 || summary.ArtifactScan.Skipped != 0 || summary.ArtifactScan.Truncated {
+		t.Fatalf("expected truthful scoped artifact metadata, got %+v", summary.ArtifactScan)
+	}
+}
+
+func TestReduceWarmFallbackAppliesProjectScopeBeforeArtifactCap(t *testing.T) {
+	projectDir := t.TempDir()
+	for i := 0; i < 25; i++ {
+		writeGeneratedFile(t, filepath.Join(projectDir, "unrelated", "build", "outputs", "apk", "debug", fmt.Sprintf("unrelated-%03d.apk", i)), "apk")
+	}
+	writeGeneratedFile(t, filepath.Join(projectDir, "target", "build", "libs", "target.jar"), "jar")
+	snapshot := artifacts.Capture(projectDir)
+
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", ":target:assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         3 * time.Second,
+		StartTime:        time.Now(),
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :target:assemble UP-TO-DATE",
+			"BUILD SUCCESSFUL in 3s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce scoped warm assemble log: %v", err)
+	}
+	if len(summary.Artifacts) != 1 || !containsArtifact(summary.Artifacts, "JAR", "target/build/libs/target.jar") {
+		t.Fatalf("expected only scoped target artifact, got %+v", summary.Artifacts)
+	}
+	if summary.ArtifactScan == nil || summary.ArtifactScan.Discovered != 1 || summary.ArtifactScan.Reported != 1 || summary.ArtifactScan.Skipped != 0 || summary.ArtifactScan.Truncated {
+		t.Fatalf("expected truthful scoped artifact metadata, got %+v", summary.ArtifactScan)
+	}
+}
+
+func TestReduceWarmFallbackWithNoMatchingArtifactsStaysEmpty(t *testing.T) {
+	projectDir := t.TempDir()
+	for i := 0; i < 25; i++ {
+		writeGeneratedFile(t, filepath.Join(projectDir, "unrelated", "build", "outputs", "apk", "debug", fmt.Sprintf("unrelated-%03d.apk", i)), "apk")
+	}
+	snapshot := artifacts.Capture(projectDir)
+
+	command := gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", ":missing:assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}
+	result := runner.Result{
+		ExitCode:         0,
+		Duration:         3 * time.Second,
+		StartTime:        time.Now(),
+		ArtifactSnapshot: snapshot,
+		RawLogPath: writeTestLog(t, []string{
+			"> Task :missing:assemble UP-TO-DATE",
+			"BUILD SUCCESSFUL in 3s",
+		}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce empty scoped warm assemble log: %v", err)
+	}
+	if len(summary.Artifacts) != 0 {
+		t.Fatalf("expected no artifacts for empty scope, got %+v", summary.Artifacts)
+	}
+	if summary.ArtifactScan != nil && (summary.ArtifactScan.Discovered != 0 || summary.ArtifactScan.Reported != 0 || summary.ArtifactScan.Skipped != 0) {
+		t.Fatalf("expected empty scoped metadata, got %+v", summary.ArtifactScan)
+	}
+}
+
+func TestReduceSanitizesJUnitScanErrorText(t *testing.T) {
+	projectDir := t.TempDir()
+	path := filepath.Join(projectDir, "module", "build", "test-results", "test", "TEST-bad.xml")
+	metadata := &JUnitScanMetadata{}
+	addJUnitScanError(metadata, projectDir, path, &fs.PathError{Op: "open", Path: path, Err: fmt.Errorf("permission denied")})
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal junit metadata: %v", err)
+	}
+	if strings.Contains(string(encoded), projectDir) {
+		t.Fatalf("machine scan error leaked project directory %q: %s", projectDir, encoded)
+	}
+	for _, scanError := range metadata.Errors {
+		if strings.Contains(scanError, projectDir) {
+			t.Fatalf("scan error leaked project directory %q: %q", projectDir, scanError)
+		}
 	}
 }
 
