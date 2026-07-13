@@ -269,6 +269,107 @@ func TestReleaseDoesNotRemoveReclaimedSuccessorLock(t *testing.T) {
 	}
 }
 
+func TestWriteLockMetadataPersistsProcessIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("create lock: %v", err)
+	}
+	defer file.Close()
+	withProcessIdentityForPID(t, func(int) (string, bool) { return "v1:test:current", true })
+
+	if err := writeLockMetadata(&lockHandle{file: file, token: "token"}); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close lock: %v", err)
+	}
+	metadata, err := readLockMetadata(path)
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if metadata.ProcessIdentity != "v1:test:current" {
+		t.Fatalf("expected persisted process identity, got %q", metadata.ProcessIdentity)
+	}
+}
+
+func TestShouldBreakStaleLockReclaimsSamePIDWithWrongProcessIdentity(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\nprocess_identity=v1:test:original\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write stale reused-pid lock: %v", err)
+	}
+	withProcessIdentityForPID(t, func(int) (string, bool) { return "v1:test:replacement", true })
+
+	if !shouldBreakStaleLock(lockPath) {
+		t.Fatal("did not reclaim stale lock owned by a prior process with the same PID")
+	}
+}
+
+func TestShouldBreakStaleLockRetainsSamePIDWithMatchingProcessIdentity(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\nprocess_identity=v1:test:original\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write live-owner lock: %v", err)
+	}
+	withProcessIdentityForPID(t, func(int) (string, bool) { return "v1:test:original", true })
+
+	if shouldBreakStaleLock(lockPath) {
+		t.Fatal("reclaimed a lock owned by the original live process")
+	}
+}
+
+func TestShouldBreakStaleLockRetainsLiveLegacyOwner(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(lockPath, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write legacy live-owner lock: %v", err)
+	}
+
+	if shouldBreakStaleLock(lockPath) {
+		t.Fatal("reclaimed a live legacy lock")
+	}
+}
+
+func TestShouldBreakStaleLockRetainsLiveOwnerWhenIdentityIsMalformedOrUnavailable(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		identity string
+		lookup   func(int) (string, bool)
+	}{
+		{
+			name:     "malformed metadata identity",
+			identity: "not-a-process-identity",
+			lookup:   func(int) (string, bool) { return "v1:test:current", true },
+		},
+		{
+			name:     "identity lookup unavailable",
+			identity: "v1:test:original",
+			lookup:   func(int) (string, bool) { return "", false },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
+			metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\nprocess_identity=%s\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano), test.identity)
+			if err := os.WriteFile(lockPath, []byte(metadata), 0o600); err != nil {
+				t.Fatalf("write lock: %v", err)
+			}
+			withProcessIdentityForPID(t, test.lookup)
+
+			if shouldBreakStaleLock(lockPath) {
+				t.Fatal("reclaimed a live lock without a trustworthy process identity")
+			}
+		})
+	}
+}
+
+func withProcessIdentityForPID(t *testing.T, lookup func(int) (string, bool)) {
+	t.Helper()
+	original := processIdentityForPID
+	processIdentityForPID = lookup
+	t.Cleanup(func() { processIdentityForPID = original })
+}
+
 func TestAcquireLockFileDoesNotReclaimLiveOwnerOverAge(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "tracking.jsonl.lock")
 	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\n", os.Getpid(), time.Now().Add(-staleLockAge-time.Second).UTC().Format(time.RFC3339Nano))

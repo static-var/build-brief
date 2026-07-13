@@ -29,9 +29,10 @@ const (
 )
 
 var (
-	createTrackingTemp   = os.CreateTemp
-	renameTrackingFile   = os.Rename
-	encodeTrackingRecord = func(encoder *json.Encoder, record Record) error { return encoder.Encode(record) }
+	createTrackingTemp    = os.CreateTemp
+	renameTrackingFile    = os.Rename
+	encodeTrackingRecord  = func(encoder *json.Encoder, record Record) error { return encoder.Encode(record) }
+	processIdentityForPID = processIdentity
 )
 
 type Record struct {
@@ -81,9 +82,10 @@ type period struct {
 }
 
 type lockMetadata struct {
-	PID       int
-	CreatedAt time.Time
-	Token     string
+	PID             int
+	CreatedAt       time.Time
+	ProcessIdentity string
+	Token           string
 }
 
 type lockHandle struct {
@@ -632,7 +634,12 @@ func newLockToken() string {
 }
 
 func writeLockMetadata(handle *lockHandle) error {
-	_, err := fmt.Fprintf(handle.file, "pid=%d\ncreated_at=%s\ntoken=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), handle.token)
+	pid := os.Getpid()
+	metadata := fmt.Sprintf("pid=%d\ncreated_at=%s\n", pid, time.Now().UTC().Format(time.RFC3339Nano))
+	if identity, known := processIdentityForPID(pid); known && validProcessIdentity(identity) {
+		metadata += "process_identity=" + identity + "\n"
+	}
+	_, err := fmt.Fprintf(handle.file, "%stoken=%s\n", metadata, handle.token)
 	return err
 }
 
@@ -643,9 +650,20 @@ func shouldBreakStaleLock(lockPath string) bool {
 	}
 
 	if metadata.PID > 0 {
-		known, alive := processLiveness(metadata.PID)
-		if known {
-			return !alive
+		livenessKnown, alive := processLiveness(metadata.PID)
+		if livenessKnown && !alive {
+			return true
+		}
+		if validProcessIdentity(metadata.ProcessIdentity) {
+			if identity, identityKnown := processIdentityForPID(metadata.PID); identityKnown {
+				return identity != metadata.ProcessIdentity
+			}
+			// A process may be live but not inspectable. Do not let age reclaim it.
+			return false
+		}
+		if livenessKnown && alive {
+			// Legacy or malformed metadata cannot disprove the original owner.
+			return false
 		}
 	}
 
@@ -653,6 +671,18 @@ func shouldBreakStaleLock(lockPath string) bool {
 		return true
 	}
 	return fileOlderThan(lockPath, staleLockAge)
+}
+
+func validProcessIdentity(identity string) bool {
+	if !strings.HasPrefix(identity, "v1:") || len(identity) <= len("v1:") || len(identity) > 256 {
+		return false
+	}
+	for _, r := range identity {
+		if r < '!' || r > '~' || r == '=' {
+			return false
+		}
+	}
+	return true
 }
 
 func readLockMetadata(lockPath string) (lockMetadata, error) {
@@ -684,6 +714,8 @@ func readLockMetadata(lockPath string) (lockMetadata, error) {
 				return lockMetadata{}, err
 			}
 			metadata.CreatedAt = createdAt
+		case "process_identity":
+			metadata.ProcessIdentity = value
 		case "token":
 			metadata.Token = value
 		}
