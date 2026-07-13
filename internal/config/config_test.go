@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -101,6 +103,51 @@ func TestLoadAllowsMissingOptionalDefaultConfig(t *testing.T) {
 	}
 	if len(cfg.Matches) != 0 {
 		t.Fatalf("expected no matches, got %+v", cfg.Matches)
+	}
+}
+
+func TestLoadAllowsRulesBeyondRuntimeCap(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "custom.json")
+	matches := strings.TrimSuffix(strings.Repeat(`{"name":"rule","pattern":"match"},`, CustomMatchRuleLimit+1), ",")
+	writeConfig(t, configPath, `{"matches":[`+matches+`]}`)
+
+	cfg, _, err := Load(t.TempDir(), configPath)
+	if err != nil {
+		t.Fatalf("load permissive config: %v", err)
+	}
+	if len(cfg.Matches) != CustomMatchRuleLimit+1 {
+		t.Fatalf("matches = %d, want %d", len(cfg.Matches), CustomMatchRuleLimit+1)
+	}
+}
+
+func TestCustomMatchRuntimeLimits(t *testing.T) {
+	if CustomMatchRuleLimit != 64 {
+		t.Fatalf("rule limit = %d, want 64", CustomMatchRuleLimit)
+	}
+	if CustomMatchUniqueResultLimitPerRule != 8 {
+		t.Fatalf("unique-result limit = %d, want 8", CustomMatchUniqueResultLimitPerRule)
+	}
+}
+
+func TestCustomMatchLimitDocumentationMatchesExportedLimits(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate config test file")
+	}
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	for _, path := range []string{filepath.Join(root, "README.md"), filepath.Join(root, "site", "index.html")} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, expected := range []string{
+			fmt.Sprintf("%d rules", CustomMatchRuleLimit),
+			fmt.Sprintf("%d unique matches", CustomMatchUniqueResultLimitPerRule),
+		} {
+			if !strings.Contains(string(content), expected) {
+				t.Fatalf("%s does not document %q", path, expected)
+			}
+		}
 	}
 }
 
