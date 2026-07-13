@@ -566,6 +566,40 @@ func TestReduceContextCaptureIgnoresBlankLines(t *testing.T) {
 	}
 }
 
+func TestReduceBoundsUnterminatedLineHintAcquisition(t *testing.T) {
+	projectDir := t.TempDir()
+	startTime := time.Now()
+	latePath := filepath.Join(projectDir, "custom-output", "late.jar")
+	writeGeneratedFile(t, latePath, "jar")
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  startTime,
+		RawLogPath: writeTestLog(t, []string{strings.Repeat("x", (1<<20)+1) + " ./custom-output/late.jar", "BUILD SUCCESSFUL in 1s"}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce oversized unterminated line: %v", err)
+	}
+	if summary.ArtifactHintScan == nil || !summary.ArtifactHintScan.Truncated {
+		t.Fatalf("expected explicit hint truncation metadata, got %+v", summary.ArtifactHintScan)
+	}
+	if summary.ArtifactHintScan.Observed != 0 || len(summary.Artifacts) != 0 {
+		t.Fatalf("expected discarded hints after the bounded prefix, got scan=%+v artifacts=%+v", summary.ArtifactHintScan, summary.Artifacts)
+	}
+	if summary.BuildStatusLine != "BUILD SUCCESSFUL in 1s" {
+		t.Fatalf("expected reducer to continue after oversized line, got %q", summary.BuildStatusLine)
+	}
+}
+
 func TestReduceHandlesVeryLongLines(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradle",
@@ -1251,6 +1285,39 @@ func TestReduceReportsBoundedArtifactHintRetention(t *testing.T) {
 	}
 	if shape.ArtifactHintScan.Retained > 64 || shape.ArtifactHintScan.RetainedBytes > 64*1024 {
 		t.Fatalf("artifact hint retention exceeded bounds: %+v", shape.ArtifactHintScan)
+	}
+}
+
+func TestReduceSurfacesQuotedArtifactsAndKeepsHintMetadataTruthful(t *testing.T) {
+	projectDir := t.TempDir()
+	startTime := time.Now()
+	firstPath := filepath.Join(projectDir, "custom output", "first.jar")
+	secondPath := filepath.Join(projectDir, "custom output", "second.apk")
+	writeGeneratedFile(t, firstPath, "jar")
+	writeGeneratedFile(t, secondPath, "apk")
+
+	command := gradle.Command{
+		Executable: "/tmp/gradle",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceSystem,
+	}
+	result := runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  startTime,
+		RawLogPath: writeTestLog(t, []string{`Artifacts: './custom output/first.jar ./custom output/second.apk'`, "BUILD SUCCESSFUL in 1s"}),
+	}
+
+	summary, err := Reduce(command, result)
+	if err != nil {
+		t.Fatalf("reduce quoted artifacts: %v", err)
+	}
+	if summary.ArtifactHintScan == nil || summary.ArtifactHintScan.Observed != 2 || summary.ArtifactHintScan.Retained != 2 || summary.ArtifactHintScan.Omitted != 0 || summary.ArtifactHintScan.Truncated {
+		t.Fatalf("expected truthful quoted hint metadata, got %+v", summary.ArtifactHintScan)
+	}
+	if !containsArtifact(summary.Artifacts, "JAR", "custom output/first.jar") || !containsArtifact(summary.Artifacts, "APK", "custom output/second.apk") {
+		t.Fatalf("expected both quoted artifacts, got %+v", summary.Artifacts)
 	}
 }
 

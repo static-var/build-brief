@@ -14,6 +14,8 @@ const (
 	maxArtifactsReported = 20
 	maxScanErrors        = 8
 	maxScanCoverageRoots = 64
+	maxScanHints         = maxScanCoverageRoots
+	maxScanHintBytes     = 64 * 1024
 	maxHintsPerLine      = 64
 	maxHintBytesPerLine  = 64 * 1024
 	maxHintLength        = 4096
@@ -33,7 +35,8 @@ type Artifact struct {
 // discovery event, so standard-root scan metadata remains an exact unique-path
 // count even when a retained candidate is later evicted. Non-standard hints
 // share only the bounded retained-path ledger. Reported is the retained top-K
-// set and Skipped is Discovered-Reported.
+// set and Skipped is Discovered-Reported. HintsTruncated distinguishes a
+// bounded direct-API hint input from a reporting-cap truncation.
 type ScanMetadata struct {
 	Discovered      int      `json:"discovered"`
 	Reported        int      `json:"reported"`
@@ -41,6 +44,7 @@ type ScanMetadata struct {
 	Errors          []string `json:"errors,omitempty"`
 	ErrorCount      int      `json:"error_count,omitempty"`
 	ErrorsTruncated bool     `json:"errors_truncated,omitempty"`
+	HintsTruncated  bool     `json:"hints_truncated,omitempty"`
 	Truncated       bool     `json:"truncated"`
 }
 
@@ -142,7 +146,11 @@ func (c *artifactCollector) addError(path string, err error) {
 // The root is recorded after a complete walk, so hint suppression never relies
 // on a path merely looking like a conventional Gradle output path.
 func (c *artifactCollector) addCoverage(rootDir string, hints []string) {
-	if len(hints) == 0 || len(c.coverageRoots) >= maxScanCoverageRoots {
+	if len(hints) == 0 {
+		return
+	}
+	if len(c.coverageRoots) >= maxScanCoverageRoots {
+		c.metadata.Truncated = true
 		return
 	}
 	root, ok := absoluteCleanPath(rootDir)
@@ -256,6 +264,7 @@ var (
 	rootedArtifactHintPattern   = regexp.MustCompile(`(?i)(?:file://)?(?:(?:[A-Za-z]:[\\/])|/|\./|\.\./)[^"'<>]*?(?:\.apk|\.aab|\.aar|\.jar|\.war|\.ear|\.zip|\.tgz|\.tar\.gz|\.tar|\.framework|\.xcframework|\.klib|\.kexe)(?:[\\/][^\s"'<>:,;]+)*`)
 	quotedArtifactHintPattern   = regexp.MustCompile(`(?i)["']([^"']+\.(?:apk|aab|aar|jar|war|ear|zip|tgz|tar\.gz|tar|framework|xcframework|klib|kexe)(?:[\\/][^"']*)?)["']`)
 	relativeArtifactHintPattern = regexp.MustCompile(`(?i)(?:\.[\\/]|[A-Za-z0-9_.-]+[\\/])[A-Za-z0-9_ ./\\-]*?\.(?:apk|aab|aar|jar|war|ear|zip|tgz|tar\.gz|tar|framework|xcframework|klib|kexe)(?:[\\/][A-Za-z0-9_ ./\\-]*)?`)
+	artifactExtensionPattern    = regexp.MustCompile(`(?i)\.(?:apk|aab|aar|jar|war|ear|zip|tgz|tar\.gz|tar|framework|xcframework|klib|kexe)\b`)
 )
 
 var artifactRoots = []artifactRoot{
@@ -306,8 +315,11 @@ func FindGenerated(projectDir string, startedAt time.Time, snapshot Snapshot, hi
 }
 
 func FindGeneratedWithMetadata(projectDir string, startedAt time.Time, snapshot Snapshot, hints []string) GeneratedResult {
+	hints, hintsTruncated := boundScanHints(hints)
 	threshold := startedAt.Add(-artifactTimeSkew)
 	collector := newArtifactCollector(projectDir)
+	collector.metadata.HintsTruncated = hintsTruncated
+	collector.metadata.Truncated = hintsTruncated
 	classCount := 0
 	codegenCount := 0
 
@@ -355,7 +367,10 @@ func FindAvailableWithMetadata(projectDir string, hints []string) AvailableResul
 }
 
 func FindAvailableScopedWithMetadata(projectDir string, hints, projectPrefixes []string) AvailableResult {
+	hints, hintsTruncated := boundScanHints(hints)
 	collector := newScopedArtifactCollector(projectDir, projectPrefixes)
+	collector.metadata.HintsTruncated = hintsTruncated
+	collector.metadata.Truncated = hintsTruncated
 
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -385,6 +400,46 @@ func FindAvailableScopedWithMetadata(projectDir string, hints, projectPrefixes [
 
 	metadata := collector.finish()
 	return AvailableResult{Artifacts: collector.artifacts, Metadata: metadata}
+}
+
+func boundScanHints(hints []string) ([]string, bool) {
+	if len(hints) == 0 {
+		return nil, false
+	}
+
+	bounded := make([]string, 0, minInt(len(hints), maxScanHints))
+	seen := make(map[string]struct{}, minInt(len(hints), maxScanHints))
+	retainedBytes := 0
+	truncated := false
+	for _, raw := range hints {
+		hint := normalizeArtifactHint(raw)
+		if hint == "" {
+			continue
+		}
+		if len(hint) > maxHintLength {
+			truncated = true
+			continue
+		}
+		if _, ok := seen[hint]; ok {
+			continue
+		}
+		if len(bounded) >= maxScanHints || retainedBytes+len(hint) > maxScanHintBytes {
+			truncated = true
+			continue
+		}
+		hint = strings.Clone(hint)
+		seen[hint] = struct{}{}
+		bounded = append(bounded, hint)
+		retainedBytes += len(hint)
+	}
+	return bounded, truncated
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 // HintScanMetadata describes a streamed line scan. A zero limit means the
@@ -423,10 +478,16 @@ func (m *hintMatcher) advance(text string) {
 // unbounded FindAll result. Limits are applied before the callback; pass zero
 // for both limits when the caller needs complete, allocation-bounded parsing.
 func ScanHints(text string, maxCount, maxBytes int, visit func(string)) HintScanMetadata {
+	return scanHintCandidates(text, maxCount, maxBytes, visit, true)
+}
+
+func scanHintCandidates(text string, maxCount, maxBytes int, visit func(string), includeQuoted bool) HintScanMetadata {
 	matchers := []hintMatcher{
 		{pattern: rootedArtifactHintPattern},
 		{pattern: relativeArtifactHintPattern},
-		{pattern: quotedArtifactHintPattern},
+	}
+	if includeQuoted {
+		matchers = append(matchers, hintMatcher{pattern: quotedArtifactHintPattern})
 	}
 	for i := range matchers {
 		matchers[i].advance(text)
@@ -455,23 +516,177 @@ func ScanHints(text string, maxCount, maxBytes int, visit func(string)) HintScan
 		if start < lastEnd {
 			continue
 		}
-		if maxCount > 0 && metadata.Parsed >= maxCount {
-			metadata.Truncated = true
+
+		if includeQuoted && best == len(matchers)-1 {
+			quoted := scanQuotedHintCandidates(text, start, end, maxCount, maxBytes, metadata, visit)
+			metadata.Parsed += quoted.Parsed
+			metadata.ParsedBytes += quoted.ParsedBytes
+			if quoted.Truncated {
+				metadata.Truncated = true
+				break
+			}
+			// A quoted match can contain plain matches. They were intentionally
+			// consumed above; do not let the broad quote suppress their count.
+			lastEnd = end
+			continue
+		}
+
+		if !acceptHintCandidate(text[start:end], maxCount, maxBytes, &metadata, visit) {
 			break
 		}
-		candidateBytes := end - start
-		if maxBytes > 0 && metadata.ParsedBytes+candidateBytes > maxBytes {
-			metadata.Truncated = true
-			break
-		}
-		if visit != nil {
-			visit(text[start:end])
-		}
-		metadata.Parsed++
-		metadata.ParsedBytes += candidateBytes
 		lastEnd = end
 	}
 	return metadata
+}
+
+func scanQuotedHintCandidates(text string, start, end, maxCount, maxBytes int, current HintScanMetadata, visit func(string)) HintScanMetadata {
+	if end-start < 2 {
+		return HintScanMetadata{}
+	}
+	if maxCount > 0 && current.Parsed >= maxCount {
+		return HintScanMetadata{Truncated: true}
+	}
+	if maxBytes > 0 && current.ParsedBytes >= maxBytes {
+		return HintScanMetadata{Truncated: true}
+	}
+
+	content := text[start+1 : end-1]
+	if !hasMultipleArtifactExtensions(content) {
+		var metadata HintScanMetadata
+		acceptHintCandidate(content, remainingHintCount(maxCount, current.Parsed), remainingHintBytes(maxBytes, current.ParsedBytes), &metadata, visit)
+		return metadata
+	}
+
+	return scanQuotedMultipleArtifactPaths(content, remainingHintCount(maxCount, current.Parsed), remainingHintBytes(maxBytes, current.ParsedBytes), visit)
+}
+
+func scanQuotedMultipleArtifactPaths(text string, maxCount, maxBytes int, visit func(string)) HintScanMetadata {
+	metadata := HintScanMetadata{}
+	offset := 0
+	previousEnd := 0
+	first := true
+	for {
+		match := artifactExtensionPattern.FindStringIndex(text[offset:])
+		if match == nil {
+			break
+		}
+		start := offset + match[0]
+		end := offset + match[1]
+		if !first && !quotedPathBoundary(text[previousEnd:start]) {
+			previousEnd = end
+			offset = end
+			continue
+		}
+		candidateStart := previousEnd
+		if !first {
+			candidateStart = quotedPathStart(text, previousEnd, start)
+		}
+		candidate := strings.TrimSpace(text[candidateStart:end])
+		candidate = strings.Trim(candidate, ",;:")
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.TrimPrefix(candidate, "and ")
+		candidate = strings.TrimSpace(candidate)
+		if !acceptHintCandidate(candidate, maxCount, maxBytes, &metadata, visit) {
+			break
+		}
+		previousEnd = end
+		offset = end
+		first = false
+	}
+	return metadata
+}
+
+func hasMultipleArtifactExtensions(text string) bool {
+	first := artifactExtensionPattern.FindStringIndex(text)
+	if first == nil {
+		return false
+	}
+	previousEnd := first[1]
+	for {
+		next := artifactExtensionPattern.FindStringIndex(text[previousEnd:])
+		if next == nil {
+			return false
+		}
+		start := previousEnd + next[0]
+		if quotedPathBoundary(text[previousEnd:start]) {
+			return true
+		}
+		previousEnd += next[1]
+	}
+}
+
+func quotedPathBoundary(segment string) bool {
+	if segment == "" {
+		return false
+	}
+	if segment[0] != '/' && segment[0] != '\\' {
+		return true
+	}
+	for i := 1; i < len(segment); i++ {
+		if strings.ContainsRune(" \t,;:", rune(segment[i])) {
+			return true
+		}
+	}
+	return false
+}
+
+func quotedPathStart(text string, start, end int) int {
+	if start >= end {
+		return start
+	}
+	if text[start] == '/' || text[start] == '\\' {
+		for i := end - 1; i >= start; i-- {
+			if strings.ContainsRune(" \t,;:", rune(text[i])) {
+				return i + 1
+			}
+		}
+		return start
+	}
+	for start < end && strings.ContainsRune(" \t,;:", rune(text[start])) {
+		start++
+	}
+	if strings.HasPrefix(text[start:end], "and ") {
+		start += len("and ")
+	}
+	return start
+}
+
+func remainingHintCount(maxCount, parsed int) int {
+	if maxCount == 0 {
+		return 0
+	}
+	if parsed >= maxCount {
+		return 1
+	}
+	return maxCount - parsed
+}
+
+func remainingHintBytes(maxBytes, parsedBytes int) int {
+	if maxBytes == 0 {
+		return 0
+	}
+	if parsedBytes >= maxBytes {
+		return 1
+	}
+	return maxBytes - parsedBytes
+}
+
+func acceptHintCandidate(raw string, maxCount, maxBytes int, metadata *HintScanMetadata, visit func(string)) bool {
+	if maxCount > 0 && metadata.Parsed >= maxCount {
+		metadata.Truncated = true
+		return false
+	}
+	candidateBytes := len(raw)
+	if maxBytes > 0 && metadata.ParsedBytes+candidateBytes > maxBytes {
+		metadata.Truncated = true
+		return false
+	}
+	if visit != nil {
+		visit(raw)
+	}
+	metadata.Parsed++
+	metadata.ParsedBytes += candidateBytes
+	return true
 }
 
 func ExtractHints(text string) []string {

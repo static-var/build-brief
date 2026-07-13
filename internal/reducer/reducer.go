@@ -17,6 +17,11 @@ import (
 	"build-brief/internal/runner"
 )
 
+const (
+	logReadBufferSize   = 64 * 1024
+	maxReducerLineBytes = 1 << 20
+)
+
 var (
 	taskFailurePattern   = regexp.MustCompile(`^> Task (.+) FAILED$`)
 	taskExecutionPattern = regexp.MustCompile(`Execution failed for task '([^']+)'\.`)
@@ -155,8 +160,12 @@ func (c *artifactHintCollector) retain(index int, hint string) {
 	c.retainedBytes += len(hint)
 }
 
+func (c *artifactHintCollector) markTruncated() {
+	c.metadata.Truncated = true
+}
+
 func (c *artifactHintCollector) finish() *ArtifactHintScanMetadata {
-	if c.metadata.Observed == 0 {
+	if c.metadata.Observed == 0 && !c.metadata.Truncated {
 		return nil
 	}
 	c.metadata.Retained = len(c.hints)
@@ -278,6 +287,53 @@ func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	return ReduceWithOptions(command, result, Options{})
 }
 
+// readLogLines uses a fixed reader buffer and a bounded line prefix. A very
+// long line is drained through ReadSlice without retaining its full contents;
+// the reducer still receives all ordinary lines, including long compiler
+// lines up to maxReducerLineBytes.
+func readLogLines(reader *bufio.Reader, visit func([]byte, bool) error) error {
+	line := make([]byte, 0, maxReducerLineBytes)
+	truncated := false
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if !truncated {
+				remaining := maxReducerLineBytes - len(line)
+				if remaining <= 0 {
+					truncated = true
+				} else {
+					if len(fragment) > remaining {
+						fragment = fragment[:remaining]
+						truncated = true
+					}
+					line = append(line, fragment...)
+				}
+			}
+			if err != bufio.ErrBufferFull {
+				if visitErr := visit(line, truncated); visitErr != nil {
+					return visitErr
+				}
+				line = line[:0]
+				truncated = false
+			}
+		}
+
+		switch err {
+		case nil, bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) > 0 {
+				if visitErr := visit(line, truncated); visitErr != nil {
+					return visitErr
+				}
+			}
+			return nil
+		default:
+			return err
+		}
+	}
+}
+
 func ReduceWithOptions(command gradle.Command, result runner.Result, opts Options) (Summary, error) {
 	sanitizedArgs := gradle.SanitizeArgs(command.Args)
 	summary := Summary{
@@ -327,26 +383,19 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	defer file.Close()
 
-	reader := bufio.NewReaderSize(file, 64*1024)
+	reader := bufio.NewReaderSize(file, logReadBufferSize)
 	captureContextRemaining := 0
 	captureCompilerRemaining := 0
 	captureBuildScanURLRemaining := 0
 	captureConfigCacheRemaining := 0
-	for {
-		rawLine, err := reader.ReadString('\n')
-		if len(rawLine) == 0 && err != nil {
-			if err == io.EOF {
-				break
-			}
-			return Summary{}, err
+	readErr := readLogLines(reader, func(rawLine []byte, lineTruncated bool) error {
+		if lineTruncated {
+			artifactHintCollector.markTruncated()
 		}
 		summary.TotalLines++
-		text := normalizeLine(strings.TrimRight(rawLine, "\r\n"))
+		text := normalizeLine(strings.TrimRight(string(rawLine), "\r\n"))
 		if text == "" {
-			if err == io.EOF {
-				break
-			}
-			continue
+			return nil
 		}
 		diagnosticEvidence.collect(text)
 
@@ -449,9 +498,10 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
 			captureCompilerRemaining--
 		}
-		if err == io.EOF {
-			break
-		}
+		return nil
+	})
+	if readErr != nil {
+		return Summary{}, readErr
 	}
 
 	if summary.BuildStatusLine == "" {
@@ -512,9 +562,22 @@ func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summa
 	if metadata.Truncated || metadata.ErrorCount > 0 {
 		message := fmt.Sprintf("Artifact scan incomplete: discovered %d, reported %d, skipped %d", metadata.Discovered, metadata.Reported, metadata.Skipped)
 		if metadata.Truncated {
-			message += " (truncated at the reporting limit)"
+			message += " (" + artifactScanTruncationReason(metadata) + ")"
 		}
 		addEnrichmentWarning(summary, warnings, message)
+	}
+}
+
+func artifactScanTruncationReason(metadata artifacts.ScanMetadata) string {
+	switch {
+	case metadata.HintsTruncated && metadata.Skipped > 0:
+		return "hint input and reporting bounds reached"
+	case metadata.HintsTruncated:
+		return "hint input bound reached"
+	case metadata.Skipped > 0:
+		return "truncated at the reporting limit"
+	default:
+		return "scan bound reached"
 	}
 }
 

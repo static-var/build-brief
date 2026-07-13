@@ -113,6 +113,37 @@ func TestFindGeneratedDoesNotCountEvictedStandardRootHintAgain(t *testing.T) {
 	}
 }
 
+func TestFindGeneratedBoundsHintInputAndKeepsMetadataTruthful(t *testing.T) {
+	projectDir := t.TempDir()
+	hints := make([]string, 0, maxScanCoverageRoots+1)
+	for i := 0; i < maxScanCoverageRoots+1; i++ {
+		path := filepath.Join(projectDir, fmt.Sprintf("module-%03d", i), "build", "libs", "artifact.jar")
+		writeFile(t, path, "jar")
+		hints = append(hints, filepath.ToSlash(filepath.Join(fmt.Sprintf("module-%03d", i), "build", "libs", "artifact.jar")))
+	}
+
+	result := FindGeneratedWithMetadata(projectDir, time.Now().Add(-time.Hour), Snapshot{}, hints)
+
+	if result.Metadata.Discovered != maxScanCoverageRoots+1 || result.Metadata.Reported != maxArtifactsReported || result.Metadata.Skipped != 45 || !result.Metadata.HintsTruncated || !result.Metadata.Truncated {
+		t.Fatalf("expected bounded hint coverage with truthful metadata, got %+v", result.Metadata)
+	}
+}
+
+func TestFindGeneratedBoundsNonStandardHintInputAndReportsOmission(t *testing.T) {
+	projectDir := t.TempDir()
+	hints := make([]string, 0, maxScanHints+1)
+	for i := 0; i < maxScanHints+1; i++ {
+		path := filepath.Join(projectDir, "custom", fmt.Sprintf("artifact-%03d.jar", i))
+		writeFile(t, path, "jar")
+		hints = append(hints, filepath.ToSlash(filepath.Join("custom", fmt.Sprintf("artifact-%03d.jar", i))))
+	}
+
+	result := FindGeneratedWithMetadata(projectDir, time.Now().Add(-time.Hour), Snapshot{}, hints)
+	if result.Metadata.Discovered != maxScanHints || result.Metadata.Reported != maxArtifactsReported || result.Metadata.Skipped != maxScanHints-maxArtifactsReported || !result.Metadata.HintsTruncated || !result.Metadata.Truncated {
+		t.Fatalf("expected bounded non-standard hint metadata, got %+v", result.Metadata)
+	}
+}
+
 func TestFindGeneratedRetainsHintUnderExcludedBuildSrcRoot(t *testing.T) {
 	projectDir := t.TempDir()
 	path := filepath.Join(projectDir, "buildSrc", "build", "libs", "convention.jar")
@@ -233,6 +264,33 @@ func TestExtractHintsBoundsOneLineManyHints(t *testing.T) {
 	hints := ExtractHints(line.String())
 	if len(hints) > maxHintsPerLine {
 		t.Fatalf("expected per-line hint cap, got %d", len(hints))
+	}
+}
+
+func TestExtractHintsQuotedSegmentSurfacesEachDistinctPath(t *testing.T) {
+	line := `Artifacts: './custom output/first.jar ./custom output/second.apk'`
+	hints := ExtractHints(line)
+
+	if !containsHint(hints, "./custom output/first.jar") || !containsHint(hints, "./custom output/second.apk") {
+		t.Fatalf("expected both quoted artifact paths, got %v", hints)
+	}
+	if len(hints) != 2 {
+		t.Fatalf("expected two distinct quoted artifact paths, got %v", hints)
+	}
+
+	hints = ExtractHints(`Artifacts: "/tmp/first release.jar /tmp/second release.apk"`)
+	if !containsHint(hints, "/tmp/first release.jar") || !containsHint(hints, "/tmp/second release.apk") || len(hints) != 2 {
+		t.Fatalf("expected both quoted absolute paths with spaces, got %v", hints)
+	}
+
+	hints = ExtractHints(`Artifacts: "custom output/first.jar custom output/second.apk"`)
+	if !containsHint(hints, "custom output/first.jar") || !containsHint(hints, "custom output/second.apk") || len(hints) != 2 {
+		t.Fatalf("expected both quoted relative paths with spaces, got %v", hints)
+	}
+
+	hints = ExtractHints(`Artifact: "/tmp/Fancy.xcframework/ios-arm64/Fancy.framework/Fancy"`)
+	if len(hints) != 1 || !containsHint(hints, "/tmp/Fancy.xcframework") {
+		t.Fatalf("expected nested quoted framework path to remain one hint, got %v", hints)
 	}
 }
 
