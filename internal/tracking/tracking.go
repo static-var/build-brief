@@ -2,6 +2,7 @@ package tracking
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,10 @@ const (
 	lockTimeout          = 5 * time.Second
 	lockPollInterval     = 25 * time.Millisecond
 	staleLockAge         = 30 * time.Second
+	maxLockMetadataBytes = 4 * 1024
+	maxLockMetadataLines = 4
+	maxLockMetadataField = 32
+	maxLockMetadataValue = 256
 )
 
 var (
@@ -86,6 +92,8 @@ type lockMetadata struct {
 	CreatedAt       time.Time
 	ProcessIdentity string
 	Token           string
+	pidTrusted      bool
+	identityTrusted bool
 }
 
 type lockHandle struct {
@@ -644,29 +652,33 @@ func writeLockMetadata(handle *lockHandle) error {
 }
 
 func shouldBreakStaleLock(lockPath string) bool {
-	metadata, err := readLockMetadata(lockPath)
-	if err != nil {
-		return fileOlderThan(lockPath, staleLockAge)
-	}
+	metadata, parseErr := readLockMetadata(lockPath)
 
-	if metadata.PID > 0 {
-		livenessKnown, alive := processLiveness(metadata.PID)
+	livenessKnown, alive := false, false
+	if metadata.pidTrusted {
+		livenessKnown, alive = processLiveness(metadata.PID)
 		if livenessKnown && !alive {
 			return true
 		}
-		if validProcessIdentity(metadata.ProcessIdentity) {
-			if identity, identityKnown := processIdentityForPID(metadata.PID); identityKnown {
-				return identity != metadata.ProcessIdentity
+		if metadata.identityTrusted {
+			if identity, known := processIdentityForPID(metadata.PID); known && validProcessIdentity(identity) && identity != metadata.ProcessIdentity {
+				return true
 			}
-			// A process may be live but not inspectable. Do not let age reclaim it.
-			return false
-		}
-		if livenessKnown && alive {
-			// Legacy or malformed metadata cannot disprove the original owner.
-			return false
 		}
 	}
-
+	if parseErr != nil {
+		// Age is only a heuristic. Corrupt metadata must not turn it into proof
+		// that a potentially live lock can be removed.
+		return false
+	}
+	if livenessKnown && alive {
+		// Preserve PID-only legacy behavior: a live owner always retains its lock.
+		return false
+	}
+	if metadata.identityTrusted {
+		// A process may be live but not inspectable. Do not let age reclaim it.
+		return false
+	}
 	if !metadata.CreatedAt.IsZero() && time.Since(metadata.CreatedAt) >= staleLockAge {
 		return true
 	}
@@ -674,11 +686,58 @@ func shouldBreakStaleLock(lockPath string) bool {
 }
 
 func validProcessIdentity(identity string) bool {
-	if !strings.HasPrefix(identity, "v1:") || len(identity) <= len("v1:") || len(identity) > 256 {
+	parts := strings.Split(identity, ":")
+	if len(parts) < 3 || parts[0] != "v1" {
 		return false
 	}
-	for _, r := range identity {
-		if r < '!' || r > '~' || r == '=' {
+	switch runtime.GOOS {
+	case "linux":
+		return len(parts) == 4 && parts[1] == "linux" && validUUID(parts[2]) && validPositiveDecimal(parts[3])
+	case "darwin":
+		if len(parts) != 4 || parts[1] != "darwin" || !validPositiveDecimal(parts[2]) || !validDecimal(parts[3]) {
+			return false
+		}
+		usec, err := strconv.ParseUint(parts[3], 10, 64)
+		return err == nil && usec < 1_000_000
+	case "windows":
+		return len(parts) == 3 && parts[1] == "windows" && validPositiveDecimal(parts[2])
+	default:
+		return false
+	}
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if value[i] != '-' {
+				return false
+			}
+			continue
+		}
+		if !(value[i] >= '0' && value[i] <= '9' || value[i] >= 'a' && value[i] <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validPositiveDecimal(value string) bool {
+	if !validDecimal(value) || value == "0" {
+		return false
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
+}
+
+func validDecimal(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
 			return false
 		}
 	}
@@ -686,41 +745,111 @@ func validProcessIdentity(identity string) bool {
 }
 
 func readLockMetadata(lockPath string) (lockMetadata, error) {
-	content, err := os.ReadFile(lockPath)
+	file, err := os.Open(lockPath)
 	if err != nil {
 		return lockMetadata{}, err
 	}
+	defer file.Close()
 
+	content, err := io.ReadAll(io.LimitReader(file, maxLockMetadataBytes+1))
+	if err != nil {
+		return lockMetadata{}, err
+	}
 	var metadata lockMetadata
-	for _, line := range strings.Split(string(content), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	valid := len(content) <= maxLockMetadataBytes && len(content) > 0 && bytes.HasSuffix(content, []byte("\n"))
+	if len(content) > maxLockMetadataBytes {
+		content = content[:maxLockMetadataBytes]
+	}
+	lines := bytes.Split(content, []byte("\n"))
+	if len(lines)-1 > maxLockMetadataLines {
+		valid = false
+	}
+	seen := make(map[string]bool, maxLockMetadataLines)
+	for _, rawLine := range lines[:len(lines)-1] {
+		if len(rawLine) == 0 || len(rawLine) > maxLockMetadataField+maxLockMetadataValue+1 {
+			valid = false
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
+		key, value, ok := bytes.Cut(rawLine, []byte("="))
+		if !ok || len(key) == 0 || len(key) > maxLockMetadataField || len(value) == 0 || len(value) > maxLockMetadataValue {
+			valid = false
 			continue
 		}
-		switch key {
-		case "pid":
-			pid, err := strconv.Atoi(value)
-			if err != nil {
-				return lockMetadata{}, err
+		name := string(key)
+		if seen[name] {
+			valid = false
+			if name == "pid" {
+				metadata.pidTrusted = false
 			}
-			metadata.PID = pid
+			if name == "process_identity" {
+				metadata.identityTrusted = false
+			}
+			continue
+		}
+		seen[name] = true
+		switch name {
+		case "pid":
+			pid, parseErr := parsePID(string(value))
+			if parseErr != nil {
+				valid = false
+				continue
+			}
+			metadata.PID, metadata.pidTrusted = pid, true
 		case "created_at":
-			createdAt, err := time.Parse(time.RFC3339Nano, value)
-			if err != nil {
-				return lockMetadata{}, err
+			createdAt, parseErr := time.Parse(time.RFC3339Nano, string(value))
+			if parseErr != nil || createdAt.UTC().Format(time.RFC3339Nano) != string(value) {
+				valid = false
+				continue
 			}
 			metadata.CreatedAt = createdAt
 		case "process_identity":
-			metadata.ProcessIdentity = value
+			identity := string(value)
+			if !validProcessIdentity(identity) {
+				valid = false
+				continue
+			}
+			metadata.ProcessIdentity, metadata.identityTrusted = identity, true
 		case "token":
-			metadata.Token = value
+			token := string(value)
+			if !validLockToken(token) {
+				valid = false
+				continue
+			}
+			metadata.Token = token
+		default:
+			valid = false
 		}
 	}
+	if !seen["pid"] || !metadata.pidTrusted {
+		valid = false
+	}
+	if !valid {
+		return metadata, fmt.Errorf("invalid tracking lock metadata")
+	}
 	return metadata, nil
+}
+
+func parsePID(value string) (int, error) {
+	if !validPositiveDecimal(value) {
+		return 0, fmt.Errorf("invalid PID")
+	}
+	pid, err := strconv.ParseInt(value, 10, 0)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid PID")
+	}
+	return int(pid), nil
+}
+
+func validLockToken(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func fileOlderThan(path string, age time.Duration) bool {
