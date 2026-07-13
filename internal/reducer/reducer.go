@@ -3,17 +3,24 @@ package reducer
 import (
 	"bufio"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"build-brief/internal/artifacts"
 	"build-brief/internal/gradle"
 	"build-brief/internal/runner"
+)
+
+const (
+	logReadBufferSize   = 64 * 1024
+	maxReducerLineBytes = 1 << 20
 )
 
 var (
@@ -33,10 +40,23 @@ var (
 	maxImportantLines                = 12
 	maxCustomMatchLines              = 8
 	maxConfigCacheLines              = 8
+	maxReportLines                   = 128
+	maxFailedTasks                   = 64
+	maxFailedTests                   = 128
+	maxBuildScanURLs                 = 16
+	maxCommandArgs                   = 128
+	maxCustomMatchGroups             = 64
+	maxSummaryCollectionBytes        = 64 * 1024
 	configCacheCaptureLines          = 4
 	contextCaptureLines              = 2
 	compilerCaptureLines             = 3
 	maxJUnitReportFiles              = 100
+	maxJUnitScanErrors               = 8
+	maxJUnitScanErrorBytes           = 64 * 1024
+	maxJUnitFileBytes                = 1 << 20
+	maxArtifactHints                 = 64
+	maxArtifactHintBytes             = 64 * 1024
+	maxArtifactHintLength            = 4096
 	junitTimeSkew                    = time.Second
 )
 
@@ -56,6 +76,249 @@ type CustomMatchResult struct {
 	Matches []string `json:"matches"`
 }
 
+type JUnitScanMetadata struct {
+	Discovered         int      `json:"discovered"`
+	Parsed             int      `json:"parsed"`
+	Skipped            int      `json:"skipped"`
+	SkippedTests       int      `json:"skipped_tests,omitempty"`
+	Errors             []string `json:"errors,omitempty"`
+	ErrorCount         int      `json:"error_count,omitempty"`
+	ErrorBytes         int64    `json:"error_bytes,omitempty"`
+	ErrorsTruncated    bool     `json:"errors_truncated,omitempty"`
+	FileBytesTruncated bool     `json:"file_bytes_truncated,omitempty"`
+	Truncated          bool     `json:"truncated"`
+}
+
+type RawInputMetadata struct {
+	Partial        bool  `json:"partial"`
+	TruncatedLines int   `json:"truncated_lines"`
+	TruncatedBytes int64 `json:"truncated_bytes"`
+}
+
+type ReducerCollectionMetadata struct {
+	Observed      int   `json:"observed"`
+	Retained      int   `json:"retained"`
+	Omitted       int   `json:"omitted"`
+	ObservedBytes int64 `json:"observed_bytes"`
+	RetainedBytes int64 `json:"retained_bytes"`
+	OmittedBytes  int64 `json:"omitted_bytes"`
+	Truncated     bool  `json:"truncated"`
+}
+
+type ReducerMetadata struct {
+	Partial       bool                                 `json:"partial"`
+	PartialFields []string                             `json:"partial_fields,omitempty"`
+	Collections   map[string]ReducerCollectionMetadata `json:"collections,omitempty"`
+}
+
+// Completeness aliases keep the additive metadata names explicit for callers.
+type RawInputCompletenessMetadata = RawInputMetadata
+type ReducerCompletenessMetadata = ReducerMetadata
+type ReducerCollectionCompletenessMetadata = ReducerCollectionMetadata
+
+type ArtifactScanMetadata = artifacts.ScanMetadata
+
+// ArtifactHintScanMetadata describes raw-log hint retention, not artifacts.
+// Observed counts normalized hint occurrences, including repeats. Retained is
+// a bounded top-value set passed to artifact enrichment; Omitted is the number
+// of observed occurrences not retained. It must not be used as an artifact
+// count: ArtifactScanMetadata counts artifact paths after bounded scan
+// deduplication and standard-root hint classification.
+type ArtifactHintScanMetadata struct {
+	Observed      int  `json:"observed"`
+	Retained      int  `json:"retained"`
+	Omitted       int  `json:"omitted"`
+	RetainedBytes int  `json:"retained_bytes"`
+	Truncated     bool `json:"truncated"`
+}
+
+type boundedStringCollector struct {
+	values        []string
+	seen          map[string]struct{}
+	maxCount      int
+	maxBytes      int64
+	retainedBytes int64
+	observed      int
+	observedBytes int64
+	truncated     bool
+	deduplicate   bool
+}
+
+func newBoundedStringCollector(maxCount, maxBytes int, deduplicate bool) *boundedStringCollector {
+	collector := &boundedStringCollector{
+		values:      make([]string, 0, maxCount),
+		maxCount:    maxCount,
+		maxBytes:    int64(maxBytes),
+		deduplicate: deduplicate,
+	}
+	if deduplicate {
+		collector.seen = make(map[string]struct{}, maxCount)
+	}
+	return collector
+}
+
+func (c *boundedStringCollector) add(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if c.deduplicate {
+		if _, ok := c.seen[value]; ok {
+			return false
+		}
+	}
+	c.observed++
+	c.observedBytes += int64(len(value))
+	if len(c.values) >= c.maxCount || c.retainedBytes+int64(len(value)) > c.maxBytes {
+		c.truncated = true
+		return false
+	}
+	value = strings.Clone(value)
+	c.values = append(c.values, value)
+	c.retainedBytes += int64(len(value))
+	if c.deduplicate {
+		c.seen[value] = struct{}{}
+	}
+	return true
+}
+
+func (c *boundedStringCollector) markTruncated() {
+	c.truncated = true
+}
+
+func (c *boundedStringCollector) metadata() ReducerCollectionMetadata {
+	metadata := ReducerCollectionMetadata{
+		Observed:      c.observed,
+		Retained:      len(c.values),
+		Omitted:       c.observed - len(c.values),
+		ObservedBytes: c.observedBytes,
+		RetainedBytes: c.retainedBytes,
+		OmittedBytes:  c.observedBytes - c.retainedBytes,
+		Truncated:     c.truncated,
+	}
+	if metadata.Omitted > 0 || metadata.OmittedBytes > 0 {
+		metadata.Truncated = true
+	}
+	return metadata
+}
+
+type artifactHintCollector struct {
+	hints         []string
+	seen          map[string]struct{}
+	retainedBytes int
+	metadata      ArtifactHintScanMetadata
+}
+
+func newArtifactHintCollector() *artifactHintCollector {
+	return &artifactHintCollector{
+		hints: make([]string, 0, maxArtifactHints),
+		seen:  make(map[string]struct{}, maxArtifactHints),
+	}
+}
+
+func (c *artifactHintCollector) add(hint string) {
+	if strings.TrimSpace(hint) == "" {
+		return
+	}
+	c.metadata.Observed++
+	if len(hint) > maxArtifactHintLength+64 {
+		c.metadata.Truncated = true
+		return
+	}
+	hint = artifacts.NormalizeHint(hint)
+	if len(hint) > maxArtifactHintLength {
+		c.metadata.Truncated = true
+		return
+	}
+	if _, ok := c.seen[hint]; ok {
+		return
+	}
+	hint = strings.Clone(hint)
+
+	if len(c.hints) < maxArtifactHints && c.retainedBytes+len(hint) <= maxArtifactHintBytes {
+		c.retain(len(c.hints), hint)
+		return
+	}
+
+	worst := 0
+	for i := 1; i < len(c.hints); i++ {
+		if artifactHintLess(c.hints[worst], c.hints[i]) {
+			worst = i
+		}
+	}
+	if len(c.hints) == 0 || !artifactHintLess(hint, c.hints[worst]) {
+		c.metadata.Truncated = true
+		return
+	}
+	if c.retainedBytes-len(c.hints[worst])+len(hint) > maxArtifactHintBytes {
+		c.metadata.Truncated = true
+		return
+	}
+	delete(c.seen, c.hints[worst])
+	c.retainedBytes -= len(c.hints[worst])
+	c.retain(worst, hint)
+}
+
+func (c *artifactHintCollector) retain(index int, hint string) {
+	if index == len(c.hints) {
+		c.hints = append(c.hints, hint)
+	} else {
+		c.hints[index] = hint
+	}
+	c.seen[hint] = struct{}{}
+	c.retainedBytes += len(hint)
+}
+
+func (c *artifactHintCollector) finish() *ArtifactHintScanMetadata {
+	if c.metadata.Observed == 0 && !c.metadata.Truncated {
+		return nil
+	}
+	c.metadata.Retained = len(c.hints)
+	c.metadata.RetainedBytes = c.retainedBytes
+	c.metadata.Omitted = c.metadata.Observed - c.metadata.Retained
+	if c.metadata.Omitted > 0 {
+		c.metadata.Truncated = true
+	}
+	metadata := c.metadata
+	return &metadata
+}
+
+func artifactHintLess(left, right string) bool {
+	leftPriority := artifactHintPriority(left)
+	rightPriority := artifactHintPriority(right)
+	if leftPriority != rightPriority {
+		return leftPriority < rightPriority
+	}
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	return left < right
+}
+
+func artifactHintPriority(hint string) int {
+	lower := strings.ToLower(hint)
+	switch {
+	case strings.HasSuffix(lower, ".apk"):
+		return 0
+	case strings.HasSuffix(lower, ".aab"):
+		return 1
+	case strings.HasSuffix(lower, ".xcframework"):
+		return 2
+	case strings.HasSuffix(lower, ".framework"):
+		return 3
+	case strings.HasSuffix(lower, ".zip"), strings.HasSuffix(lower, ".tar"), strings.HasSuffix(lower, ".tgz"), strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".war"), strings.HasSuffix(lower, ".ear"), strings.HasSuffix(lower, ".kexe"):
+		return 4
+	case strings.HasSuffix(lower, ".jar"):
+		return 5
+	case strings.HasSuffix(lower, ".klib"):
+		return 6
+	case strings.HasSuffix(lower, ".aar"):
+		return 7
+	default:
+		return 8
+	}
+}
+
 type Diagnostic struct {
 	ID         string   `json:"id"`
 	Category   string   `json:"category"`
@@ -67,41 +330,46 @@ type Diagnostic struct {
 }
 
 type Summary struct {
-	SchemaVersion             string              `json:"schema_version"`
-	Tool                      string              `json:"tool"`
-	Success                   bool                `json:"success"`
-	ExitCode                  int                 `json:"exit_code"`
-	Duration                  string              `json:"duration"`
-	DurationMs                int64               `json:"duration_ms"`
-	ProjectDir                string              `json:"project_dir"`
-	Executable                string              `json:"executable"`
-	Command                   []string            `json:"command"`
-	CommandLine               string              `json:"command_line"`
-	Source                    string              `json:"source"`
-	RawLogPath                string              `json:"raw_log_path"`
-	RawOutputTokens           int                 `json:"raw_output_tokens"`
-	EmittedTokens             int                 `json:"emitted_output_tokens"`
-	SavedTokens               int                 `json:"saved_output_tokens"`
-	SavingsPct                float64             `json:"savings_pct"`
-	BuildStatusLine           string              `json:"build_status_line"`
-	FailedTasks               []string            `json:"failed_tasks"`
-	FailedTests               []string            `json:"failed_tests"`
-	PassedTestCount           int                 `json:"passed_test_count,omitempty"`
-	FailedTestCount           int                 `json:"failed_test_count,omitempty"`
-	WarningCount              int                 `json:"warning_count"`
-	Warnings                  []string            `json:"warnings"`
-	ImportantLines            []string            `json:"important_lines"`
-	Diagnostics               []Diagnostic        `json:"diagnostics,omitempty"`
-	BuildScanURLs             []string            `json:"build_scan_urls,omitempty"`
-	ConfigCacheStatus         string              `json:"config_cache_status,omitempty"`
-	ConfigCacheProblems       []string            `json:"config_cache_problems,omitempty"`
-	ConfigCacheReportURL      string              `json:"config_cache_report_url,omitempty"`
-	ReportLines               []string            `json:"report_lines,omitempty"`
-	CustomMatches             []CustomMatchResult `json:"custom_matches,omitempty"`
-	Artifacts                 []Artifact          `json:"artifacts,omitempty"`
-	GeneratedClassFileCount   int                 `json:"generated_class_file_count,omitempty"`
-	GeneratedCodegenFileCount int                 `json:"generated_codegen_file_count,omitempty"`
-	TotalLines                int                 `json:"total_lines"`
+	SchemaVersion             string                    `json:"schema_version"`
+	Tool                      string                    `json:"tool"`
+	Success                   bool                      `json:"success"`
+	ExitCode                  int                       `json:"exit_code"`
+	Duration                  string                    `json:"duration"`
+	DurationMs                int64                     `json:"duration_ms"`
+	ProjectDir                string                    `json:"project_dir"`
+	Executable                string                    `json:"executable"`
+	Command                   []string                  `json:"command"`
+	CommandLine               string                    `json:"command_line"`
+	Source                    string                    `json:"source"`
+	RawLogPath                string                    `json:"raw_log_path"`
+	RawOutputTokens           int                       `json:"raw_output_tokens"`
+	EmittedTokens             int                       `json:"emitted_output_tokens"`
+	SavedTokens               int                       `json:"saved_output_tokens"`
+	SavingsPct                float64                   `json:"savings_pct"`
+	BuildStatusLine           string                    `json:"build_status_line"`
+	FailedTasks               []string                  `json:"failed_tasks"`
+	FailedTests               []string                  `json:"failed_tests"`
+	PassedTestCount           int                       `json:"passed_test_count,omitempty"`
+	FailedTestCount           int                       `json:"failed_test_count,omitempty"`
+	WarningCount              int                       `json:"warning_count"`
+	Warnings                  []string                  `json:"warnings"`
+	ImportantLines            []string                  `json:"important_lines"`
+	Diagnostics               []Diagnostic              `json:"diagnostics,omitempty"`
+	BuildScanURLs             []string                  `json:"build_scan_urls,omitempty"`
+	ConfigCacheStatus         string                    `json:"config_cache_status,omitempty"`
+	ConfigCacheProblems       []string                  `json:"config_cache_problems,omitempty"`
+	ConfigCacheReportURL      string                    `json:"config_cache_report_url,omitempty"`
+	ReportLines               []string                  `json:"report_lines,omitempty"`
+	CustomMatches             []CustomMatchResult       `json:"custom_matches,omitempty"`
+	Artifacts                 []Artifact                `json:"artifacts,omitempty"`
+	JUnitScan                 *JUnitScanMetadata        `json:"junit_scan,omitempty"`
+	ArtifactScan              *ArtifactScanMetadata     `json:"artifact_scan,omitempty"`
+	ArtifactHintScan          *ArtifactHintScanMetadata `json:"artifact_hint_scan,omitempty"`
+	RawInput                  *RawInputMetadata         `json:"raw_input,omitempty"`
+	Reducer                   *ReducerMetadata          `json:"reducer,omitempty"`
+	GeneratedClassFileCount   int                       `json:"generated_class_file_count,omitempty"`
+	GeneratedCodegenFileCount int                       `json:"generated_codegen_file_count,omitempty"`
+	TotalLines                int                       `json:"total_lines"`
 }
 
 type junitTestSuite struct {
@@ -122,12 +390,100 @@ type junitFailure struct {
 	Body    string `xml:",chardata"`
 }
 
+// semanticInvocation contains task semantics derived from the complete,
+// unbounded invocation. It is intentionally distinct from Summary.Command,
+// which is redacted and bounded output metadata.
+type semanticInvocation struct {
+	TaskSelectors       []string
+	IsPureInformational bool
+}
+
+func analyzeSemanticInvocation(args []string) semanticInvocation {
+	shape := gradle.AnalyzeArgs(args)
+	return semanticInvocation{
+		TaskSelectors:       shape.TaskSelectors,
+		IsPureInformational: shape.IsPureInformational,
+	}
+}
+
 func Reduce(command gradle.Command, result runner.Result) (Summary, error) {
 	return ReduceWithOptions(command, result, Options{})
 }
 
+// readLogLines uses a fixed reader buffer and a bounded line prefix. A very
+// long line is drained through ReadSlice without retaining its full contents;
+// the reducer still receives all ordinary lines, including long compiler
+// lines up to maxReducerLineBytes.
+func readLogLines(reader *bufio.Reader, visit func([]byte, bool, int64) error) error {
+	line := make([]byte, 0, maxReducerLineBytes)
+	lineBytes := int64(0)
+	truncated := false
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			lineBytes += int64(len(fragment))
+			content := fragment
+			terminatorBytes := 0
+			if err != bufio.ErrBufferFull && content[len(content)-1] == '\n' {
+				// The bound applies to line content, excluding LF or CRLF terminators.
+				content = content[:len(content)-1]
+				terminatorBytes++
+				if len(content) > 0 && content[len(content)-1] == '\r' {
+					content = content[:len(content)-1]
+					terminatorBytes++
+				}
+			}
+			if !truncated {
+				remaining := maxReducerLineBytes - len(line)
+				if len(content) > remaining {
+					line = append(line, content[:remaining]...)
+					truncated = true
+				} else {
+					line = append(line, content...)
+				}
+			}
+			if err != bufio.ErrBufferFull {
+				contentBytes := lineBytes - int64(terminatorBytes)
+				if visitErr := visit(line, truncated, contentBytes-int64(len(line))); visitErr != nil {
+					return visitErr
+				}
+				line = line[:0]
+				lineBytes = 0
+				truncated = false
+			}
+		}
+
+		switch err {
+		case nil, bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) > 0 {
+				if visitErr := visit(line, truncated, lineBytes-int64(len(line))); visitErr != nil {
+					return visitErr
+				}
+			}
+			return nil
+		default:
+			return err
+		}
+	}
+}
+
 func ReduceWithOptions(command gradle.Command, result runner.Result, opts Options) (Summary, error) {
+	invocation := analyzeSemanticInvocation(command.Args)
 	sanitizedArgs := gradle.SanitizeArgs(command.Args)
+	commandArgs := newBoundedStringCollector(maxCommandArgs, maxSummaryCollectionBytes, false)
+	for _, arg := range sanitizedArgs {
+		commandArgs.add(arg)
+	}
+	customRulesObserved := len(opts.CustomMatches)
+	customRulesBytes := customMatchRuleBytes(opts.CustomMatches)
+	customRules := opts.CustomMatches
+	customRulesTruncated := len(customRules) > maxCustomMatchGroups
+	if customRulesTruncated {
+		customRules = customRules[:maxCustomMatchGroups]
+	}
+	customRulesRetainedBytes := customMatchRuleBytes(customRules)
 	summary := Summary{
 		SchemaVersion: "v1",
 		Tool:          "build-brief",
@@ -137,9 +493,9 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		DurationMs:    result.Duration.Milliseconds(),
 		ProjectDir:    command.ProjectDir,
 		Executable:    command.Executable,
-		Command:       append([]string{command.Executable}, sanitizedArgs...),
+		Command:       append([]string{command.Executable}, commandArgs.values...),
 		CommandLine: strings.Join(
-			append([]string{filepath.Base(command.Executable)}, sanitizedArgs...),
+			append([]string{filepath.Base(command.Executable)}, commandArgs.values...),
 			" ",
 		),
 		Source:              string(command.Source),
@@ -151,24 +507,29 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		BuildScanURLs:       []string{},
 		ConfigCacheProblems: []string{},
 		ReportLines:         []string{},
-		CustomMatches:       customMatchResults(opts.CustomMatches),
+		CustomMatches:       customMatchResults(customRules),
 		Artifacts:           []Artifact{},
 	}
 
-	failedTasks := make(map[string]struct{})
-	failedTests := make(map[string]struct{})
-	warnings := make(map[string]struct{})
-	important := make(map[string]struct{})
-	buildScanURLs := make(map[string]struct{})
-	configCacheProblemSeen := make(map[string]struct{})
-	customMatchSeen := make([]map[string]struct{}, len(opts.CustomMatches))
-	for i := range customMatchSeen {
-		customMatchSeen[i] = make(map[string]struct{})
+	failedTasks := newBoundedStringCollector(maxFailedTasks, maxSummaryCollectionBytes, true)
+	failedTests := newBoundedStringCollector(maxFailedTests, maxSummaryCollectionBytes, true)
+	warnings := newBoundedStringCollector(maxWarnings, maxSummaryCollectionBytes, true)
+	important := newBoundedStringCollector(maxImportantLines, maxSummaryCollectionBytes, true)
+	buildScanURLs := newBoundedStringCollector(maxBuildScanURLs, maxSummaryCollectionBytes, true)
+	configCacheProblems := newBoundedStringCollector(maxConfigCacheLines, maxSummaryCollectionBytes, true)
+	reportLines := newBoundedStringCollector(maxReportLines, maxSummaryCollectionBytes, false)
+	customMatches := make([]*boundedStringCollector, len(customRules))
+	customMatchBytes := maxSummaryCollectionBytes
+	if len(customRules) > 0 {
+		customMatchBytes /= len(customRules)
 	}
-	artifactHints := make([]string, 0)
-	artifactHintSeen := make(map[string]struct{})
+	for i := range customMatches {
+		customMatches[i] = newBoundedStringCollector(maxCustomMatchLines, customMatchBytes, true)
+	}
+	commandArgsTruncated := commandArgs.truncated
+	artifactHintCollector := newArtifactHintCollector()
 	diagnosticEvidence := newDiagnosticEvidence()
-	invocationShape := gradle.AnalyzeArgs(command.Args)
+	rawInput := RawInputMetadata{}
 
 	file, err := os.Open(result.RawLogPath)
 	if err != nil {
@@ -176,73 +537,71 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	defer file.Close()
 
-	reader := bufio.NewReaderSize(file, 64*1024)
+	reader := bufio.NewReaderSize(file, logReadBufferSize)
 	captureContextRemaining := 0
 	captureCompilerRemaining := 0
 	captureBuildScanURLRemaining := 0
 	captureConfigCacheRemaining := 0
-	for {
-		rawLine, err := reader.ReadString('\n')
-		if len(rawLine) == 0 && err != nil {
-			if err == io.EOF {
-				break
-			}
-			return Summary{}, err
+	readErr := readLogLines(reader, func(rawLine []byte, lineTruncated bool, truncatedBytes int64) error {
+		if lineTruncated {
+			rawInput.Partial = true
+			rawInput.TruncatedLines++
+			rawInput.TruncatedBytes += truncatedBytes
 		}
 		summary.TotalLines++
-		text := normalizeLine(strings.TrimRight(rawLine, "\r\n"))
+		text := normalizeLine(strings.TrimRight(string(rawLine), "\r\n"))
 		if text == "" {
-			if err == io.EOF {
-				break
-			}
-			continue
+			return nil
 		}
 		diagnosticEvidence.collect(text)
 
 		switch {
 		case taskFailurePattern.MatchString(text):
 			matches := taskFailurePattern.FindStringSubmatch(text)
-			addUnique(&summary.FailedTasks, failedTasks, matches[1], 0)
+			failedTasks.add(matches[1])
 		case taskExecutionPattern.MatchString(text):
 			matches := taskExecutionPattern.FindStringSubmatch(text)
-			addUnique(&summary.FailedTasks, failedTasks, matches[1], 0)
+			failedTasks.add(matches[1])
 		case testFailurePattern.MatchString(text):
 			matches := testFailurePattern.FindStringSubmatch(text)
-			addUnique(&summary.FailedTests, failedTests, matches[1]+" > "+matches[2], 0)
+			failedTests.add(matches[1] + " > " + matches[2])
 		}
 
 		if isWarningLine(text) {
 			summary.WarningCount++
-			addUnique(&summary.Warnings, warnings, text, maxWarnings)
+			warnings.add(text)
 		}
 
 		if strings.HasPrefix(text, "BUILD SUCCESSFUL") || strings.HasPrefix(text, "BUILD FAILED") {
-			summary.BuildStatusLine = text
+			summary.BuildStatusLine = strings.Clone(text)
 		}
 
-		if invocationShape.IsPureInformational && shouldPreserveReportLine(text) {
-			summary.ReportLines = append(summary.ReportLines, text)
+		if invocation.IsPureInformational && shouldPreserveReportLine(text) {
+			reportLines.add(text)
 		}
 
 		if isImportantLine(text) {
-			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+			important.add(text)
 		}
 
 		if isGeneratedOutputLocationLine(text) {
-			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+			important.add(text)
 		}
 
-		lineURLs := extractURLs(text)
+		lineURLs, lineURLsTruncated := extractURLs(text)
 		if isBuildScanMarkerLine(text) {
+			if lineURLsTruncated {
+				buildScanURLs.markTruncated()
+			}
 			if len(lineURLs) > 0 {
-				addUniqueBuildScanURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
+				addUniqueBuildScanURLs(buildScanURLs, lineURLs)
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining = 3
 			}
 		} else if captureBuildScanURLRemaining > 0 {
 			if len(lineURLs) > 0 {
-				addUniqueBuildScanURLs(&summary.BuildScanURLs, buildScanURLs, lineURLs)
+				addUniqueBuildScanURLs(buildScanURLs, lineURLs)
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining--
@@ -250,57 +609,54 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		}
 
 		if status, ok := configCacheStatus(text); ok {
-			summary.ConfigCacheStatus = status
+			summary.ConfigCacheStatus = strings.Clone(status)
 		}
 		if m := configCacheReportPattern.FindStringSubmatch(text); m != nil {
-			summary.ConfigCacheReportURL = m[1]
+			summary.ConfigCacheReportURL = strings.Clone(m[1])
 		}
 		if isConfigCacheProblemSummary(text) {
-			addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, text, maxConfigCacheLines)
+			configCacheProblems.add(text)
 			captureConfigCacheRemaining = configCacheCaptureLines
 		} else if captureConfigCacheRemaining > 0 {
 			if isConfigCacheProblemDetail(text) {
-				addUnique(&summary.ConfigCacheProblems, configCacheProblemSeen, strings.TrimPrefix(text, "- "), maxConfigCacheLines)
+				configCacheProblems.add(strings.TrimPrefix(text, "- "))
 				captureConfigCacheRemaining = configCacheCaptureLines
 			} else {
 				captureConfigCacheRemaining--
 			}
 		}
 
-		for i, rule := range opts.CustomMatches {
-			if rule.Pattern == nil {
-				continue
-			}
-			matches := rule.Pattern.FindAllString(text, -1)
-			for _, match := range matches {
-				addUnique(&summary.CustomMatches[i].Matches, customMatchSeen[i], strings.TrimRight(match, ".,;:"), maxCustomMatchLines)
+		for i, rule := range customRules {
+			if rule.Pattern != nil {
+				scanCustomMatches(rule.Pattern, text, customMatches[i])
 			}
 		}
 
-		for _, hint := range artifacts.ExtractHints(text) {
-			if _, ok := artifactHintSeen[hint]; ok {
-				continue
-			}
-			artifactHintSeen[hint] = struct{}{}
-			artifactHints = append(artifactHints, hint)
-		}
+		// Stream every candidate from this line. ScanHints keeps only three
+		// regexp positions live; the collector owns the bounded retained state
+		// and reports exact observed/omitted counts without sacrificing late
+		// high-priority hints.
+		artifacts.ScanHints(text, 0, 0, func(raw string) {
+			artifactHintCollector.add(raw)
+		})
 
 		if opensContextCapture(text) {
 			captureContextRemaining = contextCaptureLines
 		} else if captureContextRemaining > 0 && shouldCaptureContextLine(text) {
-			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+			important.add(text)
 			captureContextRemaining--
 		}
 
 		if opensCompilerContext(text) {
 			captureCompilerRemaining = compilerCaptureLines
 		} else if captureCompilerRemaining > 0 && shouldCaptureCompilerContextLine(text) {
-			addUnique(&summary.ImportantLines, important, text, maxImportantLines)
+			important.add(text)
 			captureCompilerRemaining--
 		}
-		if err == io.EOF {
-			break
-		}
+		return nil
+	})
+	if readErr != nil {
+		return Summary{}, readErr
 	}
 
 	if summary.BuildStatusLine == "" {
@@ -311,15 +667,52 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 		}
 	}
 
-	if len(summary.ImportantLines) == 0 {
-		summary.ImportantLines = append(summary.ImportantLines, summary.BuildStatusLine)
+	if len(important.values) == 0 {
+		important.add(summary.BuildStatusLine)
 	}
+	syncSummaryCollections(&summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
 
-	enrichWithJUnitResults(command.ProjectDir, result, &summary, failedTests, important)
-	enrichWithArtifacts(command.ProjectDir, result, &summary, artifactHints)
+	enrichWithJUnitResults(command.ProjectDir, result, invocation, &summary, failedTests, important, warnings)
+	enrichWithArtifacts(command.ProjectDir, result, invocation, &summary, artifactHintCollector.hints, warnings)
+	syncSummaryCollections(&summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
+	summary.ArtifactHintScan = artifactHintCollector.finish()
+	summary.RawInput = finishRawInputMetadata(rawInput)
+	summary.Reducer = finishReducerMetadata(summary.RawInput, summary, commandArgs, commandArgsTruncated, customRulesTruncated, customRulesObserved, customRulesBytes, customRulesRetainedBytes, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
 	summary.Diagnostics = Diagnose(diagnosticEvidence, summary)
 
 	return summary, nil
+}
+
+func customMatchRuleBytes(rules []CustomMatchRule) int64 {
+	var total int64
+	for _, rule := range rules {
+		total += int64(len(strings.TrimSpace(rule.Name)))
+		if rule.Pattern != nil {
+			total += int64(len(rule.Pattern.String()))
+		}
+	}
+	return total
+}
+
+// scanCustomMatches streams regexp matches so early duplicates cannot hide a
+// later unique value. It retains no match slice and relies on the collector's
+// existing count and byte bounds.
+func scanCustomMatches(pattern *regexp.Regexp, text string, collector *boundedStringCollector) {
+	for offset := 0; offset <= len(text); {
+		match := pattern.FindStringIndex(text[offset:])
+		if match == nil {
+			return
+		}
+		start, end := offset+match[0], offset+match[1]
+		collector.add(strings.TrimRight(text[start:end], ".,;:"))
+		if end > offset {
+			offset = end
+			continue
+		}
+		// Empty matches otherwise make no progress. Advancing a byte is safe for
+		// string slicing and keeps allocations bounded even for such a pattern.
+		offset++
+	}
 }
 
 func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
@@ -336,22 +729,151 @@ func customMatchResults(rules []CustomMatchRule) []CustomMatchResult {
 	return results
 }
 
-func enrichWithArtifacts(projectDir string, result runner.Result, summary *Summary, hints []string) {
+func syncSummaryCollections(summary *Summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) {
+	summary.FailedTasks = failedTasks.values
+	summary.FailedTests = failedTests.values
+	summary.Warnings = warnings.values
+	summary.ImportantLines = important.values
+	summary.BuildScanURLs = buildScanURLs.values
+	summary.ConfigCacheProblems = configCacheProblems.values
+	summary.ReportLines = reportLines.values
+	for i := range customMatches {
+		summary.CustomMatches[i].Matches = customMatches[i].values
+	}
+}
+
+func finishRawInputMetadata(metadata RawInputMetadata) *RawInputMetadata {
+	if !metadata.Partial {
+		return nil
+	}
+	return &metadata
+}
+
+func finishReducerMetadata(rawInput *RawInputMetadata, summary Summary, commandArgs *boundedStringCollector, commandArgsTruncated, customRulesTruncated bool, customRulesObserved int, customRulesBytes, customRulesRetainedBytes int64, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines *boundedStringCollector, customMatches []*boundedStringCollector) *ReducerMetadata {
+	metadata := &ReducerMetadata{Collections: make(map[string]ReducerCollectionMetadata)}
+	partialFields := make(map[string]struct{})
+	if rawInput != nil {
+		for _, field := range []string{"artifact_hint_scan", "artifacts", "build_status_line", "build_scan_urls", "config_cache_problems", "config_cache_report_url", "config_cache_status", "custom_matches", "diagnostics", "failed_tasks", "failed_tests", "important_lines", "junit_scan", "passed_test_count", "failed_test_count", "report_lines", "warning_count", "warnings"} {
+			partialFields[field] = struct{}{}
+		}
+	}
+	addReducerCollectionMetadata(metadata, partialFields, "failed_tasks", failedTasks)
+	addReducerCollectionMetadata(metadata, partialFields, "failed_tests", failedTests)
+	addReducerCollectionMetadata(metadata, partialFields, "warnings", warnings)
+	addReducerCollectionMetadata(metadata, partialFields, "important_lines", important)
+	addReducerCollectionMetadata(metadata, partialFields, "build_scan_urls", buildScanURLs)
+	addReducerCollectionMetadata(metadata, partialFields, "config_cache_problems", configCacheProblems)
+	addReducerCollectionMetadata(metadata, partialFields, "report_lines", reportLines)
+	for i, collector := range customMatches {
+		addReducerCollectionMetadata(metadata, partialFields, fmt.Sprintf("custom_matches[%d].matches", i), collector)
+	}
+	if commandArgsTruncated {
+		partialFields["command"] = struct{}{}
+		metadata.Collections["command"] = commandArgs.metadata()
+	}
+	if customRulesTruncated {
+		partialFields["custom_matches"] = struct{}{}
+		metadata.Collections["custom_matches"] = ReducerCollectionMetadata{
+			Observed:      customRulesObserved,
+			Retained:      len(customMatches),
+			Omitted:       customRulesObserved - len(customMatches),
+			ObservedBytes: customRulesBytes,
+			RetainedBytes: customRulesRetainedBytes,
+			OmittedBytes:  customRulesBytes - customRulesRetainedBytes,
+			Truncated:     true,
+		}
+	}
+	if summary.JUnitScan != nil && (summary.JUnitScan.Truncated || summary.JUnitScan.ErrorCount > 0) {
+		for _, field := range []string{"junit_scan", "failed_tests", "passed_test_count", "failed_test_count", "important_lines"} {
+			partialFields[field] = struct{}{}
+		}
+	}
+	if summary.ArtifactHintScan != nil && summary.ArtifactHintScan.Truncated {
+		for _, field := range []string{"artifact_hint_scan", "artifacts"} {
+			partialFields[field] = struct{}{}
+		}
+	}
+	if summary.ArtifactScan != nil && (summary.ArtifactScan.Truncated || summary.ArtifactScan.ErrorCount > 0) {
+		for _, field := range []string{"artifacts", "artifact_scan", "generated_class_file_count", "generated_codegen_file_count"} {
+			partialFields[field] = struct{}{}
+		}
+	}
+	if len(partialFields) == 0 {
+		return nil
+	}
+	metadata.Partial = true
+	metadata.PartialFields = make([]string, 0, len(partialFields))
+	for field := range partialFields {
+		metadata.PartialFields = append(metadata.PartialFields, field)
+	}
+	sort.Strings(metadata.PartialFields)
+	return metadata
+}
+
+func addReducerCollectionMetadata(metadata *ReducerMetadata, partialFields map[string]struct{}, name string, collector *boundedStringCollector) {
+	collection := collector.metadata()
+	if !collection.Truncated {
+		return
+	}
+	metadata.Collections[name] = collection
+	partialFields[name] = struct{}{}
+}
+
+func enrichWithArtifacts(projectDir string, result runner.Result, invocation semanticInvocation, summary *Summary, hints []string, warnings *boundedStringCollector) {
 	if !summary.Success || result.StartTime.IsZero() {
 		return
 	}
 
-	found, classCount, codegenCount := artifacts.FindGenerated(projectDir, result.StartTime, result.ArtifactSnapshot, hints)
-	if len(found) == 0 && shouldReportAvailableArtifacts(summary.Command) {
-		found = filterAvailableArtifacts(artifacts.FindAvailable(projectDir, hints), summary.Command)
+	generated := artifacts.FindGeneratedWithMetadata(projectDir, result.StartTime, result.ArtifactSnapshot, hints)
+	found := generated.Artifacts
+	metadata := generated.Metadata
+	classCount := generated.ClassCount
+	codegenCount := generated.CodegenCount
+	if len(found) == 0 && shouldReportAvailableArtifacts(invocation) {
+		prefixes := commandProjectPrefixes(invocation)
+		available := artifacts.FindAvailableScopedWithMetadata(projectDir, hints, prefixes)
+		// Gradle project paths can be remapped in settings. Scope is therefore a
+		// preference, but an unscoped fallback is accepted only when it finds one
+		// complete candidate; multiple candidates are ambiguous and remain scoped.
+		if len(prefixes) > 0 && len(available.Artifacts) == 0 {
+			unscoped := artifacts.FindAvailableWithMetadata(projectDir, hints)
+			if unscoped.Metadata.Discovered == 1 && len(unscoped.Artifacts) == 1 && !unscoped.Metadata.Truncated && unscoped.Metadata.ErrorCount == 0 {
+				available = unscoped
+			}
+		}
+		found = available.Artifacts
+		metadata = artifacts.MergeScanMetadata(metadata, available.Metadata)
 	}
 	summary.Artifacts = found
 	summary.GeneratedClassFileCount = classCount
 	summary.GeneratedCodegenFileCount = codegenCount
+	if metadata.Discovered > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
+		summary.ArtifactScan = &metadata
+	}
+	if metadata.Truncated || metadata.ErrorCount > 0 {
+		message := fmt.Sprintf("Artifact scan incomplete: discovered %d, reported %d, skipped %d", metadata.Discovered, metadata.Reported, metadata.Skipped)
+		if metadata.Truncated {
+			message += " (" + artifactScanTruncationReason(metadata) + ")"
+		}
+		addEnrichmentWarning(summary, warnings, message)
+	}
 }
 
-func shouldReportAvailableArtifacts(command []string) bool {
-	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
+func artifactScanTruncationReason(metadata artifacts.ScanMetadata) string {
+	switch {
+	case metadata.HintsTruncated && metadata.Skipped > 0:
+		return "hint input and reporting bounds reached"
+	case metadata.HintsTruncated:
+		return "hint input bound reached"
+	case metadata.Skipped > 0:
+		return "truncated at the reporting limit"
+	default:
+		return "scan bound reached"
+	}
+}
+
+func shouldReportAvailableArtifacts(invocation semanticInvocation) bool {
+	for _, arg := range invocation.TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]
@@ -379,31 +901,10 @@ func shouldReportAvailableArtifacts(command []string) bool {
 	return false
 }
 
-func filterAvailableArtifacts(found []Artifact, command []string) []Artifact {
-	projectPrefixes := commandProjectPrefixes(command)
-	if len(projectPrefixes) == 0 {
-		return found
-	}
-
-	filtered := make([]Artifact, 0, len(found))
-	for _, artifact := range found {
-		for _, prefix := range projectPrefixes {
-			if artifact.Path == prefix || strings.HasPrefix(artifact.Path, prefix+"/") {
-				filtered = append(filtered, artifact)
-				break
-			}
-		}
-	}
-	if len(filtered) == 0 {
-		return found
-	}
-	return filtered
-}
-
-func commandProjectPrefixes(command []string) []string {
+func commandProjectPrefixes(invocation semanticInvocation) []string {
 	seen := make(map[string]struct{})
 	prefixes := make([]string, 0)
-	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
+	for _, arg := range invocation.TaskSelectors {
 		lastColon := strings.LastIndex(arg, ":")
 		if lastColon <= 0 {
 			continue
@@ -423,23 +924,49 @@ func commandProjectPrefixes(command []string) []string {
 	return prefixes
 }
 
-func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Summary, failedTests, important map[string]struct{}) {
+type junitReportSelection struct {
+	files           []string
+	discovered      int
+	errors          []string
+	errorCount      int
+	errorBytes      int64
+	errorsTruncated bool
+	truncated       bool
+}
+
+func enrichWithJUnitResults(projectDir string, result runner.Result, invocation semanticInvocation, summary *Summary, failedTests, important, warnings *boundedStringCollector) {
 	if !summary.Success && !shouldReadJUnitReportsOnFailure(summary) {
 		return
 	}
-	reportFiles := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(summary.Command))
+	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(invocation))
+	metadata := &JUnitScanMetadata{
+		Discovered:      selection.discovered,
+		Errors:          append([]string(nil), selection.errors...),
+		ErrorCount:      selection.errorCount,
+		ErrorBytes:      selection.errorBytes,
+		ErrorsTruncated: selection.errorsTruncated,
+		Truncated:       selection.truncated,
+	}
 	passedCount := 0
 	failedCount := 0
-	for _, path := range reportFiles {
-		content, err := os.ReadFile(path)
+	for _, path := range selection.files {
+		content, truncated, err := readJUnitReport(path)
 		if err != nil {
+			addJUnitScanError(metadata, projectDir, path, err)
+			continue
+		}
+		if truncated {
+			metadata.FileBytesTruncated = true
+			metadata.Truncated = true
 			continue
 		}
 
 		var suite junitTestSuite
 		if err := xml.Unmarshal(content, &suite); err != nil {
+			addJUnitScanError(metadata, projectDir, path, err)
 			continue
 		}
+		metadata.Parsed++
 
 		for _, testCase := range suite.TestCases {
 			failure := testCase.Failure
@@ -447,6 +974,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 				failure = testCase.Error
 			}
 			if failure == nil && testCase.Skipped != nil {
+				metadata.SkippedTests++
 				continue
 			}
 			if failure == nil {
@@ -456,15 +984,34 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 			failedCount++
 
 			failedTestName := formatJUnitFailedTest(testCase.ClassName, testCase.Name)
-			addUnique(&summary.FailedTests, failedTests, failedTestName, 0)
+			failedTests.add(failedTestName)
 
 			detail := buildJUnitFailureDetail(failedTestName, failure)
-			addUnique(&summary.ImportantLines, important, detail, maxImportantLines)
+			important.add(detail)
 
 			if location := extractRelevantStackFrame(failure.Body); location != "" {
-				addUnique(&summary.ImportantLines, important, location, maxImportantLines)
+				important.add(location)
 			}
 		}
+	}
+	metadata.Skipped = metadata.Discovered - metadata.Parsed
+	if metadata.Skipped < 0 {
+		metadata.Skipped = 0
+	}
+	if metadata.Discovered > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
+		summary.JUnitScan = metadata
+	}
+	if metadata.Truncated || metadata.ErrorCount > 0 {
+		message := fmt.Sprintf("JUnit report scan incomplete: discovered %d, parsed %d, skipped %d", metadata.Discovered, metadata.Parsed, metadata.Skipped)
+		switch {
+		case metadata.FileBytesTruncated && selection.truncated:
+			message += " (file byte and reporting limits reached)"
+		case metadata.FileBytesTruncated:
+			message += " (file byte limit reached)"
+		case metadata.Truncated:
+			message += " (truncated at the reporting limit)"
+		}
+		addEnrichmentWarning(summary, warnings, message)
 	}
 
 	if passedCount > 0 || failedCount > 0 {
@@ -473,10 +1020,112 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, summary *Su
 	}
 }
 
-func findJUnitReportFiles(projectDir string) []string {
-	reportFiles := make([]string, 0)
+func readJUnitReport(path string) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(io.LimitReader(file, int64(maxJUnitFileBytes)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(content) > maxJUnitFileBytes {
+		return nil, true, nil
+	}
+	return content, false, nil
+}
+
+func addJUnitScanError(metadata *JUnitScanMetadata, projectDir, path string, err error) {
+	if err == nil {
+		return
+	}
+	metadata.ErrorCount++
+	if len(metadata.Errors) >= maxJUnitScanErrors {
+		metadata.ErrorsTruncated = true
+		return
+	}
+	message := relativeScanErrorPath(projectDir, path) + ": " + sanitizeScanErrorText(projectDir, err.Error())
+	retainedBytes := int64(0)
+	for _, existing := range metadata.Errors {
+		retainedBytes += int64(len(existing))
+	}
+	if retainedBytes+int64(len(message)) > int64(maxJUnitScanErrorBytes) {
+		metadata.ErrorsTruncated = true
+		return
+	}
+	metadata.Errors = append(metadata.Errors, message)
+	metadata.ErrorBytes += int64(len(message))
+}
+
+func relativeScanErrorPath(projectDir, path string) string {
+	if relative, err := filepath.Rel(projectDir, path); err == nil {
+		return filepath.ToSlash(relative)
+	}
+	return sanitizeScanErrorText(projectDir, filepath.ToSlash(path))
+}
+
+func sanitizeScanErrorText(projectDir, text string) string {
+	for _, root := range scanErrorPathVariants(projectDir) {
+		text = strings.ReplaceAll(text, root, "<project>")
+	}
+	return text
+}
+
+func scanErrorPathVariants(projectDir string) []string {
+	if projectDir == "" {
+		return nil
+	}
+	candidates := []string{projectDir, filepath.Clean(projectDir)}
+	if absolute, err := filepath.Abs(projectDir); err == nil {
+		candidates = append(candidates, absolute, filepath.Clean(absolute))
+	}
+	variants := make([]string, 0, len(candidates)*2)
+	seen := make(map[string]struct{}, len(candidates)*2)
+	for _, candidate := range candidates {
+		for _, variant := range []string{candidate, filepath.ToSlash(candidate)} {
+			if variant == "" {
+				continue
+			}
+			if _, ok := seen[variant]; ok {
+				continue
+			}
+			seen[variant] = struct{}{}
+			variants = append(variants, variant)
+		}
+	}
+	return variants
+}
+
+func isJUnitScanErrorPath(projectDir, path string) bool {
+	relative := relativeScanErrorPath(projectDir, path)
+	normalized := "/" + strings.Trim(relative, "/") + "/"
+	return strings.Contains(normalized, "/build/test-results/")
+}
+
+func addEnrichmentWarning(summary *Summary, warnings *boundedStringCollector, message string) {
+	if warnings.add(message) {
+		summary.WarningCount++
+	}
+}
+
+func findJUnitReportFiles(projectDir string) junitReportSelection {
+	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if isJUnitScanErrorPath(projectDir, path) {
+				addSelectionError(&selection, projectDir, path, walkErr)
+			}
+			return nil
+		}
+		if isJUnitReportPath(path, entry.Name()) {
+			selection.discovered++
+			if len(selection.files) < maxJUnitReportFiles {
+				selection.files = append(selection.files, path)
+			} else {
+				selection.truncated = true
+			}
 			return nil
 		}
 		if entry.IsDir() {
@@ -485,35 +1134,31 @@ func findJUnitReportFiles(projectDir string) []string {
 			}
 			return nil
 		}
-		if len(reportFiles) >= maxJUnitReportFiles {
-			return fs.SkipAll
-		}
-		if isJUnitReportPath(path, entry.Name()) {
-			reportFiles = append(reportFiles, path)
-		}
 		return nil
 	})
 
-	return reportFiles
+	return selection
 }
 
-func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) []string {
-	reportFiles := findJUnitReportFiles(projectDir)
-	if len(reportFiles) == 0 {
-		return nil
+func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) junitReportSelection {
+	selection := findJUnitReportFiles(projectDir)
+	if len(selection.files) == 0 {
+		return selection
 	}
 	if startedAt.IsZero() {
 		if allowFallback {
-			return reportFiles
+			return selection
 		}
-		return nil
+		selection.files = nil
+		return selection
 	}
 
 	threshold := startedAt.Add(-junitTimeSkew)
-	fresh := make([]string, 0, len(reportFiles))
-	for _, path := range reportFiles {
+	fresh := make([]string, 0, len(selection.files))
+	for _, path := range selection.files {
 		info, err := os.Stat(path)
 		if err != nil {
+			addSelectionError(&selection, projectDir, path, err)
 			continue
 		}
 		if !info.ModTime().Before(threshold) {
@@ -521,32 +1166,38 @@ func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallbac
 		}
 	}
 	if len(fresh) > 0 {
-		return fresh
+		selection.files = fresh
+		return selection
 	}
 	if allowFallback {
-		return reportFiles
+		return selection
 	}
-	return nil
+	selection.files = nil
+	return selection
 }
 
-func addUnique(items *[]string, seen map[string]struct{}, value string, limit int) {
-	value = strings.TrimSpace(value)
-	if value == "" {
+func addSelectionError(selection *junitReportSelection, projectDir, path string, err error) {
+	if err == nil {
 		return
 	}
-	if _, ok := seen[value]; ok {
+	selection.errorCount++
+	if len(selection.errors) >= maxJUnitScanErrors {
+		selection.errorsTruncated = true
 		return
 	}
-	seen[value] = struct{}{}
-	if limit == 0 || len(*items) < limit {
-		*items = append(*items, value)
+	message := relativeScanErrorPath(projectDir, path) + ": " + sanitizeScanErrorText(projectDir, err.Error())
+	if selection.errorBytes+int64(len(message)) > int64(maxJUnitScanErrorBytes) {
+		selection.errorsTruncated = true
+		return
 	}
+	selection.errors = append(selection.errors, message)
+	selection.errorBytes += int64(len(message))
 }
 
-func addUniqueBuildScanURLs(items *[]string, seen map[string]struct{}, values []string) {
+func addUniqueBuildScanURLs(items *boundedStringCollector, values []string) {
 	for _, value := range values {
 		if isBuildScanURL(value) {
-			addUnique(items, seen, value, 0)
+			items.add(value)
 		}
 	}
 }
@@ -556,10 +1207,10 @@ func isBuildScanURL(value string) bool {
 	return strings.Contains(lower, "/s/")
 }
 
-func extractURLs(text string) []string {
-	matches := urlPattern.FindAllString(text, -1)
+func extractURLs(text string) ([]string, bool) {
+	matches := urlPattern.FindAllString(text, maxBuildScanURLs+1)
 	if len(matches) == 0 {
-		return nil
+		return nil, false
 	}
 
 	urls := make([]string, 0, len(matches))
@@ -569,7 +1220,7 @@ func extractURLs(text string) []string {
 			urls = append(urls, url)
 		}
 	}
-	return urls
+	return urls, len(matches) > maxBuildScanURLs
 }
 
 func isBuildScanMarkerLine(text string) bool {
@@ -718,8 +1369,8 @@ func extractRelevantStackFrame(stack string) string {
 	return ""
 }
 
-func shouldFallbackToAvailableJUnitReports(command []string) bool {
-	for _, arg := range gradle.AnalyzeArgs(command).TaskSelectors {
+func shouldFallbackToAvailableJUnitReports(invocation semanticInvocation) bool {
+	for _, arg := range invocation.TaskSelectors {
 		taskName := strings.ToLower(arg)
 		if index := strings.LastIndex(taskName, ":"); index >= 0 {
 			taskName = taskName[index+1:]

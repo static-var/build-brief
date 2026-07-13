@@ -643,7 +643,7 @@
 
       <details class="faq__item">
         <summary class="faq__q">Can I surface my own log links?</summary>
-        <p class="faq__a">Yes. Add a project-level <code>.build-brief.json</code> with named regex entries under <code>matches</code>, or pass a file with <code>--config PATH</code> / <code>BUILD_BRIEF_CONFIG</code>. Matching text is shown under <code>Custom matches</code> in the brief.</p>
+        <p class="faq__a">Yes. Add a project-level <code>.build-brief.json</code> with named regex entries under <code>matches</code>, or pass a file with <code>--config PATH</code> / <code>BUILD_BRIEF_CONFIG</code>. Relative paths from either source resolve from the effective project directory: <code>--project-dir</code>, then <code>BUILD_BRIEF_PROJECT_DIR</code>, then the current working directory. <code>--project-dir</code> takes precedence over <code>BUILD_BRIEF_PROJECT_DIR</code>; absolute paths remain unchanged. Matching text is shown under <code>Custom matches</code> in the brief.</p>
       </details>
 
       <details class="faq__item">

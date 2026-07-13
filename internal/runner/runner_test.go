@@ -19,24 +19,13 @@ import (
 func TestRunUsesUniqueRawLogPerRun(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
 
-	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"first run\"\nexit 0\n")
-	resultOne, err := Run(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir)
+	resultOne, err := Run(context.Background(), runnerTestCommand(t, projectDir, "first"), logDir)
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 
-	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"second run\"\nexit 0\n")
-	resultTwo, err := Run(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir)
+	resultTwo, err := Run(context.Background(), runnerTestCommand(t, projectDir, "second"), logDir)
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}
@@ -104,6 +93,57 @@ func TestRunnerOutputHelper(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "stderr-%03d\n", i)
 	}
 	os.Exit(0)
+}
+
+func TestRunnerProcessHelper(t *testing.T) {
+	if os.Getenv("BUILD_BRIEF_RUNNER_HELPER") != "1" {
+		return
+	}
+
+	switch os.Args[len(os.Args)-1] {
+	case "first":
+		fmt.Fprintln(os.Stdout, "first run")
+	case "second":
+		time.Sleep(40 * time.Millisecond)
+		fmt.Fprintln(os.Stdout, "second run")
+	case "current":
+		fmt.Fprintln(os.Stdout, "current run")
+	case "failed":
+		fmt.Fprintln(os.Stdout, "> Task :app:test FAILED")
+		os.Exit(7)
+	case "slow":
+		time.Sleep(120 * time.Millisecond)
+		fmt.Fprintln(os.Stdout, "done")
+	case "long":
+		fmt.Fprintln(os.Stdout, strings.Repeat("x", 1_500_000))
+	case "noop":
+		fmt.Fprintln(os.Stdout, "done")
+	case "cancel":
+		fmt.Fprintln(os.Stdout, "started")
+		// A zero-case select makes the Go test binary report a runtime deadlock
+		// and exit 2 before the parent can deliver CTRL_BREAK_EVENT. Sleep keeps
+		// this helper alive indefinitely without coordinating test timing.
+		for {
+			time.Sleep(time.Hour)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown runner helper mode %q\n", os.Args[len(os.Args)-1])
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func runnerTestCommand(t *testing.T, projectDir, mode string) gradle.Command {
+	t.Helper()
+	if os.Getenv("BUILD_BRIEF_RUNNER_HELPER") != "1" {
+		t.Setenv("BUILD_BRIEF_RUNNER_HELPER", "1")
+	}
+	return gradle.Command{
+		Executable: os.Args[0],
+		Args:       []string{"-test.run=^TestRunnerProcessHelper$", "--", mode},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}
 }
 
 func TestRunWaitsForDescendantOutput(t *testing.T) {
@@ -232,29 +272,21 @@ func (w failingWriter) Write([]byte) (int, error) {
 func TestRunConcurrentInvocationsUseSeparateLogs(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	firstScriptPath := filepath.Join(t.TempDir(), "first-gradle.sh")
-	secondScriptPath := filepath.Join(t.TempDir(), "second-gradle.sh")
-
-	writeExecutable(t, firstScriptPath, "#!/bin/sh\npython3 -c 'import time; time.sleep(0.12); print(\"first run\")'\n")
-	writeExecutable(t, secondScriptPath, "#!/bin/sh\npython3 -c 'import time; time.sleep(0.04); print(\"second run\")'\n")
 
 	type runResult struct {
 		result Result
 		err    error
 	}
 
+	t.Setenv("BUILD_BRIEF_RUNNER_HELPER", "1")
 	results := make(chan runResult, 2)
-	runCommand := func(executable string) {
-		result, err := Run(context.Background(), gradle.Command{
-			Executable: executable,
-			ProjectDir: projectDir,
-			Source:     gradle.SourceExplicit,
-		}, logDir)
+	runCommand := func(mode string) {
+		result, err := Run(context.Background(), runnerTestCommand(t, projectDir, mode), logDir)
 		results <- runResult{result: result, err: err}
 	}
 
-	go runCommand(firstScriptPath)
-	go runCommand(secondScriptPath)
+	go runCommand("first")
+	go runCommand("second")
 
 	first := <-results
 	second := <-results
@@ -298,8 +330,6 @@ func TestRunConcurrentInvocationsUseSeparateLogs(t *testing.T) {
 func TestRunPrunesOlderCompletedLogs(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
-	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"current run\"\nexit 0\n")
 
 	prefix := "build-brief-" + fmt.Sprintf("%08x", projectHash(projectDir)) + "-"
 	baseTime := time.Now().Add(-time.Hour)
@@ -314,11 +344,7 @@ func TestRunPrunesOlderCompletedLogs(t *testing.T) {
 		}
 	}
 
-	result, err := Run(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir)
+	result, err := Run(context.Background(), runnerTestCommand(t, projectDir, "current"), logDir)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -350,14 +376,8 @@ func TestRunPrunesOlderCompletedLogs(t *testing.T) {
 func TestRunPreservesExitCodeAndWritesLog(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "fake-gradle.sh")
 
-	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"> Task :app:test FAILED\"\nexit 7\n")
-	result, err := Run(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir)
+	result, err := Run(context.Background(), runnerTestCommand(t, projectDir, "failed"), logDir)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -385,19 +405,12 @@ func TestRunPreservesExitCodeAndWritesLog(t *testing.T) {
 func TestRunWithOptionsReportsProgress(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "slow-gradle.sh")
-
-	writeExecutable(t, scriptPath, "#!/bin/sh\npython3 -c 'import time; time.sleep(0.12); print(\"done\")'\n")
 
 	var (
 		mu     sync.Mutex
 		events []ProgressEvent
 	)
-	result, err := RunWithOptions(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir, Options{
+	result, err := RunWithOptions(context.Background(), runnerTestCommand(t, projectDir, "slow"), logDir, Options{
 		ProgressInterval: 25 * time.Millisecond,
 		Progress: func(event ProgressEvent) {
 			mu.Lock()
@@ -429,15 +442,8 @@ func TestRunWithOptionsReportsProgress(t *testing.T) {
 func TestRunHandlesVeryLongLines(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "long-line-gradle.sh")
 
-	writeExecutable(t, scriptPath, "#!/bin/sh\npython3 -c 'print(\"x\" * 1500000)'\n")
-
-	result, err := Run(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir)
+	result, err := Run(context.Background(), runnerTestCommand(t, projectDir, "long"), logDir)
 	if err != nil {
 		t.Fatalf("run long-line command: %v", err)
 	}
@@ -449,8 +455,6 @@ func TestRunHandlesVeryLongLines(t *testing.T) {
 func TestRunCapturesArtifactSnapshotBeforeExecution(t *testing.T) {
 	projectDir := t.TempDir()
 	logDir := t.TempDir()
-	scriptPath := filepath.Join(t.TempDir(), "noop-gradle.sh")
-	writeExecutable(t, scriptPath, "#!/bin/sh\necho \"done\"\n")
 
 	artifactPath := filepath.Join(projectDir, "app", "build", "libs", "existing.jar")
 	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
@@ -460,11 +464,7 @@ func TestRunCapturesArtifactSnapshotBeforeExecution(t *testing.T) {
 		t.Fatalf("write artifact: %v", err)
 	}
 
-	result, err := Run(context.Background(), gradle.Command{
-		Executable: scriptPath,
-		ProjectDir: projectDir,
-		Source:     gradle.SourceExplicit,
-	}, logDir)
+	result, err := Run(context.Background(), runnerTestCommand(t, projectDir, "noop"), logDir)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -478,12 +478,5 @@ func TestRunCapturesArtifactSnapshotBeforeExecution(t *testing.T) {
 	}
 	if got := result.ArtifactSnapshot.ArtifactEntries[wantPath]; got == (artifacts.SnapshotEntry{}) {
 		t.Fatalf("expected non-zero snapshot entry for %q", wantPath)
-	}
-}
-
-func writeExecutable(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("write executable %s: %v", path, err)
 	}
 }

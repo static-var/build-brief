@@ -31,6 +31,17 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 		}
 	}
 
+	if raw := summary.RawInput; raw != nil && raw.Partial {
+		if _, err := fmt.Fprintf(bw, "WARNING: raw input incomplete: %d line(s) exceeded the %d-byte reducer limit; summary fields may be partial.\n", raw.TruncatedLines, 1<<20); err != nil {
+			return err
+		}
+	}
+	if reducer := summary.Reducer; reducer != nil && reducer.Partial && len(reducer.PartialFields) > 0 {
+		if _, err := fmt.Fprintf(bw, "WARNING: reducer summary partial for: %s\n", strings.Join(reducer.PartialFields, ", ")); err != nil {
+			return err
+		}
+	}
+
 	if summary.PassedTestCount > 0 || summary.FailedTestCount > 0 {
 		if _, err := fmt.Fprintf(bw, "Tests: %d passed, %d failed\n", summary.PassedTestCount, summary.FailedTestCount); err != nil {
 			return err
@@ -45,6 +56,85 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 			if _, err := fmt.Fprintf(bw, "  - %s\n", warning); err != nil {
 				return err
 			}
+		}
+	}
+
+	if scan := summary.JUnitScan; scan != nil {
+		line := fmt.Sprintf("JUnit reports: %d discovered, %d parsed, %d skipped", scan.Discovered, scan.Parsed, scan.Skipped)
+		if scan.FileBytesTruncated {
+			line += " (file byte limit reached)"
+		} else if scan.Truncated {
+			line += " (truncated at the reporting limit)"
+		}
+		if scan.ErrorsTruncated {
+			line += " (error details truncated)"
+		}
+		if _, err := fmt.Fprintln(bw, line); err != nil {
+			return err
+		}
+		if scan.SkippedTests > 0 {
+			if _, err := fmt.Fprintf(bw, "  - %d skipped tests\n", scan.SkippedTests); err != nil {
+				return err
+			}
+		}
+		if len(scan.Errors) > 0 {
+			label := "JUnit report scan errors:"
+			if scan.ErrorCount > 0 {
+				label = fmt.Sprintf("JUnit report scan errors: %d total", scan.ErrorCount)
+			}
+			if _, err := fmt.Fprintln(bw, label); err != nil {
+				return err
+			}
+			for _, scanError := range scan.Errors {
+				if _, err := fmt.Fprintf(bw, "  - %s\n", scanError); err != nil {
+					return err
+				}
+			}
+			if scan.ErrorsTruncated {
+				if _, err := fmt.Fprintln(bw, "  - additional scan errors omitted"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if scan := summary.ArtifactScan; scan != nil {
+		line := fmt.Sprintf("Artifacts scan: %d discovered, %d reported, %d skipped", scan.Discovered, scan.Reported, scan.Skipped)
+		if scan.Truncated {
+			line += " (truncated at the reporting limit)"
+		}
+		if scan.ErrorsTruncated {
+			line += " (error details truncated)"
+		}
+		if _, err := fmt.Fprintln(bw, line); err != nil {
+			return err
+		}
+		if len(scan.Errors) > 0 {
+			label := "Artifact scan errors:"
+			if scan.ErrorCount > 0 {
+				label = fmt.Sprintf("Artifact scan errors: %d total", scan.ErrorCount)
+			}
+			if _, err := fmt.Fprintln(bw, label); err != nil {
+				return err
+			}
+			for _, scanError := range scan.Errors {
+				if _, err := fmt.Fprintf(bw, "  - %s\n", scanError); err != nil {
+					return err
+				}
+			}
+			if scan.ErrorsTruncated {
+				if _, err := fmt.Fprintln(bw, "  - additional scan errors omitted"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if scan := summary.ArtifactHintScan; scan != nil && scan.Truncated {
+		line := fmt.Sprintf("Artifact hints: %d observed, %d retained, %d omitted", scan.Observed, scan.Retained, scan.Omitted)
+		line += " (truncated at the retention limit)"
+		if _, err := fmt.Fprintln(bw, line); err != nil {
+			return err
 		}
 	}
 
