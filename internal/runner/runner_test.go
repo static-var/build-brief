@@ -147,6 +147,51 @@ func TestRunnerDescendantOutputHelper(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 		fmt.Fprintln(os.Stdout, "late")
 		os.Exit(0)
+	case "failed-parent":
+		fmt.Fprintln(os.Stdout, "early")
+		child := exec.Command(os.Args[0], "-test.run=TestRunnerDescendantOutputHelper$")
+		child.Env = append(os.Environ(), "BUILD_BRIEF_RUNNER_DESCENDANT=failed-child")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(23)
+	case "failed-child":
+		time.Sleep(commandWaitDelay + time.Second)
+		fmt.Fprintln(os.Stdout, "late")
+		os.Exit(0)
+	}
+}
+
+func TestRunSurfacesTruncatedOutputAfterFailedParent(t *testing.T) {
+	projectDir := t.TempDir()
+	logDir := t.TempDir()
+
+	t.Setenv("BUILD_BRIEF_RUNNER_DESCENDANT", "failed-parent")
+	result, err := Run(context.Background(), gradle.Command{
+		Executable: os.Args[0],
+		Args:       []string{"-test.run=TestRunnerDescendantOutputHelper$"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceExplicit,
+	}, logDir)
+	if err == nil {
+		t.Fatal("expected output capture truncation to be surfaced")
+	}
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("expected ErrWaitDelay capture error, got %v", err)
+	}
+	if result.ExitCode != 23 {
+		t.Fatalf("expected parent exit code 23, got %d", result.ExitCode)
+	}
+
+	content, readErr := os.ReadFile(result.RawLogPath)
+	if readErr != nil {
+		t.Fatalf("read raw log: %v", readErr)
+	}
+	if got := string(content); got != "early\n" {
+		t.Fatalf("expected only pre-delay output in truncated log, got %q", got)
 	}
 }
 
