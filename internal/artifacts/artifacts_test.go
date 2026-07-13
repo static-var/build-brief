@@ -274,6 +274,94 @@ func TestCaptureBoundsSnapshotMapsAndReportsCounts(t *testing.T) {
 	}
 }
 
+func TestSnapshotEntryRetainerDefersHeapAllocation(t *testing.T) {
+	retainer := newSnapshotEntryRetainer(make(map[string]SnapshotEntry), &SnapshotEntryMetadata{}, maxSnapshotClassEntries, lexicographicSnapshotCandidateLess)
+	if cap(retainer.heap.values) != 0 {
+		t.Fatalf("expected no heap storage before candidates, got capacity %d", cap(retainer.heap.values))
+	}
+}
+
+func TestSnapshotRetentionKeepsExactTopKAtOverflowBoundary(t *testing.T) {
+	entries := make(map[string]SnapshotEntry)
+	metadata := &SnapshotEntryMetadata{}
+	retainer := newSnapshotEntryRetainer(entries, metadata, 2, lexicographicSnapshotCandidateLess)
+	for _, path := range []string{"z.class", "y.class", "x.class", "a.class"} {
+		retainer.retain(path, SnapshotEntry{})
+	}
+	_, hasA := entries["a.class"]
+	_, hasX := entries["x.class"]
+	if len(entries) != 2 || !hasA || !hasX {
+		t.Fatalf("expected lexicographic top-K retention, got %+v", entries)
+	}
+	if metadata.Discovered != 4 || metadata.Retained != 2 || !metadata.Truncated {
+		t.Fatalf("unexpected overflow metadata: %+v", metadata)
+	}
+
+	artifactEntries := make(map[string]SnapshotEntry)
+	artifactMetadata := &SnapshotEntryMetadata{}
+	artifactRetainer := newSnapshotEntryRetainer(artifactEntries, artifactMetadata, 2, artifactSnapshotCandidateLess)
+	artifactRetainer.retain("z.jar", SnapshotEntry{Kind: "JAR", SizeBytes: 100})
+	artifactRetainer.retain("y.jar", SnapshotEntry{Kind: "JAR", SizeBytes: 90})
+	artifactRetainer.retain("release.apk", SnapshotEntry{Kind: "APK", SizeBytes: 1})
+	if _, ok := artifactEntries["release.apk"]; !ok {
+		t.Fatalf("expected higher-priority artifact retained, got %+v", artifactEntries)
+	}
+	if _, ok := artifactEntries["z.jar"]; !ok {
+		t.Fatalf("expected best retained JAR preserved, got %+v", artifactEntries)
+	}
+}
+
+func BenchmarkCaptureEmpty(b *testing.B) {
+	projectDir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := Capture(projectDir); len(got.ArtifactEntries) != 0 || len(got.ClassEntries) != 0 || len(got.CodegenEntries) != 0 {
+			b.Fatalf("expected empty snapshot, got %+v", got)
+		}
+	}
+}
+
+func BenchmarkCaptureSparse(b *testing.B) {
+	projectDir := b.TempDir()
+	for i := 0; i < 10; i++ {
+		path := filepath.Join(projectDir, "app", "build", "classes", "main", fmt.Sprintf("Class%02d.class", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("class"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := Capture(projectDir); len(got.ClassEntries) != 10 {
+			b.Fatalf("retained = %d, want 10", len(got.ClassEntries))
+		}
+	}
+}
+
+func BenchmarkCaptureOverCapArtifacts(b *testing.B) {
+	projectDir := b.TempDir()
+	for i := 0; i < maxSnapshotArtifactEntries*2; i++ {
+		path := filepath.Join(projectDir, "app", "build", "libs", fmt.Sprintf("artifact-%05d.jar", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("jar"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := Capture(projectDir); len(got.ArtifactEntries) != maxSnapshotArtifactEntries {
+			b.Fatalf("retained = %d, want %d", len(got.ArtifactEntries), maxSnapshotArtifactEntries)
+		}
+	}
+}
+
 func TestFindGeneratedPreservesArtifactPriorityWhenCapped(t *testing.T) {
 	projectDir := t.TempDir()
 	for i := 0; i < maxArtifactsReported; i++ {

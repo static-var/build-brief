@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"container/heap"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -314,6 +315,90 @@ type SnapshotEntry struct {
 	Kind            string `json:"-"`
 }
 
+type snapshotCandidate struct {
+	path  string
+	entry SnapshotEntry
+}
+
+// snapshotCandidateHeap is a max-heap: its root is the least valuable retained entry.
+type snapshotCandidateHeap struct {
+	values []snapshotCandidate
+	less   func(snapshotCandidate, snapshotCandidate) bool
+}
+
+func (h snapshotCandidateHeap) Len() int           { return len(h.values) }
+func (h snapshotCandidateHeap) Less(i, j int) bool { return h.less(h.values[j], h.values[i]) }
+func (h snapshotCandidateHeap) Swap(i, j int)      { h.values[i], h.values[j] = h.values[j], h.values[i] }
+func (h *snapshotCandidateHeap) Push(value any) {
+	h.values = append(h.values, value.(snapshotCandidate))
+}
+func (h *snapshotCandidateHeap) Pop() any {
+	last := len(h.values) - 1
+	value := h.values[last]
+	h.values = h.values[:last]
+	return value
+}
+
+type snapshotEntryRetainer struct {
+	entries  map[string]SnapshotEntry
+	metadata *SnapshotEntryMetadata
+	max      int
+	heap     snapshotCandidateHeap
+}
+
+func newSnapshotEntryRetainer(entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, max int, less func(snapshotCandidate, snapshotCandidate) bool) *snapshotEntryRetainer {
+	return &snapshotEntryRetainer{
+		entries: entries, metadata: metadata, max: max,
+		heap: snapshotCandidateHeap{less: less},
+	}
+}
+
+func (r *snapshotEntryRetainer) retain(path string, entry SnapshotEntry) {
+	if _, exists := r.entries[path]; exists {
+		return
+	}
+	r.metadata.Discovered++
+	candidate := snapshotCandidate{path: path, entry: entry}
+	if r.heap.Len() < r.max {
+		r.entries[path] = entry
+		r.push(candidate)
+		r.metadata.Retained++
+		return
+	}
+	r.metadata.Truncated = true
+	if !r.heap.less(candidate, r.heap.values[0]) {
+		return
+	}
+	worst := heap.Pop(&r.heap).(snapshotCandidate)
+	delete(r.entries, worst.path)
+	r.entries[path] = entry
+	r.push(candidate)
+}
+
+func (r *snapshotEntryRetainer) push(candidate snapshotCandidate) {
+	if len(r.heap.values) == cap(r.heap.values) {
+		capacity := 8
+		if existing := cap(r.heap.values); existing > 0 {
+			capacity = existing * 2
+		}
+		if capacity > r.max {
+			capacity = r.max
+		}
+		values := make([]snapshotCandidate, len(r.heap.values), capacity)
+		copy(values, r.heap.values)
+		r.heap.values = values
+	}
+	heap.Push(&r.heap, candidate)
+}
+
+func artifactSnapshotCandidateLess(left, right snapshotCandidate) bool {
+	return artifactLess(Artifact{Kind: left.entry.Kind, Path: left.path, SizeBytes: left.entry.SizeBytes}, Artifact{Kind: right.entry.Kind, Path: right.path, SizeBytes: right.entry.SizeBytes})
+}
+
+func lexicographicSnapshotCandidateLess(left, right snapshotCandidate) bool {
+	return left.path < right.path
+}
+
 type artifactRoot struct {
 	parts []string
 }
@@ -342,13 +427,19 @@ func Capture(projectDir string) Snapshot {
 		ClassEntries:    make(map[string]SnapshotEntry),
 		CodegenEntries:  make(map[string]SnapshotEntry),
 	}
+	var artifactEntries, classEntries, codegenEntries *snapshotEntryRetainer
 
 	_ = filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
 		if buildDir, ok, skip := buildDirPath(path, entry); ok {
-			captureBuildDir(buildDir, projectDir, &snapshot)
+			if artifactEntries == nil {
+				artifactEntries = newSnapshotEntryRetainer(snapshot.ArtifactEntries, &snapshot.Metadata.ArtifactEntries, maxSnapshotArtifactEntries, artifactSnapshotCandidateLess)
+				classEntries = newSnapshotEntryRetainer(snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, lexicographicSnapshotCandidateLess)
+				codegenEntries = newSnapshotEntryRetainer(snapshot.CodegenEntries, &snapshot.Metadata.CodegenEntries, maxSnapshotCodegenEntries, lexicographicSnapshotCandidateLess)
+			}
+			captureBuildDir(buildDir, projectDir, artifactEntries, classEntries, codegenEntries)
 			if skip {
 				return filepath.SkipDir
 			}
@@ -797,18 +888,18 @@ func buildDirPath(path string, entry fs.DirEntry) (string, bool, bool) {
 	return path, true, false
 }
 
-func captureBuildDir(buildDir, projectDir string, snapshot *Snapshot) {
+func captureBuildDir(buildDir, projectDir string, artifacts, classes, codegen *snapshotEntryRetainer) {
 	for _, root := range artifactRoots {
-		captureArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, snapshot.ArtifactEntries, &snapshot.Metadata.ArtifactEntries)
+		captureArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, artifacts)
 	}
 
-	captureMatchingFiles(filepath.Join(buildDir, "classes"), projectDir, snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, func(path string) bool {
+	captureMatchingFiles(filepath.Join(buildDir, "classes"), projectDir, classes, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
 	})
-	captureMatchingFiles(filepath.Join(buildDir, "tmp", "kotlin-classes"), projectDir, snapshot.ClassEntries, &snapshot.Metadata.ClassEntries, maxSnapshotClassEntries, func(path string) bool {
+	captureMatchingFiles(filepath.Join(buildDir, "tmp", "kotlin-classes"), projectDir, classes, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
 	})
-	captureMatchingFiles(filepath.Join(buildDir, "generated"), projectDir, snapshot.CodegenEntries, &snapshot.Metadata.CodegenEntries, maxSnapshotCodegenEntries, func(path string) bool {
+	captureMatchingFiles(filepath.Join(buildDir, "generated"), projectDir, codegen, func(path string) bool {
 		return true
 	})
 }
@@ -834,7 +925,7 @@ func scanAvailableBuildDir(buildDir, projectDir string, collector *artifactColle
 	}
 }
 
-func captureArtifactRoot(rootDir, projectDir string, entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata) {
+func captureArtifactRoot(rootDir, projectDir string, retainer *snapshotEntryRetainer) {
 	info, err := os.Stat(rootDir)
 	if err != nil || !info.IsDir() {
 		return
@@ -847,7 +938,7 @@ func captureArtifactRoot(rootDir, projectDir string, entries map[string]Snapshot
 		if entry.IsDir() {
 			artifact, state, ok := buildArtifact(path, entry, projectDir)
 			if ok {
-				retainArtifactSnapshotEntry(entries, metadata, artifact, state)
+				retainer.retain(artifact.Path, state)
 				return filepath.SkipDir
 			}
 			return nil
@@ -860,38 +951,9 @@ func captureArtifactRoot(rootDir, projectDir string, entries map[string]Snapshot
 		if !ok {
 			return nil
 		}
-		retainArtifactSnapshotEntry(entries, metadata, artifact, state)
+		retainer.retain(artifact.Path, state)
 		return nil
 	})
-}
-
-func retainArtifactSnapshotEntry(entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, artifact Artifact, state SnapshotEntry) {
-	if _, exists := entries[artifact.Path]; exists {
-		return
-	}
-	metadata.Discovered++
-	if len(entries) < maxSnapshotArtifactEntries {
-		entries[artifact.Path] = state
-		metadata.Retained++
-		return
-	}
-	metadata.Truncated = true
-	worstPath := ""
-	var worst Artifact
-	for path, entry := range entries {
-		kind := entry.Kind
-		if kind == "" {
-			kind, _ = artifactKind(filepath.Base(path), false)
-		}
-		candidate := Artifact{Kind: kind, Path: path, SizeBytes: entry.SizeBytes}
-		if worstPath == "" || artifactLess(worst, candidate) {
-			worstPath, worst = path, candidate
-		}
-	}
-	if artifactLess(artifact, worst) {
-		delete(entries, worstPath)
-		entries[artifact.Path] = state
-	}
 }
 
 func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot Snapshot, collector *artifactCollector, hints []string) {
@@ -938,7 +1000,7 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 	}
 }
 
-func captureMatchingFiles(rootDir, projectDir string, entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, maxEntries int, match func(path string) bool) {
+func captureMatchingFiles(rootDir, projectDir string, retainer *snapshotEntryRetainer, match func(path string) bool) {
 	info, err := os.Stat(rootDir)
 	if err != nil || !info.IsDir() {
 		return
@@ -959,32 +1021,9 @@ func captureMatchingFiles(rootDir, projectDir string, entries map[string]Snapsho
 		if !ok {
 			return nil
 		}
-		retainSnapshotEntry(entries, metadata, maxEntries, relativePath, state)
+		retainer.retain(relativePath, state)
 		return nil
 	})
-}
-
-func retainSnapshotEntry(entries map[string]SnapshotEntry, metadata *SnapshotEntryMetadata, maxEntries int, path string, state SnapshotEntry) {
-	if _, exists := entries[path]; exists {
-		return
-	}
-	metadata.Discovered++
-	if len(entries) < maxEntries {
-		entries[path] = state
-		metadata.Retained++
-		return
-	}
-	metadata.Truncated = true
-	worstPath := ""
-	for retained := range entries {
-		if worstPath == "" || retained > worstPath {
-			worstPath = retained
-		}
-	}
-	if path < worstPath {
-		delete(entries, worstPath)
-		entries[path] = state
-	}
 }
 
 func countChangedFiles(rootDir, projectDir string, threshold time.Time, useSnapshot bool, beforeEntries map[string]SnapshotEntry, match func(path string) bool) int {

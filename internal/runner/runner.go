@@ -155,7 +155,10 @@ func RunWithOptions(ctx context.Context, command gradle.Command, logDir string, 
 			_ = rawLogFile.Close()
 		}
 	}()
-	artifactSnapshot := artifacts.Capture(command.ProjectDir)
+	artifactSnapshot := artifacts.Snapshot{}
+	if !gradle.AnalyzeArgs(command.Args).IsPureInformational {
+		artifactSnapshot = artifacts.Capture(command.ProjectDir)
+	}
 
 	captureReader, captureWriter, err := os.Pipe()
 	if err != nil {

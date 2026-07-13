@@ -672,8 +672,10 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 	}
 	syncSummaryCollections(&summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
 
-	enrichWithJUnitResults(command.ProjectDir, result, invocation, &summary, failedTests, important, warnings)
-	enrichWithArtifacts(command.ProjectDir, result, invocation, &summary, artifactHintCollector.hints, warnings)
+	if !invocation.IsPureInformational {
+		enrichWithJUnitResults(command.ProjectDir, result, invocation, &summary, failedTests, important, warnings)
+		enrichWithArtifacts(command.ProjectDir, result, invocation, &summary, artifactHintCollector.hints, warnings)
+	}
 	syncSummaryCollections(&summary, failedTasks, failedTests, warnings, important, buildScanURLs, configCacheProblems, reportLines, customMatches)
 	summary.ArtifactHintScan = artifactHintCollector.finish()
 	summary.RawInput = finishRawInputMetadata(rawInput)
