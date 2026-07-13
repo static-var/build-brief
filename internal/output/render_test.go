@@ -392,6 +392,37 @@ func TestRenderHumanShowsEnrichmentScanMetadataAndWarnings(t *testing.T) {
 	}
 }
 
+func TestRenderHumanDisclosesJUnitErrorsAndTruncation(t *testing.T) {
+	summary := reducer.Summary{
+		Success:         true,
+		BuildStatusLine: "BUILD SUCCESSFUL in 1s",
+		JUnitScan: &reducer.JUnitScanMetadata{
+			Discovered:      101,
+			Parsed:          100,
+			Skipped:         1,
+			Errors:          []string{"module/build/test-results/test/TEST-bad.xml: XML syntax error"},
+			ErrorCount:      2,
+			ErrorsTruncated: true,
+			Truncated:       true,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := RenderHuman(&out, summary); err != nil {
+		t.Fatalf("render JUnit disclosure: %v", err)
+	}
+	for _, expected := range []string{
+		"JUnit reports: 101 discovered, 100 parsed, 1 skipped (truncated at the reporting limit) (error details truncated)",
+		"JUnit report scan errors: 2 total",
+		"TEST-bad.xml: XML syntax error",
+		"additional scan errors omitted",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("expected JUnit disclosure %q, got %q", expected, out.String())
+		}
+	}
+}
+
 func TestRenderHumanShowsScanTruncationWhenWarningsAreCapped(t *testing.T) {
 	warnings := make([]string, 8)
 	for i := range warnings {

@@ -183,10 +183,6 @@ func (c *boundedStringCollector) add(value string) bool {
 	return true
 }
 
-func (c *boundedStringCollector) markTruncated() {
-	c.truncated = true
-}
-
 func (c *boundedStringCollector) metadata() ReducerCollectionMetadata {
 	metadata := ReducerCollectionMetadata{
 		Observed:      c.observed,
@@ -589,20 +585,16 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			important.add(text)
 		}
 
-		lineURLs, lineURLsTruncated := extractURLs(text)
-		if isBuildScanMarkerLine(text) {
-			if lineURLsTruncated {
-				buildScanURLs.markTruncated()
-			}
-			if len(lineURLs) > 0 {
-				addUniqueBuildScanURLs(buildScanURLs, lineURLs)
-				captureBuildScanURLRemaining = 0
-			} else {
-				captureBuildScanURLRemaining = 3
-			}
-		} else if captureBuildScanURLRemaining > 0 {
-			if len(lineURLs) > 0 {
-				addUniqueBuildScanURLs(buildScanURLs, lineURLs)
+		isBuildScanMarker := isBuildScanMarkerLine(text)
+		if isBuildScanMarker || captureBuildScanURLRemaining > 0 {
+			foundBuildScanURL := scanBuildScanURLs(text, buildScanURLs)
+			if isBuildScanMarker {
+				if foundBuildScanURL {
+					captureBuildScanURLRemaining = 0
+				} else {
+					captureBuildScanURLRemaining = 3
+				}
+			} else if foundBuildScanURL {
 				captureBuildScanURLRemaining = 0
 			} else {
 				captureBuildScanURLRemaining--
@@ -1001,7 +993,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	if metadata.Skipped < 0 {
 		metadata.Skipped = 0
 	}
-	if metadata.Discovered > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
+	if metadata.Parsed > 0 || metadata.ErrorCount > 0 || metadata.Truncated {
 		summary.JUnitScan = metadata
 	}
 	if metadata.Truncated || metadata.ErrorCount > 0 {
@@ -1197,33 +1189,30 @@ func addSelectionError(selection *junitReportSelection, projectDir, path string,
 	selection.errorBytes += int64(len(message))
 }
 
-func addUniqueBuildScanURLs(items *boundedStringCollector, values []string) {
-	for _, value := range values {
-		if isBuildScanURL(value) {
-			items.add(value)
+// scanBuildScanURLs streams URL candidates and retains only build scans. This
+// keeps unrelated links from consuming the build-scan capacity and leaves the
+// collector as the sole bounded state owner and truncation authority.
+func scanBuildScanURLs(text string, items *boundedStringCollector) bool {
+	found := false
+	for offset := 0; offset < len(text); {
+		match := urlPattern.FindStringIndex(text[offset:])
+		if match == nil {
+			break
 		}
+		start, end := offset+match[0], offset+match[1]
+		url := strings.TrimRight(text[start:end], ".,;:")
+		if isBuildScanURL(url) {
+			items.add(url)
+			found = true
+		}
+		offset = end
 	}
+	return found
 }
 
 func isBuildScanURL(value string) bool {
 	lower := strings.ToLower(value)
 	return strings.Contains(lower, "/s/")
-}
-
-func extractURLs(text string) ([]string, bool) {
-	matches := urlPattern.FindAllString(text, maxBuildScanURLs+1)
-	if len(matches) == 0 {
-		return nil, false
-	}
-
-	urls := make([]string, 0, len(matches))
-	for _, match := range matches {
-		url := strings.TrimRight(match, ".,;:")
-		if url != "" {
-			urls = append(urls, url)
-		}
-	}
-	return urls, len(matches) > maxBuildScanURLs
 }
 
 func isBuildScanMarkerLine(text string) bool {

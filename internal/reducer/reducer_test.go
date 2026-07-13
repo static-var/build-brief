@@ -183,6 +183,71 @@ func TestReduceCapturesSameLineBuildScanURL(t *testing.T) {
 	}
 }
 
+func TestReduceStreamsPastUnrelatedURLsToLateBuildScanURL(t *testing.T) {
+	urls := make([]string, 0, maxBuildScanURLs+2)
+	for i := 0; i < maxBuildScanURLs+1; i++ {
+		urls = append(urls, fmt.Sprintf("https://example.invalid/unrelated/%d", i))
+	}
+	urls = append(urls, "https://develocity.internal.example/s/late-scan")
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceWrapper,
+	}, runner.Result{
+		ExitCode: 0,
+		Duration: time.Second,
+		RawLogPath: writeTestLog(t, []string{
+			"Build scan: " + strings.Join(urls, " "),
+			"BUILD SUCCESSFUL in 1s",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("reduce late build scan URL: %v", err)
+	}
+	if len(summary.BuildScanURLs) != 1 || summary.BuildScanURLs[0] != "https://develocity.internal.example/s/late-scan" {
+		t.Fatalf("build scan URLs = %v, want late scan URL", summary.BuildScanURLs)
+	}
+	if summary.Reducer != nil {
+		if _, ok := summary.Reducer.Collections["build_scan_urls"]; ok {
+			t.Fatalf("unrelated URLs must not make build-scan metadata partial: %+v", summary.Reducer)
+		}
+	}
+}
+
+func TestReduceBuildScanCapacityTracksOnlyRealScanURLs(t *testing.T) {
+	urls := make([]string, 0, maxBuildScanURLs+2)
+	for i := 0; i < maxBuildScanURLs; i++ {
+		urls = append(urls, fmt.Sprintf("https://develocity.internal.example/s/%03d", i))
+	}
+	urls = append(urls, "https://example.invalid/unrelated", "https://develocity.internal.example/s/late")
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "build"},
+		ProjectDir: t.TempDir(),
+		Source:     gradle.SourceWrapper,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		RawLogPath: writeTestLog(t, []string{"Build scan: " + strings.Join(urls, " "), "BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce over-cap build scans: %v", err)
+	}
+	if len(summary.BuildScanURLs) != maxBuildScanURLs {
+		t.Fatalf("retained scans = %d, want %d", len(summary.BuildScanURLs), maxBuildScanURLs)
+	}
+	if summary.Reducer == nil {
+		t.Fatal("expected build-scan capacity metadata")
+	}
+	metadata, ok := summary.Reducer.Collections["build_scan_urls"]
+	if !ok || metadata.Observed != maxBuildScanURLs+1 || metadata.Retained != maxBuildScanURLs || metadata.Omitted != 1 || !metadata.Truncated {
+		t.Fatalf("unexpected build-scan capacity metadata: %+v", metadata)
+	}
+}
+
 func TestReduceDoesNotTreatGradleHelpURLAsBuildScan(t *testing.T) {
 	command := gradle.Command{
 		Executable: "/tmp/gradlew",
@@ -794,6 +859,35 @@ func TestReduceDoesNotReuseStaleJUnitCountsOnEarlyFailure(t *testing.T) {
 
 	if summary.PassedTestCount != 0 || summary.FailedTestCount != 0 {
 		t.Fatalf("expected no stale junit counts, got %d passed / %d failed", summary.PassedTestCount, summary.FailedTestCount)
+	}
+}
+
+func TestReduceSuppressesStaleJUnitMetadataForSuccessfulAssemble(t *testing.T) {
+	projectDir := t.TempDir()
+	reportPath := filepath.Join(projectDir, "app", "build", "test-results", "test", "TEST-stale.xml")
+	writeGeneratedFile(t, reportPath, `<testsuite><testcase name="passes" classname="example.StaleTest"/></testsuite>`)
+	startTime := time.Now()
+	stale := startTime.Add(-2 * time.Second)
+	if err := os.Chtimes(reportPath, stale, stale); err != nil {
+		t.Fatalf("age stale JUnit report: %v", err)
+	}
+
+	summary, err := Reduce(gradle.Command{
+		Executable: "/tmp/gradlew",
+		Args:       []string{"--console=plain", "assemble"},
+		ProjectDir: projectDir,
+		Source:     gradle.SourceWrapper,
+	}, runner.Result{
+		ExitCode:   0,
+		Duration:   time.Second,
+		StartTime:  startTime,
+		RawLogPath: writeTestLog(t, []string{"> Task :assemble UP-TO-DATE", "BUILD SUCCESSFUL in 1s"}),
+	})
+	if err != nil {
+		t.Fatalf("reduce stale successful assemble: %v", err)
+	}
+	if summary.JUnitScan != nil {
+		t.Fatalf("stale JUnit reports must not attach scan metadata: %+v", summary.JUnitScan)
 	}
 }
 
