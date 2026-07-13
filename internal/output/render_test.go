@@ -8,6 +8,55 @@ import (
 	"build-brief/internal/reducer"
 )
 
+func TestEscapeGitHubWorkflowCommand(t *testing.T) {
+	if got, want := escapeGitHubWorkflowCommand("100%\r\nkey:value"), "100%25%0D%0Akey%3Avalue"; got != want {
+		t.Fatalf("escaped command = %q, want %q", got, want)
+	}
+}
+
+func TestRenderGitHubAnnotationsEmitsGenericMessages(t *testing.T) {
+	summary := reducer.Summary{
+		Success:  false,
+		RawInput: &reducer.RawInputMetadata{Partial: true},
+	}
+
+	var out bytes.Buffer
+	if err := RenderGitHubAnnotations(&out, summary); err != nil {
+		t.Fatalf("render GitHub annotations: %v", err)
+	}
+
+	if got, want := out.String(), "::error::build-brief%3A Gradle build failed; see human summary and raw log\n::warning::build-brief%3A summary may be partial; see human summary and raw log\n"; got != want {
+		t.Fatalf("unexpected annotations %q, want %q", got, want)
+	}
+}
+
+func TestRenderGitHubAnnotationsCapsPartialWarningsAndSkipsSuccess(t *testing.T) {
+	partial := reducer.Summary{
+		Success:  false,
+		RawInput: &reducer.RawInputMetadata{Partial: true},
+		Reducer:  &reducer.ReducerMetadata{Partial: true},
+	}
+
+	var out bytes.Buffer
+	if err := RenderGitHubAnnotations(&out, partial); err != nil {
+		t.Fatalf("render partial annotation: %v", err)
+	}
+	if got, want := strings.Count(out.String(), "::warning::"), 1; got != want {
+		t.Fatalf("warning count = %d, want %d: %q", got, want, out.String())
+	}
+	if got := strings.Count(out.String(), "::error::"); got != 1 {
+		t.Fatalf("error count = %d, want 1: %q", got, out.String())
+	}
+
+	var clean bytes.Buffer
+	if err := RenderGitHubAnnotations(&clean, reducer.Summary{Success: true}); err != nil {
+		t.Fatalf("render clean success annotation: %v", err)
+	}
+	if got := clean.String(); got != "" {
+		t.Fatalf("success annotations = %q, want empty", got)
+	}
+}
+
 func TestRenderHumanKeepsSuccessConcise(t *testing.T) {
 	summary := reducer.Summary{
 		Success:         true,

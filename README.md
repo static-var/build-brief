@@ -62,6 +62,18 @@ build-brief --help
 
 If you want to keep the original command shape explicit, prefer `build-brief gradle ...` for a PATH-resolved Gradle binary and `build-brief ./gradlew ...` for a project-local wrapper.
 
+## Explicit CI mode
+
+Use `--ci` when a job needs CI behavior; it is never inferred from the environment:
+
+```bash
+build-brief --ci test
+```
+
+`--ci` keeps the normal human summary and Gradle exit code. It rejects `--mode raw` with usage exit 2. In GitHub Actions only (`GITHUB_ACTIONS=true`), a failed build adds one generic `::error` annotation; a partial failed summary adds at most one generic `::warning`. Successful builds add none. Annotations intentionally contain no source location claims. CI runs do not persist gains history, although token metrics are still calculated for the run.
+
+Raw logs remain local files. GitHub annotations do not upload them: add a separate artifact-upload step if the workflow needs the raw log after the job.
+
 Example successful test run:
 
 ```text
