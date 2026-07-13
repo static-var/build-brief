@@ -38,7 +38,7 @@ func TestRepositoryAgentInstructionsCoverRequiredConcepts(t *testing.T) {
 }
 
 func TestWebsiteOnboardingCommandParses(t *testing.T) {
-	const documentedCommand = "build-brief gradle --stacktrace test"
+	const documentedCommand = "build-brief -- --stacktrace test"
 	content := readRepositoryText(t, "site/index.html")
 	requireContains(t, content, documentedCommand)
 
@@ -46,8 +46,11 @@ func TestWebsiteOnboardingCommandParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse documented command: %v", err)
 	}
-	if got := strings.Join(gradleArgs, " "); got != "gradle --stacktrace test" {
+	if got := strings.Join(gradleArgs, " "); got != "--stacktrace test" {
 		t.Fatalf("unexpected Gradle arguments: %q", got)
+	}
+	if invocation, _ := gradle.SplitInvocation(gradleArgs); invocation != "" {
+		t.Fatalf("documented command must leave wrapper autodetection available, got explicit invocation %q", invocation)
 	}
 }
 

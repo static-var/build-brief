@@ -27,8 +27,10 @@ func TestDiagnoseKotlinDaemonFailure(t *testing.T) {
 	assertEvidenceContains(t, diagnostic, "Daemon compilation failed")
 	assertNextCheckContains(t, diagnostic, "Inspect Gradle/Kotlin JVM args")
 	assertNextCheckContains(t, diagnostic, "./gradlew --stop")
+	assertNextCheckContains(t, diagnostic, "gradle --stop")
 	assertNextCheckContains(t, diagnostic, "then retry build-brief")
 	assertNextCheckContains(t, diagnostic, "./gradlew --no-daemon <task>")
+	assertNextCheckContains(t, diagnostic, "gradle --no-daemon <task>")
 	for _, nextCheck := range diagnostic.NextChecks {
 		if strings.Contains(nextCheck, "build-brief --no-daemon") {
 			t.Fatalf("diagnostic recommends impossible build-brief daemon override: %q", nextCheck)

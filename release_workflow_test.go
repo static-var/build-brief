@@ -37,6 +37,52 @@ func TestReleaseWorkflowDryRunGatesReleaseMutations(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowPreflightsHomebrewTokenBeforeReleaseMutations(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+	preflight := workflow.step(t, "Preflight Homebrew token")
+	if preflight.ifCondition != "inputs.publish && inputs.publish_homebrew" {
+		t.Fatalf("Homebrew token preflight must be guarded by publish inputs, got %q", preflight.ifCondition)
+	}
+	if !strings.Contains(preflight.run, "HOMEBREW_TAP_TOKEN is not set") || !strings.Contains(preflight.run, "${HOMEBREW_TAP_TOKEN:-}") {
+		t.Fatalf("Homebrew token preflight must fail closed when the token is absent, got:\n%s", preflight.run)
+	}
+
+	content, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	preflightAt := strings.Index(string(content), "- name: Preflight Homebrew token")
+	if preflightAt < 0 {
+		t.Fatal("release workflow is missing Homebrew token preflight")
+	}
+	for _, mutation := range []string{
+		"- name: Commit version bump and changelog",
+		"- name: Create release tag",
+		"- name: Push release commit",
+		"- name: Push release tag",
+		"- name: Publish GitHub release",
+		"- name: Publish Homebrew tap",
+	} {
+		if mutationAt := strings.Index(string(content), mutation); mutationAt < preflightAt {
+			t.Fatalf("Homebrew token preflight must precede %q", mutation)
+		}
+	}
+}
+
+func TestReleaseWorkflowGeneratesNotesForExistingAndDryRunTags(t *testing.T) {
+	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
+	notes := workflow.step(t, "Generate GitHub changelog notes")
+	if !strings.Contains(notes.run, "releases/generate-notes") {
+		t.Fatalf("unexpected notes generation command:\n%s", notes.run)
+	}
+	if !strings.Contains(notes.run, `-f tag_name="${{ steps.prepare.outputs.tag }}"`) {
+		t.Fatalf("notes generation must name the release tag, got:\n%s", notes.run)
+	}
+	if !strings.Contains(notes.run, `-f target_commitish="${{ github.sha }}"`) {
+		t.Fatalf("notes generation must target the dispatched SHA when the tag is absent, got:\n%s", notes.run)
+	}
+}
+
 func TestReleaseWorkflowKeepsValidationEvidenceAndCacheEnabledInDryRun(t *testing.T) {
 	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
 
@@ -68,6 +114,7 @@ type releaseWorkflowInput struct {
 type releaseWorkflowStep struct {
 	ifCondition string
 	uses        string
+	run         string
 	with        map[string]string
 }
 
@@ -126,6 +173,9 @@ func parseReleaseWorkflow(t *testing.T, path string) releaseWorkflow {
 			withKey, withValue, withOK := yamlScalarLine(lines[index], 10)
 			if inWith && withOK {
 				step.with[withKey] = withValue
+			}
+			if hasExactIndent(lines[index], 10) || hasExactIndent(lines[index], 12) {
+				step.run += lines[index] + "\n"
 			}
 		}
 		workflow.steps[name] = step

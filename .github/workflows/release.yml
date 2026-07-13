@@ -72,6 +72,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Preflight Homebrew token
+        if: inputs.publish && inputs.publish_homebrew
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "HOMEBREW_TAP_TOKEN is not set" >&2
+            exit 1
+          fi
+
       - name: Prepare release metadata
         id: prepare
         run: |
@@ -132,6 +142,7 @@ jobs:
 
           gh api "repos/${{ github.repository }}/releases/generate-notes" \
             -f tag_name="${{ steps.prepare.outputs.tag }}" \
+            -f target_commitish="${{ github.sha }}" \
             -q '.body' > "$generated_notes_file"
 
           scripts/append-generated-release-notes.sh \
