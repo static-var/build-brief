@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestReleaseWorkflowDryRunGatesReleaseMutations(t *testing.T) {
@@ -92,15 +94,13 @@ func TestReleaseWorkflowRunBlocksRejectGitHubExpressions(t *testing.T) {
 		t.Fatalf("read release workflow: %v", err)
 	}
 
-	workflow := parseReleaseWorkflow(t, ".github/workflows/release.yml")
-	expectedRunBlocks := 0
-	for _, step := range workflow.steps {
-		if step.run != "" {
-			expectedRunBlocks++
-		}
+	blocks, err := parseWorkflowRunBlocks(string(content))
+	if err != nil {
+		t.Fatalf("parse release workflow run scalars: %v", err)
 	}
-	if blocks := parseWorkflowRunBlocks(string(content)); len(blocks) != expectedRunBlocks {
-		t.Fatalf("parsed %d run blocks; workflow has %d run steps", len(blocks), expectedRunBlocks)
+	const expectedRunScalars = 15
+	if len(blocks) != expectedRunScalars {
+		t.Fatalf("parsed %d run scalars; want %d", len(blocks), expectedRunScalars)
 	}
 	if err := rejectGitHubExpressionsInRunBlocks(string(content)); err != nil {
 		t.Fatal(err)
@@ -123,6 +123,36 @@ func TestWorkflowRunBlockParserRejectsExpressionMutations(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), expression) {
 				t.Fatalf("rejection must identify %q, got %v", expression, err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsValidYAMLMutations(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"spaced literal": "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run : |\n          printf '%s\\n' \\\"${{ github.event.issue.title }}\\\"\n",
+		"quoted key":     "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        \"run\": |\n          printf '%s\\n' \\\"${{ github.actor }}\\\"\n",
+		"unnamed step":   "jobs:\n  release:\n    steps:\n      - run: |-\n          printf '%s\\n' \\\"${{ inputs.version }}\\\"\n",
+		"folded scalar":  "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: >+\n          printf '%s\\n' \\\"${{ vars.RELEASE_CHANNEL }}\\\"\n",
+		"flow mapping":   "jobs:\n  release:\n    steps:\n      - { name: mutation fixture, run: 'printf %s \\\"${{ steps.prepare.outputs.tag }}\\\"' }\n",
+		"literal scalar": "jobs:\n  release:\n    steps:\n      - name: mutation fixture\n        run: |2-\n            printf '%s\\n' \\\"${{ secrets.HOMEBREW_TAP_TOKEN }}\\\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := rejectGitHubExpressionsInRunBlocks(fixture); err == nil {
+				t.Fatal("run scalar containing a GitHub expression was accepted")
+			}
+		})
+	}
+}
+
+func TestWorkflowRunBlockParserRejectsInvalidYAML(t *testing.T) {
+	for name, fixture := range map[string]string{
+		"duplicate key": "jobs:\n  release:\n    steps:\n      - name: fixture\n        run: echo safe\n        run: echo '${{ github.actor }}'\n",
+		"syntax error":  "jobs:\n  release:\n    steps:\n      - run: [\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := rejectGitHubExpressionsInRunBlocks(fixture); err == nil {
+				t.Fatal("invalid YAML was accepted")
 			}
 		})
 	}
@@ -240,14 +270,18 @@ func workflowRunFixture(expression string) string {
 }
 
 func rejectGitHubExpressionsInRunBlocks(content string) error {
-	for _, block := range parseWorkflowRunBlocks(content) {
+	blocks, err := parseWorkflowRunBlocks(content)
+	if err != nil {
+		return err
+	}
+	for _, block := range blocks {
 		if expressionAt := strings.Index(block.source, "${{"); expressionAt >= 0 {
 			end := strings.Index(block.source[expressionAt:], "}}")
 			expression := block.source[expressionAt:]
 			if end >= 0 {
 				expression = expression[:end+2]
 			}
-			return fmt.Errorf("run block at line %d contains unsafe GitHub expression %q", block.line, expression)
+			return fmt.Errorf("run scalar at line %d contains unsafe GitHub expression %q", block.line, expression)
 		}
 	}
 	return nil
@@ -258,47 +292,46 @@ type workflowRunBlock struct {
 	source string
 }
 
-func parseWorkflowRunBlocks(content string) []workflowRunBlock {
-	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+func parseWorkflowRunBlocks(content string) ([]workflowRunBlock, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &document); err != nil {
+		return nil, fmt.Errorf("parse workflow YAML: %w", err)
+	}
+
 	var blocks []workflowRunBlock
-	for index := 0; index < len(lines); index++ {
-		indent, key, value, ok := yamlKeyLine(lines[index])
-		if !ok || key != "run" {
-			continue
-		}
+	if err := collectWorkflowRunBlocks(&document, &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
 
-		block := workflowRunBlock{line: index + 1}
-		if isYAMLBlockScalar(value) {
-			for index++; index < len(lines); index++ {
-				if strings.TrimSpace(lines[index]) != "" && leadingSpaces(lines[index]) <= indent {
-					index--
-					break
-				}
-				block.source += lines[index] + "\n"
+func collectWorkflowRunBlocks(node *yaml.Node, blocks *[]workflowRunBlock) error {
+	switch node.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range node.Content {
+			if err := collectWorkflowRunBlocks(child, blocks); err != nil {
+				return err
 			}
-		} else {
-			block.source = value
 		}
-		blocks = append(blocks, block)
+	case yaml.MappingNode:
+		keys := make(map[string]struct{}, len(node.Content)/2)
+		for index := 0; index < len(node.Content); index += 2 {
+			key, value := node.Content[index], node.Content[index+1]
+			if key.Kind == yaml.ScalarNode {
+				if _, duplicate := keys[key.Value]; duplicate {
+					return fmt.Errorf("duplicate YAML key %q at line %d", key.Value, key.Line)
+				}
+				keys[key.Value] = struct{}{}
+				if key.Value == "run" && value.Kind == yaml.ScalarNode {
+					*blocks = append(*blocks, workflowRunBlock{line: key.Line, source: value.Value})
+				}
+			}
+			if err := collectWorkflowRunBlocks(value, blocks); err != nil {
+				return err
+			}
+		}
 	}
-	return blocks
-}
-
-func yamlKeyLine(line string) (indent int, key, value string, ok bool) {
-	indent = leadingSpaces(line)
-	key, value, ok = strings.Cut(strings.TrimSpace(line), ":")
-	if !ok {
-		return 0, "", "", false
-	}
-	return indent, key, strings.TrimSpace(value), true
-}
-
-func leadingSpaces(line string) int {
-	return len(line) - len(strings.TrimLeft(line, " "))
-}
-
-func isYAMLBlockScalar(value string) bool {
-	return strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">")
+	return nil
 }
 
 func addDetachedWorktree(t *testing.T) string {
