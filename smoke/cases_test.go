@@ -12,6 +12,16 @@ import (
 
 const casesHeader = "case_id\tproject_rel\tprompt_file\texpect_snippet\tskip_when"
 
+func TestCasesFixtureForcesLFCheckout(t *testing.T) {
+	attributes, err := os.ReadFile(filepath.Join("..", ".gitattributes"))
+	if err != nil {
+		t.Fatalf("read .gitattributes: %v", err)
+	}
+	if !strings.Contains(string(attributes), "smoke/cases.tsv text eol=lf") {
+		t.Fatal("cases.tsv must force LF checkout")
+	}
+}
+
 func TestCasesFixtureSchema(t *testing.T) {
 	file, err := os.Open("cases.tsv")
 	if err != nil {
