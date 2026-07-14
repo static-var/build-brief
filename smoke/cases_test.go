@@ -13,20 +13,29 @@ import (
 const casesHeader = "case_id\tproject_rel\tprompt_file\texpect_snippet\tskip_when"
 
 func TestAndroidAppUsesAGP9BuiltInKotlin(t *testing.T) {
-	for _, path := range []string{
-		filepath.Join("projects", "android-app", "build.gradle.kts"),
-		filepath.Join("projects", "android-app", "app", "build.gradle.kts"),
-	} {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for _, forbidden := range []string{
+	fixtures := map[string][]string{
+		filepath.Join("projects", "android-app", "build.gradle.kts"): {
 			`kotlin("android")`,
 			`org.jetbrains.kotlin.android`,
 			`kotlin-android`,
 			`kotlinOptions`,
-		} {
+		},
+		filepath.Join("projects", "android-app", "app", "build.gradle.kts"): {
+			`kotlin("android")`,
+			`org.jetbrains.kotlin.android`,
+			`kotlin-android`,
+			`kotlinOptions`,
+		},
+		filepath.Join("projects", "android-app", "app", "src", "main", "AndroidManifest.xml"): {
+			`package=`,
+		},
+	}
+	for path, forbiddenStrings := range fixtures {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, forbidden := range forbiddenStrings {
 			if strings.Contains(string(content), forbidden) {
 				t.Errorf("%s must not contain %q; AGP 9 uses built-in Kotlin", path, forbidden)
 			}
