@@ -639,3 +639,24 @@ func TestRenderHumanShowsRawInputCompletenessWarning(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderHumanLabelsReusedTestResults(t *testing.T) {
+	for _, source := range []string{"current_run", "reused", "mixed"} {
+		t.Run(source, func(t *testing.T) {
+			var out bytes.Buffer
+			err := RenderHuman(&out, reducer.Summary{Success: true, PassedTestCount: 2, JUnitScan: &reducer.JUnitScanMetadata{ResultsSource: source, Discovered: 1, Parsed: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "Tests: 2 passed, 0 failed"
+			if source == "reused" {
+				want += " (reused reports)"
+			} else if source == "mixed" {
+				want += " (includes reused reports)"
+			}
+			if !strings.Contains(out.String(), want+"\n") {
+				t.Fatalf("expected %q in %q", want, out.String())
+			}
+		})
+	}
+}

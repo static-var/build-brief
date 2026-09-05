@@ -40,7 +40,7 @@ print(command if isinstance(command, str) else "")
 PY
 )"
 
-if [[ -z "$original_command" || "$original_command" == *"build-brief"* ]]; then
+if [[ -z "$original_command" ]]; then
   exit 0
 fi
 

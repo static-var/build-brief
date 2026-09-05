@@ -42,6 +42,7 @@ var (
 	runGradle          = runner.RunWithOptions
 	renderSummaryFn    = renderSummary
 	recordRun          = tracking.RecordRun
+	detectGlobalTools  = install.DetectGlobalTools
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -815,7 +816,7 @@ func runLocalInstall(stdout, stderr io.Writer, force bool) int {
 }
 
 func runGlobalInstall(stdin io.Reader, stdout, stderr io.Writer) int {
-	detected, err := install.DetectGlobalTools()
+	detected, err := detectGlobalTools()
 	if err != nil {
 		fmt.Fprintf(stderr, "build-brief: detect AI tools: %v\n", err)
 		return 1
@@ -844,7 +845,7 @@ func runGlobalInstall(stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "build-brief: %v\n", failure)
 	}
 
-	if len(installed) == 0 && len(failures) > 0 {
+	if len(failures) > 0 {
 		return 1
 	}
 	return 0

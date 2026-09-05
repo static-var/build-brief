@@ -95,6 +95,7 @@ func TestReduceSuccessSummary(t *testing.T) {
 		StartTime: startTime,
 		RawLogPath: writeTestLog(t, []string{
 			"> Task :compileKotlin",
+			"> Task :app:test",
 			"BUILD SUCCESSFUL in 5s",
 		}),
 	}
@@ -854,12 +855,12 @@ func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
 		Duration:  time.Second,
 		StartTime: startTime,
 		RawLogPath: writeTestLog(t, []string{
-			"> Task :test FAILED",
+			"> Task :app:test FAILED",
 			"FailingTest > intentionalFailure() FAILED",
 			"org.opentest4j.AssertionFailedError at FailingTest.java:10",
 			"FAILURE: Build failed with an exception.",
 			"* What went wrong:",
-			"Execution failed for task ':test'.",
+			"Execution failed for task ':app:test'.",
 			"> There were failing tests. See the report at: file:///tmp/project/build/reports/tests/test/index.html",
 			"BUILD FAILED in 500ms",
 		}),
@@ -870,6 +871,9 @@ func TestReduceEnrichesFailedTestsFromJUnitXml(t *testing.T) {
 		t.Fatalf("reduce junit-enriched failure log: %v", err)
 	}
 
+	if summary.JUnitScan == nil || summary.JUnitScan.ResultsSource != "current_run" {
+		t.Fatalf("expected current-run report provenance, got %+v", summary.JUnitScan)
+	}
 	if !contains(summary.FailedTests, "FailingTest > intentionalFailure()") {
 		t.Fatalf("expected failed test to be present: %v", summary.FailedTests)
 	}
@@ -1125,7 +1129,7 @@ func TestReduceReportsBrokenJUnitReportSymlinkSelectionErrors(t *testing.T) {
 		t.Fatalf("create broken JUnit report symlink: %v", err)
 	}
 
-	summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: projectDir}, runner.Result{ExitCode: 1, StartTime: time.Now(), RawLogPath: writeTestLog(t, []string{"> Task :test FAILED", "FAILURE: Build failed with an exception.", "Execution failed for task ':test'.", "BUILD FAILED"})})
+	summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: projectDir}, runner.Result{ExitCode: 1, StartTime: time.Now(), RawLogPath: writeTestLog(t, []string{"> Task :module:test FAILED", "FAILURE: Build failed with an exception.", "Execution failed for task ':module:test'.", "BUILD FAILED"})})
 	if err != nil {
 		t.Fatalf("reduce broken JUnit report symlink: %v", err)
 	}
@@ -1392,9 +1396,9 @@ func TestReduceReportsMalformedAndUnreadableJUnitReports(t *testing.T) {
 		Duration:  time.Second,
 		StartTime: time.Now(),
 		RawLogPath: writeTestLog(t, []string{
-			"> Task :test FAILED",
+			"> Task :module:test FAILED",
 			"FAILURE: Build failed with an exception.",
-			"Execution failed for task ':test'.",
+			"Execution failed for task ':module:test'.",
 			"BUILD FAILED in 1s",
 		}),
 	}
@@ -1442,9 +1446,9 @@ func TestReduceReportsAllJUnitScanErrorsAndRelativePaths(t *testing.T) {
 		Duration:  time.Second,
 		StartTime: startTime,
 		RawLogPath: writeTestLog(t, []string{
-			"> Task :test FAILED",
+			"> Task :module:test FAILED",
 			"FAILURE: Build failed with an exception.",
-			"Execution failed for task ':test'.",
+			"Execution failed for task ':module:test'.",
 			"BUILD FAILED in 1s",
 		}),
 	}
@@ -2762,8 +2766,8 @@ func TestReduceSkipsOversizedJUnitBeforeParsing(t *testing.T) {
 		Duration:  time.Second,
 		StartTime: startTime,
 		RawLogPath: writeTestLog(t, []string{
-			"> Task :test FAILED",
-			"Execution failed for task ':test'.",
+			"> Task :module:test FAILED",
+			"Execution failed for task ':module:test'.",
 			"BUILD FAILED in 1s",
 		}),
 	})
@@ -2775,5 +2779,155 @@ func TestReduceSkipsOversizedJUnitBeforeParsing(t *testing.T) {
 	}
 	if len(summary.JUnitScan.Errors) != 0 {
 		t.Fatalf("oversized junit should not be parsed as malformed XML: %+v", summary.JUnitScan)
+	}
+}
+
+func TestReduceScopesReusedJUnitReports(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantPassed int
+	}{
+		{"qualified task", []string{":app:test"}, 1},
+		{"multiple tasks", []string{":app:test", ":other:test"}, 2},
+		{"unqualified task", []string{"test"}, 3},
+		{"root task", []string{":test"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			start := time.Now()
+			for _, relative := range []string{
+				"build/test-results/test/TEST-root.xml",
+				"app/build/test-results/test/TEST-app.xml",
+				"app/build/test-results/integrationTest/TEST-integration.xml",
+				"other/build/test-results/test/TEST-other.xml",
+			} {
+				path := filepath.Join(projectDir, relative)
+				writeGeneratedFile(t, path, `<testsuite><testcase classname="Example" name="passes"/></testsuite>`)
+				old := start.Add(-time.Hour)
+				if err := os.Chtimes(path, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			unrelated := filepath.Join(projectDir, "unrelated/build/test-results/jvmTest/TEST-old.xml")
+			writeGeneratedFile(t, unrelated, `<testsuite><testcase classname="Old" name="fails"><failure message="old failure"/></testcase></testsuite>`)
+			old := start.Add(-time.Hour)
+			if err := os.Chtimes(unrelated, old, old); err != nil {
+				t.Fatal(err)
+			}
+			summary, err := Reduce(gradle.Command{Executable: "gradle", Args: tc.args, ProjectDir: projectDir}, runner.Result{
+				ExitCode: 0, StartTime: start, RawLogPath: writeTestLog(t, []string{"BUILD SUCCESSFUL in 1s"}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary.JUnitScan == nil || summary.JUnitScan.ResultsSource != "reused" {
+				t.Fatalf("expected reused report provenance, got %+v", summary.JUnitScan)
+			}
+			if summary.PassedTestCount != tc.wantPassed || summary.FailedTestCount != 0 {
+				t.Fatalf("expected %d passed, no failures; got %d passed, %d failed", tc.wantPassed, summary.PassedTestCount, summary.FailedTestCount)
+			}
+		})
+	}
+}
+
+func TestReduceReusesOnlyObservedCachedTasks(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		args, events []string
+		want         int
+	}{
+		{"check dependency", []string{":app:check"}, []string{"> Task :app:test UP-TO-DATE", "> Task :app:check UP-TO-DATE"}, 1},
+		{"cache restored", []string{":app:check"}, []string{"> Task :app:test FROM-CACHE"}, 1},
+		{"skipped", []string{":app:test"}, []string{"> Task :app:test SKIPPED"}, 0},
+		{"no source", []string{":app:test"}, []string{"> Task :app:test NO-SOURCE"}, 0},
+		{"excluded qualified", []string{":app:test", "-x", ":app:test"}, nil, 0},
+		{"excluded unqualified", []string{":app:test", "-x", "test"}, nil, 0},
+		{"check without events", []string{":app:check"}, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			start := time.Now()
+			for _, task := range []string{"test", "integrationTest"} {
+				path := filepath.Join(d, "app", "build", "test-results", task, "TEST-example.xml")
+				writeGeneratedFile(t, path, `<testsuite><testcase name="passes"/></testsuite>`)
+				old := start.Add(-time.Hour)
+				if err := os.Chtimes(path, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			summary, err := Reduce(gradle.Command{Args: tc.args, ProjectDir: d}, runner.Result{StartTime: start, RawLogPath: writeTestLog(t, append(tc.events, "BUILD SUCCESSFUL"))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary.PassedTestCount != tc.want {
+				t.Fatalf("passed=%d, want %d", summary.PassedTestCount, tc.want)
+			}
+		})
+	}
+}
+
+func TestCachedJUnitTaskScopeIsBoundedAndReportsTruncation(t *testing.T) {
+	invocation := analyzeSemanticInvocation([]string{"check"})
+	for i := 0; i < maxCachedTaskEvents+1; i++ {
+		invocation.observeTask(fmt.Sprintf("> Task :module%d:test UP-TO-DATE", i))
+	}
+	if len(invocation.cachedTasks.values) != maxCachedTaskEvents || !invocation.cachedTasks.truncated {
+		t.Fatalf("unexpected cached scope: %+v", invocation.cachedTasks.metadata())
+	}
+	selection := findReusedJUnitReportFiles(t.TempDir(), time.Now(), invocation)
+	if !selection.truncated {
+		t.Fatal("truncated task scope must mark report selection partial")
+	}
+}
+
+func TestReduceClassifiesFreshCachedJUnitReports(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed=%v", mixed), func(t *testing.T) {
+			d := t.TempDir()
+			start := time.Now()
+			writeGeneratedFile(t, filepath.Join(d, "app/build/test-results/test/TEST-cache.xml"), `<testsuite><testcase name="cached"/></testsuite>`)
+			events := []string{"> Task :app:test FROM-CACHE"}
+			want := "reused"
+			if mixed {
+				writeGeneratedFile(t, filepath.Join(d, "other/build/test-results/test/TEST-current.xml"), `<testsuite><testcase name="executed"/></testsuite>`)
+				events = append(events, "> Task :other:test")
+				want = "mixed"
+			}
+			summary, err := Reduce(gradle.Command{Args: []string{"test"}, ProjectDir: d}, runner.Result{StartTime: start, RawLogPath: writeTestLog(t, append(events, "BUILD SUCCESSFUL"))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary.JUnitScan == nil || summary.JUnitScan.ResultsSource != want {
+				t.Fatalf("want %s, got %+v", want, summary.JUnitScan)
+			}
+		})
+	}
+}
+
+func TestReduceScopesFreshJUnitReportsWithinTimeSkew(t *testing.T) {
+	d := t.TempDir()
+	start := time.Now()
+	for _, module := range []string{"app", "other"} {
+		path := filepath.Join(d, module, "build/test-results/test/TEST-example.xml")
+		report := `<testsuite><testcase name="passes"/></testsuite>`
+		if module == "other" {
+			report = `<testsuite><testcase name="old"><failure message="old failure"/></testcase></testsuite>`
+		}
+		writeGeneratedFile(t, path, report)
+		recent := start.Add(-500 * time.Millisecond)
+		if err := os.Chtimes(path, recent, recent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary, err := Reduce(gradle.Command{Args: []string{":app:test"}, ProjectDir: d}, runner.Result{StartTime: start, RawLogPath: writeTestLog(t, []string{"> Task :app:test UP-TO-DATE", "BUILD SUCCESSFUL"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.PassedTestCount != 1 || summary.FailedTestCount != 0 || len(summary.FailedTests) != 0 {
+		t.Fatalf("unrelated recent results included: passed=%d failed=%d failures=%v", summary.PassedTestCount, summary.FailedTestCount, summary.FailedTests)
+	}
+	if summary.JUnitScan == nil || summary.JUnitScan.ResultsSource != "reused" {
+		t.Fatalf("expected reused provenance, got %+v", summary.JUnitScan)
 	}
 }

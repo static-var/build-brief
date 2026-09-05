@@ -880,19 +880,13 @@ func installCodexPlugin(tool DetectedTool) (string, error) {
 	}
 
 	configPath := filepath.Join(baseDir, "config.toml")
-	if err := upsertTOMLBool(configPath, "[features]", "hooks", true); err != nil {
-		return "", err
-	}
-	if err := upsertTOMLBool(configPath, "[features]", "plugin_hooks", true); err != nil {
-		return "", err
-	}
-	if err := removeTOMLKey(configPath, "[features]", "codex_hooks"); err != nil {
-		return "", err
-	}
-	if err := upsertTOMLString(configPath, fmt.Sprintf(`[hooks.state.%q]`, codexPreToolUseHookKey()), "trusted_hash", codexPreToolUseHookHash()); err != nil {
-		return "", err
-	}
-	if err := upsertTOMLBool(configPath, fmt.Sprintf(`[plugins.%q]`, codexPluginID()), "enabled", true); err != nil {
+	if err := editTOMLFile(configPath,
+		tomlEdit{section: "[features]", key: "hooks", value: "true"},
+		tomlEdit{section: "[features]", key: "plugin_hooks", value: "true"},
+		tomlEdit{section: "[features]", key: "codex_hooks", remove: true},
+		tomlEdit{section: fmt.Sprintf(`[hooks.state.%q]`, codexPreToolUseHookKey()), key: "trusted_hash", value: strconv.Quote(codexPreToolUseHookHash())},
+		tomlEdit{section: fmt.Sprintf(`[plugins.%q]`, codexPluginID()), key: "enabled", value: "true"},
+	); err != nil {
 		return "", err
 	}
 
@@ -981,7 +975,6 @@ func openCodePluginSource() string {
 		``,
 		`      const command = (args as Record<string, unknown>).command`,
 		`      if (typeof command !== "string" || !command.trim()) return`,
-		`      if (command.includes("build-brief")) return`,
 		``,
 		`      try {`,
 		`        const result = await $` + "`build-brief rewrite ${command}`" + `.quiet().nothrow()`,
@@ -1104,8 +1097,6 @@ if not isinstance(parsed_args, dict):
 
 command = parsed_args.get('command', '')
 if not isinstance(command, str) or not command.strip():
-    raise SystemExit(0)
-if 'build-brief' in command:
     raise SystemExit(0)
 
 try:
@@ -1238,7 +1229,7 @@ print(command if isinstance(command, str) else "")
 PY
 )"
 
-if [[ -z "$original_command" || "$original_command" == *"build-brief"* ]]; then
+if [[ -z "$original_command" ]]; then
   exit 0
 fi
 
@@ -1337,8 +1328,6 @@ if not isinstance(tool_input, dict):
 command = tool_input.get('command', '')
 if not isinstance(command, str) or not command.strip():
     raise SystemExit(0)
-if 'build-brief' in command:
-    raise SystemExit(0)
 
 try:
     result = subprocess.run(
@@ -1426,132 +1415,6 @@ func upsertCodexMarketplace(path, sourcePath string) error {
 	marketplace["plugins"] = plugins
 
 	return writeJSONFile(path, marketplace)
-}
-
-func upsertTOMLBool(path, section, key string, value bool) error {
-	return upsertTOMLEntry(path, section, key, fmt.Sprintf("%s = %t", key, value))
-}
-
-func upsertTOMLString(path, section, key, value string) error {
-	return upsertTOMLEntry(path, section, key, fmt.Sprintf("%s = %s", key, strconv.Quote(value)))
-}
-
-func upsertTOMLEntry(path, section, key, entry string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	content := ""
-	if fileExists(path) {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		content = string(data)
-	}
-
-	lines := strings.Split(content, "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		lines = []string{}
-	}
-
-	if section == "" {
-		sectionEnd := len(lines)
-		for i, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-				sectionEnd = i
-				break
-			}
-			if tomlLineHasKey(trimmed, key) {
-				lines[i] = entry
-				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
-			}
-		}
-
-		insert := append([]string{}, lines[:sectionEnd]...)
-		insert = append(insert, entry)
-		insert = append(insert, lines[sectionEnd:]...)
-		return os.WriteFile(path, []byte(strings.Join(insert, "\n")), 0o644)
-	}
-
-	sectionStart := -1
-	sectionEnd := len(lines)
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == section {
-			sectionStart = i
-			continue
-		}
-		if sectionStart >= 0 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			sectionEnd = i
-			break
-		}
-	}
-
-	if sectionStart >= 0 {
-		for i := sectionStart + 1; i < sectionEnd; i++ {
-			trimmed := strings.TrimSpace(lines[i])
-			if tomlLineHasKey(trimmed, key) {
-				lines[i] = entry
-				return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
-			}
-		}
-
-		insert := append([]string{}, lines[:sectionEnd]...)
-		insert = append(insert, entry)
-		insert = append(insert, lines[sectionEnd:]...)
-		return os.WriteFile(path, []byte(strings.Join(insert, "\n")), 0o644)
-	}
-
-	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
-		lines = append(lines, "")
-	}
-	lines = append(lines, section, entry)
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
-}
-
-func removeTOMLKey(path, section, key string) error {
-	if !fileExists(path) {
-		return nil
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-
-	lines := strings.Split(string(data), "\n")
-	sectionStart := -1
-	sectionEnd := len(lines)
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == section {
-			sectionStart = i
-			continue
-		}
-		if sectionStart >= 0 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			sectionEnd = i
-			break
-		}
-	}
-	if sectionStart < 0 {
-		return nil
-	}
-
-	filtered := make([]string, 0, len(lines))
-	for i, line := range lines {
-		if i > sectionStart && i < sectionEnd && tomlLineHasKey(strings.TrimSpace(line), key) {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-
-	return os.WriteFile(path, []byte(strings.Join(filtered, "\n")), 0o644)
-}
-
-func tomlLineHasKey(trimmed, key string) bool {
-	return strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=")
 }
 
 func copyDir(src, dst string) error {

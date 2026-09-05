@@ -52,6 +52,7 @@ var (
 	contextCaptureLines              = 2
 	compilerCaptureLines             = 3
 	maxJUnitReportFiles              = 100
+	maxCachedTaskEvents              = 1024
 	maxJUnitWalkEntries              = 10_000
 	maxJUnitScanErrors               = 8
 	maxJUnitScanErrorBytes           = 64 * 1024
@@ -79,6 +80,7 @@ type CustomMatchResult struct {
 }
 
 type JUnitScanMetadata struct {
+	ResultsSource      string   `json:"results_source,omitempty"`
 	Discovered         int      `json:"discovered"`
 	Parsed             int      `json:"parsed"`
 	Skipped            int      `json:"skipped"`
@@ -506,6 +508,10 @@ type junitFailure struct {
 // unbounded invocation. It is intentionally distinct from Summary.Command,
 // which is redacted and bounded output metadata.
 type semanticInvocation struct {
+	ExcludedTasks       []string
+	hasTaskEvents       bool
+	cachedTasks         *boundedStringCollector
+	activeTasks         *boundedStringCollector
 	TaskSelectors       []string
 	IsPureInformational bool
 }
@@ -514,7 +520,25 @@ func analyzeSemanticInvocation(args []string) semanticInvocation {
 	shape := gradle.AnalyzeArgs(args)
 	return semanticInvocation{
 		TaskSelectors:       shape.TaskSelectors,
+		ExcludedTasks:       shape.ExcludedTasks,
+		cachedTasks:         newBoundedStringCollector(maxCachedTaskEvents, maxSummaryCollectionBytes, true),
+		activeTasks:         newBoundedStringCollector(maxCachedTaskEvents, maxSummaryCollectionBytes, true),
 		IsPureInformational: shape.IsPureInformational,
+	}
+}
+
+func (invocation *semanticInvocation) observeTask(text string) {
+	taskLine, ok := strings.CutPrefix(text, "> Task :")
+	if !ok {
+		return
+	}
+	invocation.hasTaskEvents = true
+	task, status, _ := strings.Cut(taskLine, " ")
+	if status != "SKIPPED" && status != "NO-SOURCE" {
+		invocation.activeTasks.add(":" + task)
+	}
+	if status == "UP-TO-DATE" || status == "FROM-CACHE" {
+		invocation.cachedTasks.add(":" + task)
 	}
 }
 
@@ -666,6 +690,7 @@ func ReduceWithOptions(command gradle.Command, result runner.Result, opts Option
 			return nil
 		}
 		diagnosticEvidence.collect(text)
+		invocation.observeTask(text)
 
 		switch {
 		case taskFailurePattern.MatchString(text):
@@ -1044,6 +1069,8 @@ func commandProjectPrefixes(invocation semanticInvocation) []string {
 }
 
 type junitReportSelection struct {
+	mixed           bool
+	reused          bool
 	files           []string
 	discovered      int
 	errors          []string
@@ -1058,7 +1085,7 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 	if !summary.Success && !shouldReadJUnitReportsOnFailure(summary) {
 		return
 	}
-	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(invocation))
+	selection := selectJUnitReportFiles(projectDir, result.StartTime, summary.Success && shouldFallbackToAvailableJUnitReports(invocation), invocation)
 	metadata := &JUnitScanMetadata{
 		Discovered:         selection.discovered,
 		Errors:             append([]string(nil), selection.errors...),
@@ -1068,6 +1095,12 @@ func enrichWithJUnitResults(projectDir string, result runner.Result, invocation 
 		WalkTruncated:      selection.walkTruncated,
 		ReportingTruncated: selection.truncated,
 		Truncated:          selection.truncated || selection.walkTruncated,
+	}
+	metadata.ResultsSource = "current_run"
+	if selection.reused {
+		metadata.ResultsSource = "reused"
+	} else if selection.mixed {
+		metadata.ResultsSource = "mixed"
 	}
 	passedCount := 0
 	failedCount := 0
@@ -1229,6 +1262,10 @@ func addEnrichmentWarning(summary *Summary, warnings *boundedStringCollector, me
 // that could be JUnit reports, so unrelated project entries cannot hide later
 // module reports.
 func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool) junitReportSelection {
+	return findScopedJUnitReportFiles(projectDir, startedAt, freshOnly, nil)
+}
+
+func findScopedJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool, matchesScope func(string) bool) junitReportSelection {
 	selection := junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 	threshold := startedAt.Add(-junitTimeSkew)
 	candidates := 0
@@ -1240,6 +1277,9 @@ func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool
 			return nil
 		}
 		if isJUnitReportPath(path, entry.Name()) {
+			if matchesScope != nil && !matchesScope(path) {
+				return nil
+			}
 			candidates++
 			if candidates > maxJUnitWalkEntries {
 				selection.walkTruncated = true
@@ -1273,19 +1313,103 @@ func findJUnitReportFiles(projectDir string, startedAt time.Time, freshOnly bool
 	return selection
 }
 
-func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool) junitReportSelection {
+func selectJUnitReportFiles(projectDir string, startedAt time.Time, allowFallback bool, invocation semanticInvocation) junitReportSelection {
 	if startedAt.IsZero() {
 		if !allowFallback {
 			return junitReportSelection{files: make([]string, 0, maxJUnitReportFiles)}
 		}
-		return findJUnitReportFiles(projectDir, startedAt, false)
+		return findReusedJUnitReportFiles(projectDir, startedAt, invocation)
 	}
 
-	selection := findJUnitReportFiles(projectDir, startedAt, true)
+	var matchesScope func(string) bool
+	if invocation.hasTaskEvents {
+		matchesScope = func(path string) bool {
+			return matchesJUnitTaskScope(projectDir, path, invocation.activeTasks.values, invocation.ExcludedTasks)
+		}
+	}
+	selection := findScopedJUnitReportFiles(projectDir, startedAt, true, matchesScope)
+	if invocation.hasTaskEvents {
+		reused := 0
+		for _, path := range selection.files {
+			project, task, ok := junitReportTask(projectDir, path)
+			if !ok {
+				continue
+			}
+			for _, cached := range invocation.cachedTasks.values {
+				if junitTaskMatches(cached, project, task) {
+					reused++
+					break
+				}
+			}
+		}
+		selection.reused = reused > 0 && reused == len(selection.files)
+		selection.mixed = reused > 0 && reused < len(selection.files)
+		selection.truncated = selection.truncated || invocation.cachedTasks.truncated || invocation.activeTasks.truncated
+	}
 	if len(selection.files) > 0 || !allowFallback || selection.truncated || selection.walkTruncated || selection.errorCount > 0 {
 		return selection
 	}
-	return findJUnitReportFiles(projectDir, startedAt, false)
+	return findReusedJUnitReportFiles(projectDir, startedAt, invocation)
+}
+
+// Reused reports need both a project and task match: their timestamps cannot
+// establish that they belong to this invocation.
+func findReusedJUnitReportFiles(projectDir string, startedAt time.Time, invocation semanticInvocation) junitReportSelection {
+	selectors := invocation.TaskSelectors
+	if invocation.hasTaskEvents {
+		selectors = invocation.cachedTasks.values
+	}
+	selection := findScopedJUnitReportFiles(projectDir, startedAt, false, func(path string) bool {
+		return matchesJUnitTaskScope(projectDir, path, selectors, invocation.ExcludedTasks)
+	})
+	selection.reused = true
+	if invocation.hasTaskEvents && invocation.cachedTasks.truncated {
+		selection.truncated = true
+	}
+	return selection
+}
+
+func matchesJUnitTaskScope(projectDir, path string, selectors, excludedTasks []string) bool {
+	project, reportTask, ok := junitReportTask(projectDir, path)
+	if !ok {
+		return false
+	}
+	for _, excluded := range excludedTasks {
+		if junitTaskMatches(excluded, project, reportTask) {
+			return false
+		}
+	}
+	for _, selector := range selectors {
+		if junitTaskMatches(selector, project, reportTask) {
+			return true
+		}
+	}
+	return false
+}
+
+func junitReportTask(projectDir, path string) (string, string, bool) {
+	relative, err := filepath.Rel(projectDir, path)
+	if err != nil {
+		return "", "", false
+	}
+	project, report, ok := strings.Cut("/"+filepath.ToSlash(relative), "/build/test-results/")
+	if !ok {
+		return "", "", false
+	}
+	task, _, ok := strings.Cut(report, "/")
+	return strings.TrimPrefix(project, "/"), task, ok
+}
+
+func junitTaskMatches(selector, project, reportTask string) bool {
+	lastColon := strings.LastIndex(selector, ":")
+	if selector[lastColon+1:] != reportTask {
+		return false
+	}
+	if lastColon < 0 {
+		return true
+	}
+	selectedProject := strings.ReplaceAll(strings.TrimPrefix(selector[:lastColon], ":"), ":", "/")
+	return project == selectedProject
 }
 
 func addSelectionError(selection *junitReportSelection, projectDir, path string, err error) {

@@ -272,6 +272,27 @@ func TestCaptureBoundsSnapshotMapsAndReportsCounts(t *testing.T) {
 	if snapshot.Metadata.CodegenEntries.Discovered != maxSnapshotCodegenEntries+1 || snapshot.Metadata.CodegenEntries.Retained != maxSnapshotCodegenEntries || !snapshot.Metadata.CodegenEntries.Truncated {
 		t.Fatalf("unexpected codegen snapshot metadata: %+v", snapshot.Metadata.CodegenEntries)
 	}
+
+	startTime := time.Now().Add(time.Hour)
+	result := FindGeneratedWithMetadata(projectDir, startTime, snapshot, nil)
+	if len(result.Artifacts) != 0 || result.ClassCount != 0 || result.CodegenCount != 0 {
+		t.Fatalf("unchanged outputs omitted from truncated snapshots must not count as generated: %+v", result)
+	}
+	if !result.Metadata.SnapshotTruncated || !result.Metadata.Truncated {
+		t.Fatalf("expected snapshot uncertainty to remain visible: %+v", result.Metadata)
+	}
+
+	for _, relativePath := range []string{"app/build/libs/new.jar", "app/build/classes/main/New.class", "app/build/generated/main/New.kt"} {
+		path := filepath.Join(projectDir, filepath.FromSlash(relativePath))
+		writeFile(t, path, "new")
+		if err := os.Chtimes(path, startTime, startTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result = FindGeneratedWithMetadata(projectDir, startTime, snapshot, nil)
+	if len(result.Artifacts) != 1 || !containsArtifact(result.Artifacts, "JAR", "app/build/libs/new.jar") || result.ClassCount != 1 || result.CodegenCount != 1 {
+		t.Fatalf("expected newly modified outputs to pass the timestamp fallback: %+v", result)
+	}
 }
 
 func TestSnapshotEntryRetainerDefersHeapAllocation(t *testing.T) {

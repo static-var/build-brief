@@ -15,10 +15,41 @@ import (
 	"testing"
 
 	"build-brief/internal/gradle"
+	"build-brief/internal/install"
 	"build-brief/internal/reducer"
 	"build-brief/internal/runner"
 	"build-brief/internal/tracking"
 )
+
+func TestGlobalInstallReportsPartialFailure(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(target, []byte("User instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := detectGlobalTools
+	t.Cleanup(func() { detectGlobalTools = original })
+	detectGlobalTools = func() ([]install.DetectedTool, error) {
+		return []install.DetectedTool{
+			{Tool: install.Tool{Name: "Working tool"}, PreferredTarget: target},
+			{Tool: install.Tool{Name: "Missing tool"}},
+		}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--global"}, strings.NewReader("all\n"), &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("partial installation exit = %d, want 1", code)
+	}
+	if !strings.Contains(stdout.String(), "Installed build-brief instructions into Working tool -> "+target) {
+		t.Errorf("successful installation missing from output: %s", &stdout)
+	}
+	if !strings.Contains(stderr.String(), "Missing tool: no known global instruction path") {
+		t.Errorf("failure missing from stderr: %s", &stderr)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || !strings.Contains(string(content), "build-brief:instructions:start") {
+		t.Fatalf("successful installation not applied: %s, %v", content, err)
+	}
+}
 
 func TestParseArgsStopsAtGradleArgs(t *testing.T) {
 	opts, gradleArgs, err := parseArgs([]string{"--mode", "raw", "test", "--stacktrace"})
