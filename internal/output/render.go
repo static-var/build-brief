@@ -108,7 +108,16 @@ func RenderHuman(w io.Writer, summary reducer.Summary) error {
 	}
 
 	if summary.PassedTestCount > 0 || summary.FailedTestCount > 0 {
-		if _, err := fmt.Fprintf(bw, "Tests: %d passed, %d failed\n", summary.PassedTestCount, summary.FailedTestCount); err != nil {
+		source := ""
+		if summary.JUnitScan != nil {
+			switch summary.JUnitScan.ResultsSource {
+			case "reused":
+				source = " (reused reports)"
+			case "mixed":
+				source = " (includes reused reports)"
+			}
+		}
+		if _, err := fmt.Fprintf(bw, "Tests: %d passed, %d failed%s\n", summary.PassedTestCount, summary.FailedTestCount, source); err != nil {
 			return err
 		}
 	}

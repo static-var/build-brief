@@ -908,13 +908,13 @@ func scanBuildDir(buildDir, projectDir string, threshold time.Time, snapshot Sna
 	for _, root := range artifactRoots {
 		scanArtifactRoot(filepath.Join(append([]string{buildDir}, root.parts...)...), projectDir, threshold, snapshot, collector, hints)
 	}
-	*classCount += countChangedFiles(filepath.Join(buildDir, "classes"), projectDir, threshold, snapshot.Captured, snapshot.ClassEntries, func(path string) bool {
+	*classCount += countChangedFiles(filepath.Join(buildDir, "classes"), projectDir, threshold, snapshot.Captured, snapshot.Metadata.ClassEntries.Truncated, snapshot.ClassEntries, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
 	})
-	*classCount += countChangedFiles(filepath.Join(buildDir, "tmp", "kotlin-classes"), projectDir, threshold, snapshot.Captured, snapshot.ClassEntries, func(path string) bool {
+	*classCount += countChangedFiles(filepath.Join(buildDir, "tmp", "kotlin-classes"), projectDir, threshold, snapshot.Captured, snapshot.Metadata.ClassEntries.Truncated, snapshot.ClassEntries, func(path string) bool {
 		return strings.HasSuffix(strings.ToLower(path), ".class")
 	})
-	*codegenCount += countChangedFiles(filepath.Join(buildDir, "generated"), projectDir, threshold, snapshot.Captured, snapshot.CodegenEntries, func(path string) bool {
+	*codegenCount += countChangedFiles(filepath.Join(buildDir, "generated"), projectDir, threshold, snapshot.Captured, snapshot.Metadata.CodegenEntries.Truncated, snapshot.CodegenEntries, func(path string) bool {
 		return true
 	})
 }
@@ -977,7 +977,7 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 		}
 		if entry.IsDir() {
 			artifact, state, ok := buildArtifact(path, entry, projectDir)
-			if ok && shouldReportState(artifact.Path, state, threshold, snapshot.Captured, snapshot.ArtifactEntries) {
+			if ok && shouldReportState(artifact.Path, state, threshold, snapshot.Captured, snapshot.Metadata.ArtifactEntries.Truncated, snapshot.ArtifactEntries) {
 				if collector.add(artifact) {
 					return filepath.SkipDir
 				}
@@ -989,7 +989,7 @@ func scanArtifactRoot(rootDir, projectDir string, threshold time.Time, snapshot 
 		}
 
 		artifact, state, ok := buildArtifact(path, entry, projectDir)
-		if !ok || !shouldReportState(artifact.Path, state, threshold, snapshot.Captured, snapshot.ArtifactEntries) {
+		if !ok || !shouldReportState(artifact.Path, state, threshold, snapshot.Captured, snapshot.Metadata.ArtifactEntries.Truncated, snapshot.ArtifactEntries) {
 			return nil
 		}
 		collector.add(artifact)
@@ -1026,7 +1026,7 @@ func captureMatchingFiles(rootDir, projectDir string, retainer *snapshotEntryRet
 	})
 }
 
-func countChangedFiles(rootDir, projectDir string, threshold time.Time, useSnapshot bool, beforeEntries map[string]SnapshotEntry, match func(path string) bool) int {
+func countChangedFiles(rootDir, projectDir string, threshold time.Time, useSnapshot, snapshotTruncated bool, beforeEntries map[string]SnapshotEntry, match func(path string) bool) int {
 	info, err := os.Stat(rootDir)
 	if err != nil || !info.IsDir() {
 		return 0
@@ -1045,7 +1045,7 @@ func countChangedFiles(rootDir, projectDir string, threshold time.Time, useSnaps
 		}
 
 		relativePath, state, ok := buildTrackedFile(path, entry, projectDir)
-		if !ok || !shouldReportState(relativePath, state, threshold, useSnapshot, beforeEntries) {
+		if !ok || !shouldReportState(relativePath, state, threshold, useSnapshot, snapshotTruncated, beforeEntries) {
 			return nil
 		}
 		count++
@@ -1154,10 +1154,15 @@ func buildTrackedFile(path string, entry fs.DirEntry, projectDir string) (string
 	}, true
 }
 
-func shouldReportState(path string, current SnapshotEntry, threshold time.Time, useSnapshot bool, beforeEntries map[string]SnapshotEntry) bool {
+func shouldReportState(path string, current SnapshotEntry, threshold time.Time, useSnapshot, snapshotTruncated bool, beforeEntries map[string]SnapshotEntry) bool {
 	if useSnapshot {
-		before, ok := beforeEntries[path]
-		return !ok || before != current
+		if before, ok := beforeEntries[path]; ok {
+			return before != current
+		}
+		if !snapshotTruncated {
+			return true
+		}
+		// A bounded snapshot cannot distinguish omitted entries from new files.
 	}
 	return modifiedSince(current.ModTimeUnixNano, threshold)
 }

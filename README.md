@@ -84,6 +84,10 @@ Warnings: 1
   - OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
 ```
 
+When test results come from existing JUnit reports, the test summary adds
+`(reused reports)`. Reused reports are scoped to the relevant project and test
+task in standard Gradle output directories.
+
 Report-style Gradle commands keep their report body in the default human output:
 
 ```text

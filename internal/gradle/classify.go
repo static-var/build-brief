@@ -43,6 +43,12 @@ func AnalyzeArgs(args []string) InvocationShape {
 				i++
 			}
 			continue
+		case strings.HasPrefix(arg, "--exclude-task="):
+			shape.ExcludedTasks = append(shape.ExcludedTasks, strings.TrimPrefix(arg, "--exclude-task="))
+			continue
+		case strings.HasPrefix(arg, "-x"):
+			shape.ExcludedTasks = append(shape.ExcludedTasks, strings.TrimPrefix(arg, "-x"))
+			continue
 		case consumesNextArg(arg):
 			if i+1 < len(args) {
 				i++

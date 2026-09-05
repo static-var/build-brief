@@ -1,6 +1,48 @@
 package rewrite
 
-import "testing"
+import (
+	"os/exec"
+	"testing"
+)
+
+func TestShellCommandPreservesArgumentMeaning(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	command := `printf '%s\n' 'a\'; printf '%s\n' 'x;gradle test;y' && JAVA_OPTS='a\' gradle check`
+	rewritten, changed := ShellCommand(command)
+	if !changed {
+		t.Fatal("expected Gradle invocation to be rewritten")
+	}
+	functions := "gradle() { printf '%s\\n' \"$JAVA_OPTS\" \"$@\"; }; build-brief() { \"$@\"; }; "
+	run := func(script string) string {
+		t.Helper()
+		output, err := exec.Command(bash, "-c", functions+script).CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute shell fixture: %v: %s", err, output)
+		}
+		return string(output)
+	}
+	if before, after := run(command), run(rewritten); before != after {
+		t.Fatalf("rewrite changed argument meaning: before=%q after=%q", before, after)
+	}
+}
+
+func TestShellCommandPreservesSingleQuotedBackslashes(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{`echo 'a\'; echo 'x;gradle test;y' && gradle check`, `echo 'a\' ; echo 'x;gradle test;y' && build-brief gradle check`},
+		{`JAVA_OPTS='a\' gradle test && gradle check`, `JAVA_OPTS='a\' build-brief gradle test && build-brief gradle check`},
+		{`echo "a\\" && gradle test`, `echo "a\\" && build-brief gradle test`},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got, changed := ShellCommand(tc.input)
+			if !changed || got != tc.want {
+				t.Fatalf("ShellCommand(%q) = %q, %t; want %q", tc.input, got, changed, tc.want)
+			}
+		})
+	}
+}
 
 func TestShellCommandLeavesNonGradleCommandsAlone(t *testing.T) {
 	command := "ls -la"
@@ -101,5 +143,13 @@ func TestShellCommandDoesNotRewriteExistingBuildBriefCommand(t *testing.T) {
 	}
 	if rewritten != command {
 		t.Fatalf("expected original command, got %q", rewritten)
+	}
+}
+
+func TestShellCommandRewritesGradleWithBuildBriefArgument(t *testing.T) {
+	command := `build-brief ./gradlew test && ./gradlew check -Pnote=build-brief`
+	want := `build-brief ./gradlew test && build-brief ./gradlew check -Pnote=build-brief`
+	if got, changed := ShellCommand(command); !changed || got != want {
+		t.Fatalf("ShellCommand = %q, %t; want %q", got, changed, want)
 	}
 }

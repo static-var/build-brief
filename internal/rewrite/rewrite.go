@@ -43,7 +43,7 @@ func ShellCommand(command string) (string, bool) {
 
 func rewriteSegment(segment string) (string, bool) {
 	trimmed := strings.TrimSpace(segment)
-	if trimmed == "" || strings.Contains(trimmed, "build-brief") || strings.Contains(trimmed, "|") {
+	if trimmed == "" || strings.Contains(trimmed, "|") {
 		return trimmed, false
 	}
 
@@ -127,7 +127,7 @@ func shellTokenEnd(text string, start int) int {
 
 		switch ch {
 		case '\\':
-			escaped = true
+			escaped = !inSingleQuote
 			continue
 		case '\'':
 			if !inDoubleQuote {
@@ -214,7 +214,7 @@ func splitCommandChain(command string) []part {
 
 		switch ch {
 		case '\\':
-			escaped = true
+			escaped = !inSingleQuote
 			builder.WriteByte(ch)
 			continue
 		case '\'':
