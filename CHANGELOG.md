@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1 - 2026-09-05
+
+- Fix summary accuracy and agent integration reliability (cbacc06)
+
 ## v0.2.0 - 2026-07-14
 
 - chore(smoke): ignore nested Android build output (d54b0d9)
