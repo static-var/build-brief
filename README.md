@@ -256,6 +256,7 @@ build-brief --global
 ```
 
 There is also a checked-in Claude Code hook example at `examples/hooks/claude-code/`.
+The Claude Code, Codex, and Copilot guardrails all run `build-brief hook <agent>`, so they need no extra tools such as Python.
 For Claude Code, `build-brief --global` now installs a managed local plugin plus
 the usual `CLAUDE.md` guidance when Claude is detected.
 For GitHub Copilot CLI, `build-brief --global` now installs a managed local plugin

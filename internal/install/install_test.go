@@ -286,11 +286,8 @@ func TestInstallGlobalCreatesCopilotPluginWithoutInstructionsFile(t *testing.T) 
 	if !strings.Contains(string(hooksContent), `"preToolUse"`) {
 		t.Fatalf("expected preToolUse hook, got %q", string(hooksContent))
 	}
-	if !strings.Contains(string(hooksContent), "permissionDecision") {
-		t.Fatalf("expected deny decision logic, got %q", string(hooksContent))
-	}
-	if !strings.Contains(string(hooksContent), "['build-brief', 'rewrite', command]") {
-		t.Fatalf("expected rewrite delegation, got %q", string(hooksContent))
+	if !strings.Contains(string(hooksContent), `"bash": "build-brief hook copilot"`) {
+		t.Fatalf("expected build-brief hook delegation, got %q", string(hooksContent))
 	}
 }
 
@@ -320,6 +317,16 @@ func TestInstallGlobalCreatesClaudePluginWithoutInstructionsFile(t *testing.T) {
 
 	target := filepath.Join(home, ".claude", "CLAUDE.md")
 
+	// Earlier versions installed a hook script; reinstalling must remove it.
+	pluginRoot := filepath.Join(home, ".claude", "marketplaces", "build-brief", "plugins", "build-brief")
+	staleScript := filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh")
+	if err := os.MkdirAll(filepath.Dir(staleScript), 0o755); err != nil {
+		t.Fatalf("create stale script dir: %v", err)
+	}
+	if err := os.WriteFile(staleScript, []byte("#!/usr/bin/env bash\n"), 0o755); err != nil {
+		t.Fatalf("write stale script: %v", err)
+	}
+
 	installed, failures := InstallGlobal([]DetectedTool{
 		{
 			Tool: Tool{
@@ -337,7 +344,6 @@ func TestInstallGlobalCreatesClaudePluginWithoutInstructionsFile(t *testing.T) {
 		t.Fatalf("expected no failures, got %v", failures)
 	}
 
-	pluginRoot := filepath.Join(home, ".claude", "marketplaces", "build-brief", "plugins", "build-brief")
 	if !containsPath(installed, "Claude Code plugin -> "+pluginRoot) {
 		t.Fatalf("expected claude plugin install entry, got %v", installed)
 	}
@@ -377,20 +383,11 @@ func TestInstallGlobalCreatesClaudePluginWithoutInstructionsFile(t *testing.T) {
 	if !strings.Contains(string(hooksContent), `"PreToolUse"`) {
 		t.Fatalf("expected PreToolUse hook, got %q", string(hooksContent))
 	}
-	if !strings.Contains(string(hooksContent), `${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-build-brief.sh`) {
-		t.Fatalf("expected plugin root hook command, got %q", string(hooksContent))
+	if !strings.Contains(string(hooksContent), `"command": "build-brief hook claude"`) {
+		t.Fatalf("expected build-brief hook command, got %q", string(hooksContent))
 	}
-
-	scriptPath := filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh")
-	scriptContent, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("read claude pretooluse script: %v", err)
-	}
-	if !strings.Contains(string(scriptContent), `"hookSpecificOutput"`) {
-		t.Fatalf("expected deny decision output, got %q", string(scriptContent))
-	}
-	if !strings.Contains(string(scriptContent), "build-brief rewrite") {
-		t.Fatalf("expected rewrite delegation, got %q", string(scriptContent))
+	if _, err := os.Stat(staleScript); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale hook script to be removed, stat err=%v", err)
 	}
 }
 
@@ -448,8 +445,8 @@ func TestInstallGlobalCreatesCodexPluginWithoutAgentsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read codex hooks: %v", err)
 	}
-	if !strings.Contains(string(hooksContent), "['build-brief', 'rewrite', command]") {
-		t.Fatalf("expected rewrite delegation in hooks, got %q", string(hooksContent))
+	if !strings.Contains(string(hooksContent), `"command": "build-brief hook codex"`) {
+		t.Fatalf("expected build-brief hook delegation in hooks, got %q", string(hooksContent))
 	}
 	if !strings.Contains(string(hooksContent), "PreToolUse") {
 		t.Fatalf("expected PreToolUse hook in hooks.json, got %q", string(hooksContent))
