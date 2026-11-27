@@ -256,6 +256,7 @@ build-brief --global
 ```
 
 There is also a checked-in Claude Code hook example at `examples/hooks/claude-code/`.
+The Claude Code, Codex, and Copilot guardrails all run `build-brief hook <agent>`, so they need no extra tools such as Python.
 For Claude Code, `build-brief --global` now installs a managed local plugin plus
 the usual `CLAUDE.md` guidance when Claude is detected.
 For GitHub Copilot CLI, `build-brief --global` now installs a managed local plugin
@@ -265,6 +266,9 @@ marketplace entry, and hook-backed guardrail in the shared `~/.codex` config are
 alongside the AGENTS integration when Codex is detected. It uses `hooks` plus
 plugin-bundled hooks, pre-trusts the installed build-brief hook, and removes the
 deprecated `codex_hooks` flag if present.
+For Antigravity, `build-brief --global` writes a plugin to
+`~/.gemini/config/plugins/build-brief` with a `run_command` guardrail and the
+build-brief rules, which Antigravity discovers without an install command.
 
 If your agent tool supports `AGENTS.md` or an instructions file, a simple default rule is:
 

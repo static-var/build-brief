@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"build-brief/internal/hook"
 )
 
 const (
@@ -214,6 +216,14 @@ func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 				}
 			case "pi-coding-agent":
 				target, err := installPiExtension(tool)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
+				} else {
+					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
+					pluginInstalled = true
+				}
+			case "antigravity":
+				target, err := installAntigravityPlugin(tool, rtkInstalled)
 				if err != nil {
 					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
 				} else {
@@ -615,6 +625,20 @@ func knownTools() ([]Tool, error) {
 			GlobalTargets:    []string{filepath.Join(home, ".gemini", "GEMINI.md")},
 			LocalInstruction: []string{"GEMINI.md", "AGENTS.md"},
 		},
+		{
+			// Antigravity reads its global customizations, including plugins,
+			// from ~/.gemini/config. The plugin carries its own rules, so there
+			// is no global instruction file to update.
+			ID:       "antigravity",
+			Name:     "Antigravity",
+			Binaries: []string{"agy"},
+			DetectionPaths: []string{
+				antigravityConfigDir(home),
+				filepath.Join(string(filepath.Separator), "Applications", "Antigravity.app"),
+			},
+			LocalInstruction: []string{"AGENTS.md", "GEMINI.md"},
+			SupportsPlugin:   true,
+		},
 	}, nil
 }
 
@@ -732,6 +756,12 @@ func pluginGuidance(tool Tool) []string {
 			"- Its Bash hook blocks routine raw `gradle` and `./gradlew` commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
 			"- Codex hooks cannot transparently rewrite and continue in place today, so keep raw Gradle available when you intentionally want to bypass that guardrail.",
 		}
+	case "antigravity":
+		return []string{
+			"- The managed Antigravity plugin lives under `~/.gemini/config/plugins/build-brief` and ships these rules with a `PreToolUse` hook.",
+			"- Its `run_command` hook blocks routine raw `gradle` and `./gradlew` commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
+			"- The hook denies rather than rewrites in place, so Antigravity keeps asking for permission as usual; keep raw Gradle available when you intentionally want to bypass it.",
+		}
 	case "pi-coding-agent":
 		return []string{
 			"- The managed Pi extension rewrites routine `gradle` and `./gradlew` Bash tool commands — including chained `&&`, `||`, and `;` Gradle segments — to explicit `build-brief gradle ...` or `build-brief ./gradlew ...` commands before execution.",
@@ -804,10 +834,8 @@ func installClaudePlugin(tool DetectedTool) (string, error) {
 	if err := writeJSONFile(filepath.Join(pluginRoot, "hooks", "hooks.json"), claudePluginHooksConfig()); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Join(pluginRoot, "scripts"), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh"), []byte(claudePluginPreToolUseScript()), 0o755); err != nil {
+	// Earlier versions ran this script from the hook; the hook now calls build-brief directly.
+	if err := os.Remove(filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 
@@ -891,6 +919,68 @@ func installCodexPlugin(tool DetectedTool) (string, error) {
 	}
 
 	return sourceDir, nil
+}
+
+func antigravityConfigDir(home string) string {
+	return filepath.Join(home, ".gemini", "config")
+}
+
+// installAntigravityPlugin writes a native plugin to Antigravity's global
+// plugins folder, where it is discovered and enabled without an install
+// command. Native plugins must keep hooks.json at the plugin root.
+func installAntigravityPlugin(tool DetectedTool, rtkInstalled bool) (string, error) {
+	home, err := userHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	pluginRoot := filepath.Join(antigravityConfigDir(home), "plugins", "build-brief")
+	if err := writeJSONFile(filepath.Join(pluginRoot, "plugin.json"), antigravityPluginManifest()); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(pluginRoot, "hooks.json"), antigravityHooksConfig()); err != nil {
+		return "", err
+	}
+	rulesPath := filepath.Join(pluginRoot, "rules", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(rulesPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(rulesPath, []byte(globalInstructions(tool.Tool, rtkInstalled)+"\n"), 0o644); err != nil {
+		return "", err
+	}
+
+	return pluginRoot, nil
+}
+
+func antigravityPluginManifest() map[string]any {
+	return map[string]any{
+		"name": "build-brief",
+		"author": map[string]any{
+			"name": "Static Var",
+			"url":  "https://bb.staticvar.dev",
+		},
+		"homepage":   "https://bb.staticvar.dev",
+		"repository": "https://github.com/static-var/build-brief",
+	}
+}
+
+func antigravityHooksConfig() map[string]any {
+	return map[string]any{
+		"build-brief": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "run_command",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": hookCommand(hook.Antigravity),
+							"timeout": 30,
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func piExtensionSource() string {
@@ -1066,62 +1156,7 @@ func copilotHooksConfig() map[string]any {
 }
 
 func copilotPreToolUseCommand() string {
-	return `python3 -c "
-import json
-import subprocess
-import sys
-
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-
-if not isinstance(payload, dict):
-    raise SystemExit(0)
-
-tool_name = str(payload.get('toolName', '')).lower()
-if tool_name != 'bash':
-    raise SystemExit(0)
-
-tool_args = payload.get('toolArgs')
-if not isinstance(tool_args, str) or not tool_args.strip():
-    raise SystemExit(0)
-
-try:
-    parsed_args = json.loads(tool_args)
-except Exception:
-    raise SystemExit(0)
-
-if not isinstance(parsed_args, dict):
-    raise SystemExit(0)
-
-command = parsed_args.get('command', '')
-if not isinstance(command, str) or not command.strip():
-    raise SystemExit(0)
-
-try:
-    result = subprocess.run(
-        ['build-brief', 'rewrite', command],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-except FileNotFoundError:
-    raise SystemExit(0)
-
-rewritten = result.stdout.strip()
-if result.returncode != 0 or not rewritten or rewritten == command.strip():
-    raise SystemExit(0)
-
-json.dump(
-    {
-        'permissionDecision': 'deny',
-        'permissionDecisionReason': 'Routine Gradle command or chain intercepted by build-brief. Use: ' + rewritten,
-    },
-    sys.stdout,
-    separators=(',', ':'),
-)
-"`
+	return hookCommand(hook.Copilot)
 }
 
 const (
@@ -1175,7 +1210,7 @@ func claudePluginHooksConfig() map[string]any {
 					"hooks": []any{
 						map[string]any{
 							"type":          "command",
-							"command":       `"${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-build-brief.sh"`,
+							"command":       hookCommand(hook.Claude),
 							"timeout":       30,
 							"statusMessage": "Checking Bash command for build-brief",
 						},
@@ -1184,78 +1219,6 @@ func claudePluginHooksConfig() map[string]any {
 			},
 		},
 	}
-}
-
-func claudePluginPreToolUseScript() string {
-	return `#!/usr/bin/env bash
-
-set -euo pipefail
-
-if ! command -v build-brief >/dev/null 2>&1; then
-  exit 0
-fi
-
-payload="$(cat)"
-if [[ -z "$payload" ]]; then
-  exit 0
-fi
-
-original_command="$(python3 - "$payload" <<'PY'
-import json
-import sys
-
-try:
-    payload = json.loads(sys.argv[1])
-except Exception:
-    print("")
-    raise SystemExit(0)
-
-if not isinstance(payload, dict):
-    print("")
-    raise SystemExit(0)
-
-tool_name = payload.get("tool_name", "")
-if tool_name != "Bash":
-    print("")
-    raise SystemExit(0)
-
-tool_input = payload.get("tool_input", {})
-if not isinstance(tool_input, dict):
-    print("")
-    raise SystemExit(0)
-
-command = tool_input.get("command", "")
-print(command if isinstance(command, str) else "")
-PY
-)"
-
-if [[ -z "$original_command" ]]; then
-  exit 0
-fi
-
-rewritten_command="$(build-brief rewrite "$original_command" 2>/dev/null || true)"
-if [[ -z "$rewritten_command" || "$rewritten_command" == "$original_command" ]]; then
-  exit 0
-fi
-
-python3 - "$rewritten_command" <<'PY'
-import json
-import sys
-
-rewritten = sys.argv[1]
-json.dump(
-    {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"Routine Gradle command or chain intercepted by build-brief. Use: {rewritten}",
-        }
-    },
-    sys.stdout,
-    separators=(",", ":"),
-)
-PY
-`
 }
 
 func codexPluginManifest() map[string]any {
@@ -1308,50 +1271,14 @@ func codexHooksConfig() map[string]any {
 }
 
 func codexPreToolUseCommand() string {
-	return `python3 -c "
-import json
-import subprocess
-import sys
+	return hookCommand(hook.Codex)
+}
 
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-
-if not isinstance(payload, dict):
-    raise SystemExit(0)
-
-tool_input = payload.get('tool_input')
-if not isinstance(tool_input, dict):
-    raise SystemExit(0)
-
-command = tool_input.get('command', '')
-if not isinstance(command, str) or not command.strip():
-    raise SystemExit(0)
-
-try:
-    result = subprocess.run(
-        ['build-brief', 'rewrite', command],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-except FileNotFoundError:
-    raise SystemExit(0)
-
-rewritten = result.stdout.strip()
-if result.returncode != 0 or not rewritten or rewritten == command.strip():
-    raise SystemExit(0)
-
-sys.stderr.write(
-    '[build-brief] Codex blocked a routine Gradle command or chain.\n'
-    '[build-brief] Use this instead:\n\n'
-    '  ' + rewritten + '\n\n'
-    'This Codex PreToolUse hook can block and suggest a safer replacement,\n'
-    'but it cannot transparently rewrite and continue in place.\n'
-)
-raise SystemExit(2)
-"`
+// hookCommand returns the hook command for agent. It has no shell operators, so
+// it runs the same under sh, bash and cmd, and serializes without JSON escapes,
+// which keeps the Codex trusted_hash stable.
+func hookCommand(agent string) string {
+	return "build-brief hook " + agent
 }
 
 func upsertCodexMarketplace(path, sourcePath string) error {

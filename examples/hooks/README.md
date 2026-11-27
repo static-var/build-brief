@@ -38,9 +38,10 @@ registers it with:
 copilot plugin install <local-plugin-path>
 ```
 
-That plugin uses a `preToolUse` hook to inspect Bash commands, block routine raw
-Gradle usage including chained segments such as `gradle test && gradle check`,
-and suggest the `build-brief rewrite ...` result instead.
+That plugin uses a `preToolUse` hook that runs `build-brief hook copilot` to
+inspect Bash commands, block routine raw Gradle usage including chained segments
+such as `gradle test && gradle check`, and suggest the `build-brief rewrite ...`
+result instead.
 
 Like Codex and Claude Code, this is a guardrail rather than an in-place command
 rewriter, so the plugin blocks and suggests instead of mutating the original
@@ -57,17 +58,9 @@ runtime behavior is still different from OpenCode: it can block a Bash command
 and suggest the replacement, but it cannot transparently mutate the command and
 continue in place the way the OpenCode plugin can.
 
-Example files live here:
-
-- `examples/hooks/claude-code/pretooluse-build-brief.sh`
-- `examples/hooks/claude-code/settings.json`
-
-Recommended setup:
-
-1. copy the script to `.claude/hooks/pretooluse-build-brief.sh`
-2. make it executable
-3. merge the `PreToolUse` snippet from `examples/hooks/claude-code/settings.json`
-   into your Claude Code settings
+For a manual setup, merge the `PreToolUse` snippet from
+`examples/hooks/claude-code/settings.json` into your Claude Code settings. It
+runs `build-brief hook claude`, the same command the managed plugin uses.
 
 The example hook and the managed Claude plugin both block routine raw Gradle
 commands, including chained segments such as `gradle test && gradle check`, and
@@ -87,9 +80,29 @@ The managed `build-brief --global` Codex App & CLI integration therefore install
 - a cached installed copy under the Codex plugin cache
 - `config.toml` updates that enable `hooks`, enable plugin-bundled hooks with `plugin_hooks`, pre-trust the installed build-brief hook, remove deprecated `codex_hooks`, and turn the plugin on
 
-That managed hook blocks routine raw Gradle commands, including chained segments
-such as `gradle test && gradle check`, and suggests the `build-brief rewrite ...`
-result instead.
+That managed hook runs `build-brief hook codex`. It blocks routine raw Gradle
+commands, including chained segments such as `gradle test && gradle check`, and
+suggests the `build-brief rewrite ...` result instead.
+
+## Antigravity
+
+Antigravity discovers native plugins in its global customization root, so the
+managed `build-brief --global` integration writes one to:
+
+```text
+~/.gemini/config/plugins/build-brief/
+```
+
+The plugin holds `plugin.json`, the build-brief rules in `rules/AGENTS.md`, and a
+root `hooks.json` whose `PreToolUse` hook matches the `run_command` tool and runs
+`build-brief hook antigravity`. The hook denies routine raw Gradle commands,
+including chained segments such as `gradle test && gradle check`, and suggests
+the `build-brief rewrite ...` result instead.
+
+Antigravity can also rewrite a command in place, but only together with an
+`allow` decision, which skips its permission prompt. The hook therefore denies
+and suggests, and returns an empty decision for every other command so
+Antigravity keeps its usual permission flow.
 
 ## Pi Coding Agent
 

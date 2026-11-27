@@ -13,6 +13,7 @@ import (
 	"build-brief/internal/config"
 	"build-brief/internal/doctor"
 	"build-brief/internal/gradle"
+	"build-brief/internal/hook"
 	"build-brief/internal/install"
 	"build-brief/internal/output"
 	"build-brief/internal/reducer"
@@ -52,6 +53,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return runGains(args[1:], stdout, stderr)
 		case "rewrite":
 			return runRewrite(args[1:], stdout, stderr)
+		case "hook":
+			return runHook(args[1:], stdin, stdout, stderr)
 		case "doctor":
 			return runDoctor(args[1:], stdout, stderr)
 		}
@@ -549,6 +552,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  build-brief gains [--project] [--history] [--format text|json]")
 	fmt.Fprintln(w, "  build-brief gains --reset")
 	fmt.Fprintln(w, "  build-brief rewrite <shell command>")
+	fmt.Fprintln(w, "  build-brief hook <claude|codex|copilot|antigravity>")
 	fmt.Fprintln(w, "  build-brief doctor [doctor flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Core flags:")
@@ -603,7 +607,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "      Must be used by itself; do not combine it with --install or --install-force.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Supported global tool registry:")
-	fmt.Fprintln(w, "  GitHub Copilot CLI, Claude Code, Codex App & CLI, OpenCode, Pi Coding Agent, Gemini CLI")
+	fmt.Fprintln(w, "  GitHub Copilot CLI, Claude Code, Codex App & CLI, OpenCode, Pi Coding Agent, Gemini CLI, Antigravity")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Doctor command:")
 	fmt.Fprintln(w, "  build-brief doctor")
@@ -615,6 +619,11 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  build-brief rewrite")
 	fmt.Fprintln(w, "      Rewrites routine Gradle shell commands to build-brief-compatible commands, including chained `&&`, `||`, and `;` segments.")
 	fmt.Fprintln(w, "      Intended for hooks/plugins such as the OpenCode tool.execute.before hook.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Hook command:")
+	fmt.Fprintln(w, "  build-brief hook <claude|codex|copilot|antigravity>")
+	fmt.Fprintln(w, "      Reads an agent PreToolUse hook payload on stdin and blocks routine Gradle commands with the build-brief replacement.")
+	fmt.Fprintln(w, "      Used by the plugins that --global installs; other commands and unreadable payloads are allowed.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Gains command:")
 	fmt.Fprintln(w, "  build-brief gains")
@@ -849,6 +858,14 @@ func runGlobalInstall(stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintf(stderr, "build-brief: hook requires one of: %s\n", strings.Join(hook.Agents(), ", "))
+		return 2
+	}
+	return hook.Run(args[0], stdin, stdout, stderr)
 }
 
 func runRewrite(args []string, stdout, stderr io.Writer) int {

@@ -1,9 +1,7 @@
 package install
 
 import (
-	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -50,51 +48,6 @@ func TestTOMLEditsRejectInvalidInputWithoutChangingIt(t *testing.T) {
 	content, _ := os.ReadFile(path)
 	if string(content) != original {
 		t.Fatalf("invalid input was changed: %s", content)
-	}
-}
-
-func TestGuardrailsHandleMixedWrappedAndRawChains(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Bash hooks")
-	}
-	for _, program := range []string{"bash", "python3"} {
-		if _, err := exec.LookPath(program); err != nil {
-			t.Skip(program + " unavailable")
-		}
-	}
-	dir := t.TempDir()
-	rewritten := "build-brief ./gradlew test && build-brief ./gradlew check"
-	if err := os.WriteFile(filepath.Join(dir, "build-brief"), []byte("#!/bin/sh\nprintf '%s\\n' '"+rewritten+"'\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	command := "build-brief ./gradlew test && ./gradlew check"
-	arguments, _ := json.Marshal(map[string]string{"command": command})
-	cases := []struct {
-		name, script string
-		payload      any
-	}{
-		{"codex", codexPreToolUseCommand(), map[string]any{"tool_input": map[string]string{"command": command}}},
-		{"claude", claudePluginPreToolUseScript(), map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": command}}},
-		{"copilot", copilotPreToolUseCommand(), map[string]any{"toolName": "bash", "toolArgs": string(arguments)}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			payload, _ := json.Marshal(tc.payload)
-			cmd := exec.Command("bash", "-c", tc.script)
-			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			cmd.Stdin = strings.NewReader(string(payload))
-			output, err := cmd.CombinedOutput()
-			if tc.name == "codex" {
-				if code, ok := err.(*exec.ExitError); !ok || code.ExitCode() != 2 {
-					t.Fatalf("expected blocking exit 2, got %v: %s", err, output)
-				}
-			} else if err != nil {
-				t.Fatalf("hook: %v: %s", err, output)
-			}
-			if !strings.Contains(string(output), rewritten) {
-				t.Fatalf("missing mixed-chain correction: %s", output)
-			}
-		})
 	}
 }
 
