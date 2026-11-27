@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"build-brief/internal/hook"
 )
 
 const (
@@ -804,10 +806,8 @@ func installClaudePlugin(tool DetectedTool) (string, error) {
 	if err := writeJSONFile(filepath.Join(pluginRoot, "hooks", "hooks.json"), claudePluginHooksConfig()); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Join(pluginRoot, "scripts"), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh"), []byte(claudePluginPreToolUseScript()), 0o755); err != nil {
+	// Earlier versions ran this script from the hook; the hook now calls build-brief directly.
+	if err := os.Remove(filepath.Join(pluginRoot, "scripts", "pretooluse-build-brief.sh")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 
@@ -1066,62 +1066,7 @@ func copilotHooksConfig() map[string]any {
 }
 
 func copilotPreToolUseCommand() string {
-	return `python3 -c "
-import json
-import subprocess
-import sys
-
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-
-if not isinstance(payload, dict):
-    raise SystemExit(0)
-
-tool_name = str(payload.get('toolName', '')).lower()
-if tool_name != 'bash':
-    raise SystemExit(0)
-
-tool_args = payload.get('toolArgs')
-if not isinstance(tool_args, str) or not tool_args.strip():
-    raise SystemExit(0)
-
-try:
-    parsed_args = json.loads(tool_args)
-except Exception:
-    raise SystemExit(0)
-
-if not isinstance(parsed_args, dict):
-    raise SystemExit(0)
-
-command = parsed_args.get('command', '')
-if not isinstance(command, str) or not command.strip():
-    raise SystemExit(0)
-
-try:
-    result = subprocess.run(
-        ['build-brief', 'rewrite', command],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-except FileNotFoundError:
-    raise SystemExit(0)
-
-rewritten = result.stdout.strip()
-if result.returncode != 0 or not rewritten or rewritten == command.strip():
-    raise SystemExit(0)
-
-json.dump(
-    {
-        'permissionDecision': 'deny',
-        'permissionDecisionReason': 'Routine Gradle command or chain intercepted by build-brief. Use: ' + rewritten,
-    },
-    sys.stdout,
-    separators=(',', ':'),
-)
-"`
+	return hookCommand(hook.Copilot)
 }
 
 const (
@@ -1175,7 +1120,7 @@ func claudePluginHooksConfig() map[string]any {
 					"hooks": []any{
 						map[string]any{
 							"type":          "command",
-							"command":       `"${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-build-brief.sh"`,
+							"command":       hookCommand(hook.Claude),
 							"timeout":       30,
 							"statusMessage": "Checking Bash command for build-brief",
 						},
@@ -1184,78 +1129,6 @@ func claudePluginHooksConfig() map[string]any {
 			},
 		},
 	}
-}
-
-func claudePluginPreToolUseScript() string {
-	return `#!/usr/bin/env bash
-
-set -euo pipefail
-
-if ! command -v build-brief >/dev/null 2>&1; then
-  exit 0
-fi
-
-payload="$(cat)"
-if [[ -z "$payload" ]]; then
-  exit 0
-fi
-
-original_command="$(python3 - "$payload" <<'PY'
-import json
-import sys
-
-try:
-    payload = json.loads(sys.argv[1])
-except Exception:
-    print("")
-    raise SystemExit(0)
-
-if not isinstance(payload, dict):
-    print("")
-    raise SystemExit(0)
-
-tool_name = payload.get("tool_name", "")
-if tool_name != "Bash":
-    print("")
-    raise SystemExit(0)
-
-tool_input = payload.get("tool_input", {})
-if not isinstance(tool_input, dict):
-    print("")
-    raise SystemExit(0)
-
-command = tool_input.get("command", "")
-print(command if isinstance(command, str) else "")
-PY
-)"
-
-if [[ -z "$original_command" ]]; then
-  exit 0
-fi
-
-rewritten_command="$(build-brief rewrite "$original_command" 2>/dev/null || true)"
-if [[ -z "$rewritten_command" || "$rewritten_command" == "$original_command" ]]; then
-  exit 0
-fi
-
-python3 - "$rewritten_command" <<'PY'
-import json
-import sys
-
-rewritten = sys.argv[1]
-json.dump(
-    {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"Routine Gradle command or chain intercepted by build-brief. Use: {rewritten}",
-        }
-    },
-    sys.stdout,
-    separators=(",", ":"),
-)
-PY
-`
 }
 
 func codexPluginManifest() map[string]any {
@@ -1308,50 +1181,14 @@ func codexHooksConfig() map[string]any {
 }
 
 func codexPreToolUseCommand() string {
-	return `python3 -c "
-import json
-import subprocess
-import sys
+	return hookCommand(hook.Codex)
+}
 
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-
-if not isinstance(payload, dict):
-    raise SystemExit(0)
-
-tool_input = payload.get('tool_input')
-if not isinstance(tool_input, dict):
-    raise SystemExit(0)
-
-command = tool_input.get('command', '')
-if not isinstance(command, str) or not command.strip():
-    raise SystemExit(0)
-
-try:
-    result = subprocess.run(
-        ['build-brief', 'rewrite', command],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-except FileNotFoundError:
-    raise SystemExit(0)
-
-rewritten = result.stdout.strip()
-if result.returncode != 0 or not rewritten or rewritten == command.strip():
-    raise SystemExit(0)
-
-sys.stderr.write(
-    '[build-brief] Codex blocked a routine Gradle command or chain.\n'
-    '[build-brief] Use this instead:\n\n'
-    '  ' + rewritten + '\n\n'
-    'This Codex PreToolUse hook can block and suggest a safer replacement,\n'
-    'but it cannot transparently rewrite and continue in place.\n'
-)
-raise SystemExit(2)
-"`
+// hookCommand returns the hook command for agent. It has no shell operators, so
+// it runs the same under sh, bash and cmd, and serializes without JSON escapes,
+// which keeps the Codex trusted_hash stable.
+func hookCommand(agent string) string {
+	return "build-brief hook " + agent
 }
 
 func upsertCodexMarketplace(path, sourcePath string) error {

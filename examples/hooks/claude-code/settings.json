@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/pretooluse-build-brief.sh"
+            "command": "build-brief hook claude"
           }
         ]
       }
