@@ -97,6 +97,74 @@ func TestInstallGlobalDoesNotCreateMissingFiles(t *testing.T) {
 	}
 }
 
+func TestInstallGlobalCreatesAntigravityPlugin(t *testing.T) {
+	original := runRTKHelp
+	runRTKHelp = func() error { return errors.New("missing") }
+	t.Cleanup(func() {
+		runRTKHelp = original
+	})
+
+	home := t.TempDir()
+	setFakeHome(t, home)
+
+	installed, failures := InstallGlobal([]DetectedTool{
+		{
+			Tool: Tool{
+				ID:             "antigravity",
+				Name:           "Antigravity",
+				SupportsPlugin: true,
+			},
+		},
+	})
+
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got %v", failures)
+	}
+
+	pluginRoot := filepath.Join(home, ".gemini", "config", "plugins", "build-brief")
+	if !containsPath(installed, "Antigravity plugin -> "+pluginRoot) {
+		t.Fatalf("expected plugin install entry, got %v", installed)
+	}
+
+	manifestContent, err := os.ReadFile(filepath.Join(pluginRoot, "plugin.json"))
+	if err != nil {
+		t.Fatalf("read antigravity plugin manifest: %v", err)
+	}
+	if !strings.Contains(string(manifestContent), `"name": "build-brief"`) {
+		t.Fatalf("expected plugin manifest name, got %q", string(manifestContent))
+	}
+
+	hooksContent, err := os.ReadFile(filepath.Join(pluginRoot, "hooks.json"))
+	if err != nil {
+		t.Fatalf("read antigravity hooks: %v", err)
+	}
+	var hooks map[string]struct {
+		PreToolUse []struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"PreToolUse"`
+	}
+	if err := json.Unmarshal(hooksContent, &hooks); err != nil {
+		t.Fatalf("unmarshal antigravity hooks: %v", err)
+	}
+	preToolUse := hooks["build-brief"].PreToolUse
+	if len(preToolUse) != 1 || preToolUse[0].Matcher != "run_command" || len(preToolUse[0].Hooks) != 1 ||
+		preToolUse[0].Hooks[0].Type != "command" || preToolUse[0].Hooks[0].Command != "build-brief hook antigravity" {
+		t.Fatalf("expected run_command hook calling build-brief, got %s", hooksContent)
+	}
+
+	rulesContent, err := os.ReadFile(filepath.Join(pluginRoot, "rules", "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read antigravity rules: %v", err)
+	}
+	if !strings.Contains(string(rulesContent), blockStart) || !strings.Contains(string(rulesContent), "build-brief gradle") {
+		t.Fatalf("expected build-brief instructions in plugin rules, got %q", string(rulesContent))
+	}
+}
+
 func TestInstallGlobalCreatesPiExtensionWithoutAgentsFile(t *testing.T) {
 	original := runRTKHelp
 	runRTKHelp = func() error { return errors.New("missing") }

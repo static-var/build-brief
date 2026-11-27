@@ -222,6 +222,14 @@ func InstallGlobal(selected []DetectedTool) ([]string, []error) {
 					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
 					pluginInstalled = true
 				}
+			case "antigravity":
+				target, err := installAntigravityPlugin(tool, rtkInstalled)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("%s plugin: %w", tool.Tool.Name, err))
+				} else {
+					installed = append(installed, fmt.Sprintf("%s plugin -> %s", tool.Tool.Name, target))
+					pluginInstalled = true
+				}
 			}
 		}
 
@@ -617,6 +625,20 @@ func knownTools() ([]Tool, error) {
 			GlobalTargets:    []string{filepath.Join(home, ".gemini", "GEMINI.md")},
 			LocalInstruction: []string{"GEMINI.md", "AGENTS.md"},
 		},
+		{
+			// Antigravity reads its global customizations, including plugins,
+			// from ~/.gemini/config. The plugin carries its own rules, so there
+			// is no global instruction file to update.
+			ID:       "antigravity",
+			Name:     "Antigravity",
+			Binaries: []string{"agy"},
+			DetectionPaths: []string{
+				antigravityConfigDir(home),
+				filepath.Join(string(filepath.Separator), "Applications", "Antigravity.app"),
+			},
+			LocalInstruction: []string{"AGENTS.md", "GEMINI.md"},
+			SupportsPlugin:   true,
+		},
 	}, nil
 }
 
@@ -733,6 +755,12 @@ func pluginGuidance(tool Tool) []string {
 			"- The managed Codex App & CLI plugin installs a local plugin bundle under the shared `~/.codex` configuration area and enables Codex `PreToolUse` hooks for `build-brief`.",
 			"- Its Bash hook blocks routine raw `gradle` and `./gradlew` commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
 			"- Codex hooks cannot transparently rewrite and continue in place today, so keep raw Gradle available when you intentionally want to bypass that guardrail.",
+		}
+	case "antigravity":
+		return []string{
+			"- The managed Antigravity plugin lives under `~/.gemini/config/plugins/build-brief` and ships these rules with a `PreToolUse` hook.",
+			"- Its `run_command` hook blocks routine raw `gradle` and `./gradlew` commands, including chained `&&`, `||`, and `;` Gradle segments, and suggests the `build-brief rewrite ...` result instead.",
+			"- The hook denies rather than rewrites in place, so Antigravity keeps asking for permission as usual; keep raw Gradle available when you intentionally want to bypass it.",
 		}
 	case "pi-coding-agent":
 		return []string{
@@ -891,6 +919,68 @@ func installCodexPlugin(tool DetectedTool) (string, error) {
 	}
 
 	return sourceDir, nil
+}
+
+func antigravityConfigDir(home string) string {
+	return filepath.Join(home, ".gemini", "config")
+}
+
+// installAntigravityPlugin writes a native plugin to Antigravity's global
+// plugins folder, where it is discovered and enabled without an install
+// command. Native plugins must keep hooks.json at the plugin root.
+func installAntigravityPlugin(tool DetectedTool, rtkInstalled bool) (string, error) {
+	home, err := userHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	pluginRoot := filepath.Join(antigravityConfigDir(home), "plugins", "build-brief")
+	if err := writeJSONFile(filepath.Join(pluginRoot, "plugin.json"), antigravityPluginManifest()); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(pluginRoot, "hooks.json"), antigravityHooksConfig()); err != nil {
+		return "", err
+	}
+	rulesPath := filepath.Join(pluginRoot, "rules", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(rulesPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(rulesPath, []byte(globalInstructions(tool.Tool, rtkInstalled)+"\n"), 0o644); err != nil {
+		return "", err
+	}
+
+	return pluginRoot, nil
+}
+
+func antigravityPluginManifest() map[string]any {
+	return map[string]any{
+		"name": "build-brief",
+		"author": map[string]any{
+			"name": "Static Var",
+			"url":  "https://bb.staticvar.dev",
+		},
+		"homepage":   "https://bb.staticvar.dev",
+		"repository": "https://github.com/static-var/build-brief",
+	}
+}
+
+func antigravityHooksConfig() map[string]any {
+	return map[string]any{
+		"build-brief": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "run_command",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": hookCommand(hook.Antigravity),
+							"timeout": 30,
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func piExtensionSource() string {

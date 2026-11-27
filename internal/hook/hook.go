@@ -15,21 +15,22 @@ import (
 
 // Agent names accepted by Run, as used in `build-brief hook <agent>`.
 const (
-	Claude  = "claude"
-	Codex   = "codex"
-	Copilot = "copilot"
+	Claude      = "claude"
+	Codex       = "codex"
+	Copilot     = "copilot"
+	Antigravity = "antigravity"
 )
 
 const denyReason = "Routine Gradle command or chain intercepted by build-brief. Use: "
 
 // Agents lists the supported agent names.
 func Agents() []string {
-	return []string{Claude, Codex, Copilot}
+	return []string{Claude, Codex, Copilot, Antigravity}
 }
 
 // Run handles one hook invocation for agent and returns the process exit code.
 // Payloads that cannot be parsed, other tools, and commands without a routine
-// Gradle segment are allowed silently, so a hook never blocks unrelated work.
+// Gradle segment are allowed, so a hook never blocks unrelated work.
 func Run(agent string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var parse func([]byte) (string, bool)
 	switch agent {
@@ -39,21 +40,21 @@ func Run(agent string, stdin io.Reader, stdout, stderr io.Writer) int {
 		parse = codexCommand
 	case Copilot:
 		parse = copilotCommand
+	case Antigravity:
+		parse = antigravityCommand
 	default:
 		fmt.Fprintf(stderr, "build-brief: hook requires one of: %s\n", strings.Join(Agents(), ", "))
 		return 2
 	}
 
-	payload, err := io.ReadAll(stdin)
-	if err != nil {
-		return 0
-	}
-	command, ok := parse(payload)
-	if !ok || strings.TrimSpace(command) == "" {
-		return 0
-	}
-	rewritten, changed := rewrite.ShellCommand(command)
-	if !changed {
+	rewritten, block := evaluate(parse, stdin)
+	if !block {
+		if agent == Antigravity {
+			// Antigravity expects a JSON object on stdout. An empty object
+			// leaves the decision to its normal permission flow, while
+			// "allow" would approve the command without asking.
+			writeJSON(stdout, map[string]any{})
+		}
 		return 0
 	}
 
@@ -71,6 +72,11 @@ func Run(agent string, stdin io.Reader, stdout, stderr io.Writer) int {
 			"permissionDecision":       "deny",
 			"permissionDecisionReason": denyReason + rewritten,
 		})
+	case Antigravity:
+		writeJSON(stdout, map[string]any{
+			"decision": "deny",
+			"reason":   denyReason + rewritten,
+		})
 	case Codex:
 		// Codex blocks the tool call on exit code 2 and shows stderr to the agent.
 		fmt.Fprintf(stderr, "[build-brief] Codex blocked a routine Gradle command or chain.\n"+
@@ -81,6 +87,20 @@ func Run(agent string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	return 0
+}
+
+// evaluate reads the payload with parse and returns the rewritten command and
+// whether the original command must be blocked.
+func evaluate(parse func([]byte) (string, bool), stdin io.Reader) (string, bool) {
+	payload, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", false
+	}
+	command, ok := parse(payload)
+	if !ok || strings.TrimSpace(command) == "" {
+		return "", false
+	}
+	return rewrite.ShellCommand(command)
 }
 
 func claudeCommand(payload []byte) (string, bool) {
@@ -127,6 +147,22 @@ func copilotCommand(payload []byte) (string, bool) {
 		return "", false
 	}
 	return args.Command, true
+}
+
+// antigravityCommand reads the CommandLine argument of a run_command tool call.
+func antigravityCommand(payload []byte) (string, bool) {
+	var input struct {
+		ToolCall struct {
+			Name string `json:"name"`
+			Args struct {
+				CommandLine string `json:"CommandLine"`
+			} `json:"args"`
+		} `json:"toolCall"`
+	}
+	if json.Unmarshal(payload, &input) != nil || input.ToolCall.Name != "run_command" {
+		return "", false
+	}
+	return input.ToolCall.Args.CommandLine, true
 }
 
 func writeJSON(w io.Writer, value any) {

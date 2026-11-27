@@ -84,6 +84,26 @@ That managed hook runs `build-brief hook codex`. It blocks routine raw Gradle
 commands, including chained segments such as `gradle test && gradle check`, and
 suggests the `build-brief rewrite ...` result instead.
 
+## Antigravity
+
+Antigravity discovers native plugins in its global customization root, so the
+managed `build-brief --global` integration writes one to:
+
+```text
+~/.gemini/config/plugins/build-brief/
+```
+
+The plugin holds `plugin.json`, the build-brief rules in `rules/AGENTS.md`, and a
+root `hooks.json` whose `PreToolUse` hook matches the `run_command` tool and runs
+`build-brief hook antigravity`. The hook denies routine raw Gradle commands,
+including chained segments such as `gradle test && gradle check`, and suggests
+the `build-brief rewrite ...` result instead.
+
+Antigravity can also rewrite a command in place, but only together with an
+`allow` decision, which skips its permission prompt. The hook therefore denies
+and suggests, and returns an empty decision for every other command so
+Antigravity keeps its usual permission flow.
+
 ## Pi Coding Agent
 
 Pi extensions can mutate Bash tool input before execution, so the managed

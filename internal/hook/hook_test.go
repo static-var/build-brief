@@ -134,3 +134,46 @@ func TestRunRejectsUnknownAgent(t *testing.T) {
 		t.Fatalf("expected usage error, got %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
+
+func antigravityPayload(name string, commandLine any) string {
+	return mustJSON(map[string]any{
+		"hookEventName": "PreToolUse",
+		"toolCall":      map[string]any{"id": "toolu_01", "name": name, "args": map[string]any{"CommandLine": commandLine}},
+	})
+}
+
+func TestRunDeniesRoutineGradleCommandsForAntigravity(t *testing.T) {
+	code, stdout, stderr := run(Antigravity, antigravityPayload("run_command", mixedChain))
+	if code != 0 || stderr != "" {
+		t.Fatalf("expected exit 0 without stderr, got %d: %q", code, stderr)
+	}
+	var output struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("invalid decision JSON: %v: %s", err, stdout)
+	}
+	if output.Decision != "deny" || output.Reason != denyReason+mixedChainRewritten {
+		t.Fatalf("unexpected decision: %s", stdout)
+	}
+}
+
+// Antigravity expects a JSON object, so an allowed command gets an empty one
+// instead of "allow", which would skip its permission prompt.
+func TestRunLeavesOtherAntigravityCommandsToItsPermissions(t *testing.T) {
+	cases := []struct{ name, payload string }{
+		{"non-Gradle command", antigravityPayload("run_command", "ls -la")},
+		{"other tool", antigravityPayload("view_file", "./gradlew test")},
+		{"non-string command", antigravityPayload("run_command", 42)},
+		{"invalid JSON", "not json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := run(Antigravity, tc.payload)
+			if code != 0 || stdout != "{}\n" || stderr != "" {
+				t.Fatalf("expected empty decision object, got %d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+		})
+	}
+}
